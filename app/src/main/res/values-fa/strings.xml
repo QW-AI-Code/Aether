@@ -253,4 +253,16 @@
     <string name="meta_protocol">پروتکل</string>
     <string name="meta_endpoint">اندپوینت</string>
     <string name="meta_latency">تأخیر</string>
+
+    <!-- قابلیت‌های هستهٔ 1.7.0 (نسخهٔ ۱.۲.۶) -->
+    <string name="route_sniff_title">تطبیق قواعد دامنه در پشت تونل</string>
+    <string name="route_sniff_desc">نام سایت را از دست‌دادن اولیهٔ TLS/HTTP می‌خواند تا قواعد دامنهٔ بالا در اندروید هم کار کنند؛ چون در غیر این صورت موتور فقط یک آی‌پی می‌بیند.</string>
+    <string name="route_sniff_ms_label">مدت انتظار برای نام (میلی‌ثانیه)</string>
+    <string name="route_sniff_ms_hint">400</string>
+    <string name="section_upstream">پراکسی بالادست (زنجیره‌سازی)</string>
+    <string name="upstream_label">پراکسی بالادست</string>
+    <string name="upstream_hint">socks5://127.0.0.1:1080</string>
+    <string name="upstream_help">اتصال را از دل پراکسی‌ای که همین حالا روی گوشی اجراست بیرون می‌برد. آدرس socks5://host:port همهٔ پروتکل‌ها را حمل می‌کند؛ http://host:port فقط MASQUE روی HTTP/2 را که خودِ برنامه برایتان فعال می‌کند. نام کاربری و گذرواژه را می‌توانید به شکل user:pass@host:port بنویسید؛ این مقدار به‌صورت محرمانه به موتور داده می‌شود و هرگز در خط فرمان آن قرار نمی‌گیرد. برای اتصال مستقیم خالی بگذارید.</string>
+    <string name="reprovision_title">جایگزینی شناسهٔ ردشده</string>
+    <string name="reprovision_desc">اگر کلادفلر شناسهٔ ذخیره‌شدهٔ دستگاه را نپذیرد، به‌جای نگه‌داشتن تونلی که وصل می‌شود اما ترافیکی عبور نمی‌دهد، به‌صورت خودکار شناسهٔ تازه ثبت می‌کند.</string>
 </resources>

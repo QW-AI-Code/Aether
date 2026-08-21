@@ -65,6 +65,11 @@ class ProfileStore(private val context: Context) {
         val noProfileRetry = booleanPreferencesKey("noProfileRetry")
         val coreLogLevel = stringPreferencesKey("coreLogLevel")
         val blockedApps = stringPreferencesKey("blockedApps")
+        // Added in 1.2.6 (engine v1.7.0)
+        val upstreamProxy = stringPreferencesKey("upstreamProxy")
+        val routeSniff = booleanPreferencesKey("routeSniff")
+        val routeSniffMs = intPreferencesKey("routeSniffMs")
+        val autoReprovision = booleanPreferencesKey("autoReprovision")
     }
 
     /**
@@ -130,6 +135,10 @@ class ProfileStore(private val context: Context) {
                 ?.let { runCatching { CoreLogLevel.valueOf(it) }.getOrNull() } ?: CoreLogLevel.WARN,
             blockedApps = prefs[Keys.blockedApps]
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
+            upstreamProxy = prefs[Keys.upstreamProxy] ?: "",
+            routeSniff = prefs[Keys.routeSniff] ?: true,
+            routeSniffMs = prefs[Keys.routeSniffMs] ?: 0,
+            autoReprovision = prefs[Keys.autoReprovision] ?: true,
         )
     }
 
@@ -174,6 +183,10 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.noProfileRetry] = profile.noProfileRetry
             prefs[Keys.coreLogLevel] = profile.coreLogLevel.name
             prefs[Keys.blockedApps] = profile.blockedApps.joinToString(",")
+            prefs[Keys.upstreamProxy] = profile.upstreamProxy
+            prefs[Keys.routeSniff] = profile.routeSniff
+            prefs[Keys.routeSniffMs] = profile.routeSniffMs
+            prefs[Keys.autoReprovision] = profile.autoReprovision
         }
         // Secrets go to the Keystore-sealed store, never to the prefs file.
         secrets.write(SecretStore.ACCESS_SECRET, profile.accessClientSecret)

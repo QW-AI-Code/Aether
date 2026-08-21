@@ -170,6 +170,40 @@ data class ConnectionProfile(
     /** Apps that get NO internet at all while the VPN is on (UID-filtering bridge). */
     val blockedApps: List<String> = emptyList(),
 
+    // ---- Added in 1.2.6 (engine v1.7.0 feature parity) ----
+
+    /**
+     * Chain the engine through a proxy that is ALREADY running on this phone
+     * (engine `--upstream` / `AETHER_UPSTREAM`, new in core 1.7.0). Accepts
+     * `socks5://[user:pass@]host:port`, `http://[user:pass@]host:port` or a bare
+     * `host:port` (read as SOCKS5). Blank = dial out directly.
+     *
+     * The endpoint scan, the registration calls and the ECH lookup all travel
+     * through it too; a destination matched by [routeDirect] does not, because
+     * that rule exists precisely to bypass the tunnel.
+     */
+    val upstreamProxy: String = "",
+    /**
+     * Decide the domain rules in [routeBlock] / [routeDirect] from the name in
+     * the first bytes (TLS server name, or the HTTP `Host` header) instead of
+     * only from the address (core 1.7.0, `AETHER_ROUTE_SNIFF`).
+     *
+     * This matters far more on Android than on a desktop: the app is ALWAYS a
+     * tun front end, so by the time a flow reaches the engine it has already
+     * lost its name and every domain rule would silently do nothing. On by
+     * default, exactly like the engine.
+     */
+    val routeSniff: Boolean = true,
+    /** How long to wait for those first bytes, ms. 0 = engine default (400). */
+    val routeSniffMs: Int = 0,
+    /**
+     * Register a fresh device identity when Cloudflare stops accepting the saved
+     * one (core 1.7.0, `AETHER_REPROVISION`). Off means the tunnel still
+     * handshakes but carries no traffic, which is impossible to diagnose from
+     * the UI, so this stays on by default.
+     */
+    val autoReprovision: Boolean = true,
+
 ) {
     /** True when a Zero Trust organization is configured and usable. */
     val hasTeam: Boolean
@@ -270,7 +304,12 @@ data class ConnectionProfile(
 
     /** Environment variables for the engine process. */
     fun toEnv(): Map<String, String> = buildMap {
-        put("AETHER_MASQUE_HTTP2", if (masqueHttp2) "1" else "0")
+        // An HTTP CONNECT upstream cannot carry UDP, so MASQUE has to ride
+        // HTTP/2 over TCP whenever the user chained the engine behind an
+        // http:// proxy. Forcing it here turns "connects but nothing loads"
+        // into a working session the user never has to debug.
+        val httpUpstream = sanitizedUpstream()?.startsWith("http://") == true
+        put("AETHER_MASQUE_HTTP2", if (masqueHttp2 || httpUpstream) "1" else "0")
 
         // Which addresses the engine's scanner may consider.
         //
@@ -281,6 +320,9 @@ data class ConnectionProfile(
         if (endpointMode == EndpointMode.MANUAL_RANGE && userRange.isNotBlank()) {
             // prober.rs reads AETHER_MASQUE_CIDRS then AETHER_SCAN_CIDRS;
             // wg_prober.rs reads AETHER_WG_CIDRS then AETHER_SCAN_CIDRS.
+            // Both scanners honour this from 1.2.6 on: until then only the
+            // WireGuard side carried the app patch, so a pinned range was
+            // silently ignored on MASQUE and gool.
             put("AETHER_SCAN_CIDRS", userRange)
             put("AETHER_MASQUE_CIDRS", userRange)
             put("AETHER_WG_CIDRS", userRange)
@@ -326,6 +368,23 @@ data class ConnectionProfile(
         if (noProfileRetry) put("AETHER_WG_NO_PROFILE_RETRY", "1")
         sanitizedTlsGroups()?.let { put("AETHER_TLS_GROUPS", it) }
         if (coreLogLevel != CoreLogLevel.WARN) put("AETHER_LOG_LEVEL", coreLogLevel.raw)
+
+        // ---- engine v1.7.0 (1.2.6) ----
+        //
+        // Both of these are ON in the engine by default, so the variable is
+        // only sent when the user deviates from that: fewer moving parts, and
+        // the engine keeps owning its own defaults.
+        if (!routeSniff) put("AETHER_ROUTE_SNIFF", "0")
+        if (routeSniff && routeSniffMs > 0) {
+            put("AETHER_ROUTE_SNIFF_MS", routeSniffMs.coerceIn(50, 5_000).toString())
+        }
+        if (!autoReprovision) put("AETHER_REPROVISION", "0")
+
+        // SECURITY: an upstream proxy URL can carry a username and password, so
+        // it is handed over through the environment and NEVER as the `--upstream`
+        // CLI argument: any local app can read /proc/<pid>/cmdline of a process
+        // it can see, but not that process's environment block.
+        sanitizedUpstream()?.let { put("AETHER_UPSTREAM", it) }
     }
 
     /**
@@ -352,6 +411,16 @@ data class ConnectionProfile(
         .filter { it.isNotEmpty() && RULE_ENTRY.matches(it) }
         .distinct()
         .take(MAX_ROUTE_RULES)
+
+    /**
+     * Validated upstream proxy URL for `AETHER_UPSTREAM`. Accepts an explicit
+     * `socks5://` or `http://` scheme, optional `user:pass@` credentials, and a
+     * host or bracketed IPv6 address with a port; a bare `host:port` is read as
+     * SOCKS5 by the engine. Anything else is dropped rather than passed on, so a
+     * typo can never turn into a second engine token or a silent direct dial.
+     */
+    fun sanitizedUpstream(): String? = upstreamProxy.trim()
+        .takeIf { it.length in 1..200 && UPSTREAM_ENTRY.matches(it) }
 
     /**
      * How long to wait for the engine to open the local SOCKS5 port before
@@ -392,6 +461,13 @@ data class ConnectionProfile(
         /** `1.1.1.1` or `1.1.1.1:53` (IPv4, or bracketed IPv6 with a port). */
         private val DNS_ENTRY =
             Regex("^(?:\\d{1,3}(?:\\.\\d{1,3}){3}|\\[[0-9A-Fa-f:]+])(?::\\d{1,5})?$")
+
+        /** `socks5://user:pass@host:port`, `http://host:port` or a bare `host:port`. */
+        private val UPSTREAM_ENTRY = Regex(
+            "^(?:(?:socks5|http)://)?" +
+                "(?:[^\\s:@/]{1,64}(?::[^\\s:@/]{0,64})?@)?" +
+                "(?:\\[[0-9A-Fa-f:]{2,45}]|[A-Za-z0-9._-]{1,253}):\\d{1,5}$"
+        )
 
         /** One routing-rule token: no comma, no whitespace, no shell metacharacters. */
         private val RULE_ENTRY = Regex("^[A-Za-z0-9_.:/*\\-\\[\\]^\$+?()|{}\\\\]{1,200}$")

@@ -28,3 +28,8 @@ app/src/main/java/studio/cluvex/aether/core/ExitGuard.kt
 app/src/main/java/studio/cluvex/aether/core/BadEdgeStore.kt
 app/src/main/java/studio/cluvex/aether/ui/components/ExitPolicyCard.kt
 native/aether/aether/src/geoguard.rs
+
+# --- superseded by the unified connection card (removed in 1.2.6) ---
+app/src/main/java/studio/cluvex/aether/ui/components/StatusLine.kt
+app/src/main/java/studio/cluvex/aether/ui/components/TrafficPanel.kt
+app/src/main/java/studio/cluvex/aether/ui/components/ConnectionMeta.kt

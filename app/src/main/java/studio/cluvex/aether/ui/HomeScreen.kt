@@ -50,10 +50,9 @@ import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.components.AmbientBackground
 import studio.cluvex.aether.ui.components.ButtonMode
 import studio.cluvex.aether.ui.components.ConnectButton
-import studio.cluvex.aether.ui.components.ConnectionMeta
+import studio.cluvex.aether.ui.components.ConnectionCard
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
-import studio.cluvex.aether.ui.components.StatusLine
-import studio.cluvex.aether.ui.components.TrafficPanel
+import studio.cluvex.aether.ui.theme.AetherMint
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,7 +74,9 @@ fun HomeScreen(
     }
 
     val accent = when (mode) {
-        ButtonMode.CONNECTED -> Color(0xFF32E0C4)
+        // Brand mint, the same accent the connection card and its animated edge
+        // use, so the whole screen reads as one palette.
+        ButtonMode.CONNECTED -> AetherMint
         ButtonMode.ERROR -> Color(0xFFFF5C7A)
         else -> Color(0xFF4C8DFF)
     }
@@ -175,25 +176,19 @@ fun HomeScreen(
 
                 ConnectButton(mode = mode, onClick = onToggleConnection)
 
-                Spacer(Modifier.height(32.dp))
+                Spacer(Modifier.height(28.dp))
 
-                StatusLine(
-                    title = stateTitle(state),
-                    subtitle = stateSubtitle(state),
-                )
-
-                if (state.isConnected) {
-                    Spacer(Modifier.height(24.dp))
-                    TrafficPanel(connectedSince = connectedSince)
-                }
-
-                Spacer(Modifier.height(24.dp))
-
-                ConnectionMeta(
+                // 1.2.6: status, timer, IP, speeds and the protocol row used to
+                // be four separate floating surfaces here. They are one unified
+                // glass card now - see ConnectionCard.
+                ConnectionCard(
                     connected = state.isConnected,
+                    statusTitle = stateTitle(state),
+                    statusCaption = stateSubtitle(state),
                     connectedSince = connectedSince,
                     ipInfo = ipInfo,
                     ipLoading = ipLoading,
+                    error = state is ConnectionState.Error,
                 )
 
                 Spacer(Modifier.height(16.dp))
@@ -285,7 +280,7 @@ private fun stateTitle(state: ConnectionState): String = when (state) {
 @Composable
 private fun stateSubtitle(state: ConnectionState): String = when (state) {
     is ConnectionState.Idle -> stringResource(R.string.tap_to_connect)
-    // The exit IP + flag is shown by ConnectionMeta, so keep the subtitle generic
+    // The exit IP + flag is shown inside the card, so keep the subtitle generic
     // instead of leaking the internal 127.0.0.1:port address.
     is ConnectionState.Connected -> stringResource(R.string.tap_to_disconnect)
     is ConnectionState.Reconnecting ->

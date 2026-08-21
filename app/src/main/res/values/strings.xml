@@ -254,4 +254,16 @@
     <string name="meta_protocol">Protocol</string>
     <string name="meta_endpoint">Endpoint</string>
     <string name="meta_latency">Latency</string>
+
+    <!-- Core 1.7.0 features (1.2.6) -->
+    <string name="route_sniff_title">Match domain rules behind the tunnel</string>
+    <string name="route_sniff_desc">Reads the site name from the TLS/HTTP handshake, so the domain rules above also work on Android, where the engine otherwise only sees an IP address.</string>
+    <string name="route_sniff_ms_label">Name wait window (ms)</string>
+    <string name="route_sniff_ms_hint">400</string>
+    <string name="section_upstream">Upstream proxy (chaining)</string>
+    <string name="upstream_label">Upstream proxy</string>
+    <string name="upstream_hint">socks5://127.0.0.1:1080</string>
+    <string name="upstream_help">Dials out through a proxy already running on this phone. socks5://host:port carries every protocol; http://host:port only carries MASQUE over HTTP/2, which is switched on for you. Credentials may be included as user:pass@host:port and are passed to the engine privately, never on its command line. Leave empty to connect directly.</string>
+    <string name="reprovision_title">Replace a refused identity</string>
+    <string name="reprovision_desc">If Cloudflare stops accepting the saved device identity, register a fresh one automatically instead of holding a tunnel that connects but carries no traffic.</string>
 </resources>

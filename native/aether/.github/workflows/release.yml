@@ -274,6 +274,79 @@ jobs:
           if-no-files-found: error
 
   # ------------------------------------------------------------------
+  # 64-bit x86 and arm64 musl, fully static. x86_64 covers OpenWrt on
+  # x86_64 routers/boxes and any generic musl-based x86_64 Linux.
+  # aarch64 covers OpenWrt on arm64 routers and Raspberry Pi 4/5 running
+  # a musl userland. Same toolchain source and same bindgen/libc env
+  # var fixes as linux-armv7-musl above, just different target triples.
+  # ------------------------------------------------------------------
+  linux-musl:
+    name: Build ${{ matrix.archive }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: aether
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            cross_prefix: x86_64-unknown-linux-musl
+            archive: aether-linux-x86_64-musl.tar.gz
+          - target: aarch64-unknown-linux-musl
+            cross_prefix: aarch64-unknown-linux-musl
+            archive: aether-linux-aarch64-musl.tar.gz
+    env:
+      RUST_LIBC_UNSTABLE_MUSL_V1_2_3: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Install CMake and Ninja
+        uses: lukka/get-cmake@latest
+
+      - name: Install musl cross toolchain
+        run: |
+          curl -fsSL https://github.com/AmanoTeam/musl-gcc-cross/releases/download/gcc-15/x86_64-unknown-linux-gnu.tar.xz -o /tmp/musl-cross.tar.xz
+          sudo mkdir -p /opt/musl-cross
+          sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
+
+      - name: Set up cross env vars
+        run: |
+          triple=$(echo "${{ matrix.target }}" | tr '-' '_')
+          prefix=/opt/musl-cross/bin/${{ matrix.cross_prefix }}
+          echo "CARGO_TARGET_${triple^^}_LINKER=${prefix}-gcc" >> "$GITHUB_ENV"
+          echo "CC_${triple}=${prefix}-gcc" >> "$GITHUB_ENV"
+          echo "CXX_${triple}=${prefix}-g++" >> "$GITHUB_ENV"
+          echo "AR_${triple}=${prefix}-ar" >> "$GITHUB_ENV"
+          echo "BINDGEN_EXTRA_CLANG_ARGS_${triple}=--target=${{ matrix.target }} --sysroot=/opt/musl-cross/${{ matrix.cross_prefix }}" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package archive
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar -czf ../../../${{ matrix.archive }} aether
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: aether/${{ matrix.archive }}
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
   # Android / Termux targets, built with the NDK via cargo-ndk on the
   # latest Ubuntu runner (the NDK cross toolchain, not the host libc,
   # determines the output).
@@ -348,9 +421,9 @@ jobs:
   # ------------------------------------------------------------------
   release:
     name: Publish release
-    needs: [desktop, linux, linux-armv7, linux-armv7-musl, android]
+    needs: [desktop, linux, linux-armv7, linux-armv7-musl, linux-musl, android]
     runs-on: ubuntu-latest
-    if: ${{ always() }} && startsWith(github.ref, 'refs/tags/') 
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -379,53 +452,30 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.3.0
+            Aether v1.6.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.3.0:
+            What's new in v1.6.0:
 
-            - New "ironclad" scan mode. The existing scan modes only check that a candidate gateway answers a handshake; ironclad goes further and opens a real tunnel through each candidate, then sends a real HTTP request end to end before trusting it. Slower than the other modes, but it's the only one that guarantees the gateway actually works before you connect.
-            - MASQUE and WireGuard both reconnect smarter after a drop. Instead of always kicking off a full rescan (which can take minutes in ironclad mode), Aether now first re-checks the gateway that was working a moment ago, and only falls back to a fresh scan if that one is actually dead.
-            - Fixed a bug where probe tunnels opened during scanning could keep running in the background after their timeout, which showed up as a wall of "connection closed" log lines during a scan.
-            - Fixed UDP over SOCKS5 not working when exposing the proxy to your local network (AETHER_SOCKS set to a non-loopback address). The UDP relay was always binding to 127.0.0.1 regardless of what address SOCKS5 was actually listening on, so TCP worked from other devices on the network but UDP silently dropped everything.
-            - New fully static armv7 musl build, meant for OpenWrt routers and other musl-based Linux systems that can't run the regular glibc binary.
+            New
 
-            This release includes prebuilt binaries for:
+            - `--http-proxy <addr>` exposes an HTTP CONNECT proxy next to the SOCKS5 one, for clients that cannot speak SOCKS.
+            - `--noize light` is a gentler obfuscation profile for networks that only need a nudge.
+            - Aether also builds as a library now (`libaether.a`, `libaether.so`) with a C API, so it can be linked into an app instead of being spawned as a separate process. The CLI is unchanged.
 
-            - Linux x86_64, built on Fedora latest (aether-linux-x86_64.tar.gz)
-            - Linux arm64 / aarch64, built on Fedora latest (aether-linux-arm64.tar.gz)
-            - Linux armv7 / 32-bit ARM, e.g. Raspberry Pi 2/3 (aether-linux-armv7.tar.gz)
-            - Linux armv7 musl / 32-bit ARM, fully static, for OpenWrt routers and other musl-based systems (aether-linux-armv7-musl.tar.gz)
-            - macOS arm64 / Apple Silicon (aether-macos-arm64.tar.gz)
-            - macOS x86_64 / Intel (aether-macos-x86_64.tar.gz)
-            - Windows x86_64 (aether-windows-x86_64.zip)
-            - Android / Termux arm64 (aether-android-arm64.tar.gz)
-            - Android / Termux armv7 (aether-android-armv7.tar.gz)
-            - Android / Termux x86_64 (aether-android-x86_64.tar.gz)
+            Fixes
 
-            Each archive ships with a matching .sha256 file, and a combined SHA256SUMS.txt lists every checksum.
+            - The SOCKS5 listener could shut down for good after a single transient accept error, and every connection after that was refused until Aether was restarted.
+            - A Zero Trust email code could only be typed into a terminal, so a graphical client could never finish signing in. The code can now be answered on standard input, and Aether says when it is waiting for one.
+            - The WireGuard scan gave up on an endpoint when the first handshake packet was lost. It retransmits now, so a lossy network no longer looks like a dead endpoint.
+            - The scan only tried one port per address, so most of the documented fallback ports were never reached. Each candidate covers the priority ports before the sweep widens.
+            - An endpoint that just failed is put on a cooldown instead of being picked again straight away, including when a saved endpoint is reused on a quick reconnect. `AETHER_WG_ENDPOINT_COOLDOWN_SECS` sets the window, five minutes by default. From #76.
+            - `--startup-secs` bounds how long a MASQUE tunnel may take to come up instead of waiting forever.
 
-            Quick start (Termux, one-line install):
+            Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
-               curl -fsSL https://raw.githubusercontent.com/CluvexStudio/aether/main/aether.sh -o aether.sh && chmod +x aether.sh && ./aether.sh install
-
-            Quick start (Windows):
-
-            1. Download aether-windows-x86_64.zip and extract it.
-            2. Double-click run-aether.bat. It opens a terminal, runs aether.exe, and stays open afterwards so you can read any errors.
-
-            Quick start (other platforms):
-
-            1. Download the archive for your platform and extract it.
-            2. Run the binary and answer the prompts, or set the environment variables listed in the guides.
-            3. Point your client at socks5h://127.0.0.1:1819 and verify with:
-               curl -x socks5h://127.0.0.1:1819 https://www.cloudflare.com/cdn-cgi/trace
-
-            Verify a download (Linux/macOS):
-               sha256sum -c aether-linux-x86_64.tar.gz.sha256
-
-            See README.md and the Docs directory for transport selection, obfuscation profiles, the HTTP/2 vs HTTP/3 choice in MASQUE, and the full environment-variable reference.
+            See README.md and the Docs directory for install steps, transport selection, obfuscation profiles, and the full environment-variable reference.
 
   # ------------------------------------------------------------------
   # Build and push the Docker image to GitHub Container Registry (GHCR)

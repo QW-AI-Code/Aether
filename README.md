@@ -6,6 +6,41 @@
 
 ---
 
+## What's new in v1.2.6
+
+### 🚀 Engine upgraded to core v1.7.0
+
+- **The bundled core is now <span dir="ltr">1.7.0</span>** (previously <span dir="ltr">1.6.0</span>). What the engine gained: routing rules matched on the name read from the first bytes of a flow (new `sniff.rs`), an upstream-proxy dialer so Aether can go out through another proxy or VPN already running on the device (new `upstream.rs`), automatic replacement of a device identity Cloudflare no longer accepts, and a WireGuard hunt that can verify several endpoints on distinct addresses instead of only the first one.
+- **The app's engine patches were rebased onto the new sources, not copied over them.** `wg_prober.rs` was restructured upstream in 1.7.0 (the anchor-port pass is gone, `hunt_wg_endpoints` is new), so the manual-range patch was re-applied against the new shape of the file by hand and the result differs from pure upstream by nothing but the patch.
+- **Fixed a silent patch-loss bug that shipped in 1.2.5.** The cached "pristine" merge baseline for `wg_prober.rs` was in fact the *patched* copy, so `base == ours`. On the next automatic core upgrade `git merge-file` would have read the app's manual-range patch as an upstream deletion and dropped it without one word of warning - manual endpoint ranges would have quietly stopped working, exactly like the 1.2.3 regression. Three things now make that impossible:
+  - every app engine patch is wrapped in `// >>> AETHER-APP-PATCH` / `// <<< AETHER-APP-PATCH` markers;
+  - `scripts/sync-core.sh` rebuilds a **pristine merge base offline** from those markers whenever the cache is missing or polluted, and verifies after every merge that the markers survived;
+  - `scripts/test-core-sync.sh` replays this exact failure as scenario 4 (**19 offline checks, all green**).
+- **Manual endpoint range now works on MASQUE and gool too**, not only on WireGuard: `prober.rs` carries the same additive patch (`AETHER_MASQUE_CIDRS`, then the shared `AETHER_SCAN_CIDRS`). Until 1.2.5 a pinned range was silently ignored on those protocols. The parser also accepts `188.114.96.0/24`, `188.114.96.x` and a bare `188.114.96.7` now.
+- **The engine baseline floor was raised to <span dir="ltr">1.7.0</span>**, so an automatic sync can never walk the core backwards past this release.
+<!-- core-sync:en -->
+
+### 🆕 Everything new in core v1.7.0 is in the UI
+
+- **Upstream proxy (chaining)** - *Advanced -> Upstream proxy*. Send everything Aether dials through a proxy that is already running on the phone: `socks5://127.0.0.1:1080`, `socks5://user:pass@host:port`, `http://host:port`, or a bare `host:port`. SOCKS5 carries every transport; an HTTP CONNECT proxy cannot carry UDP, so when you point the app at one it **switches MASQUE to HTTP/2 for you** instead of leaving you with a tunnel that connects and moves nothing. The URL is validated before it is used, and it reaches the engine through its environment - never as a command-line argument, because any local app can read `/proc/<pid>/cmdline` but not another process's environment.
+- **Match domain rules behind the tunnel** - *Advanced -> Routing rules*, on by default, with a tunable wait window in ms. This one matters more on Android than on a desktop: the app is **always** a tun front end, so a flow reaches the engine as a bare address and every domain rule in Block/Direct used to do nothing at all. The engine now reads the name from the TLS server name or the HTTP `Host` header of the first bytes and decides on that, while still connecting to the address the app asked for.
+- **Replace a refused identity** - *Advanced -> Security & stability*, on by default. If Cloudflare stops accepting the saved device identity, the engine registers a fresh one instead of holding a tunnel that handshakes but carries no traffic.
+
+### 🎨 One unified connection card on the home screen
+
+The area under the power button was four separate floating surfaces (status text, traffic meter, IP badge, protocol row), each with its own colour, radius and padding. It is **one cohesive glassmorphic card** now, `ui/components/ConnectionCard.kt`:
+
+- fixed vertical hierarchy inside a single 26 dp card with 18/20 dp inner padding: **status** (large mint "Connected" + quiet "Tap to disconnect") -> **session timer** ("Connected for" + `HH:MM:SS` in a monospaced digital face) -> **Server IP pill** (label + country flag + address) -> **speed strip** (live down/up rate and session totals) -> **protocol strip** (Protocol | Endpoint | Latency in three equal columns with thin dividers);
+- one surface colour system: a slate glass fill over the navy backdrop, a 1 px teal-tinted rim on the card and on every sub-container, a soft inner glow and a soft elevation shadow. Nothing floats outside the block any more;
+- **connected-state animation:** segments of mint and cyan light travel around the card edge and breathe in length, width and intensity like an audio equaliser, so a live connection *looks* alive - premium, not neon;
+- the card is pinned to the brand palette (`#0A0E1A` navy, `#3EDBB0` mint) instead of `MaterialTheme`, because Material You repaints themed surfaces from the user's wallpaper on Android 12+ and a purple wallpaper made this card stop looking like Aether;
+- performance, because this app has form here (see `AmbientBackground`): one cached path measured per size change, animation state read **inside the draw lambda** so a frame costs a border redraw and never a recomposition, the infinite transition composed **only while connected** so a disconnected app subscribes to no frame callbacks, and each band drawn as three additive strokes instead of a blur pass;
+- `StatusLine.kt`, `TrafficPanel.kt` and `ConnectionMeta.kt` were superseded and removed (registered in `.github/removed-sources.txt`, so an in-place upgrade over an older checkout cannot leave them behind).
+
+### 📦 Version
+
+**Version:** app <span dir="ltr">1.2.6</span>, version code <span dir="ltr">10</span>. The signing configuration is unchanged, so this installs straight over 1.2.5 from the same repository.
+
 ## What's new in v1.2.5
 
 - **Engine upgraded:** bundled core is now <span dir="ltr">1.6.0</span>.
@@ -48,7 +83,6 @@ Windows edition, and ships a fresh security audit.
 
 - **The core is now v1.5.0.** The previous release pinned `CORE_VERSION` at `1.4`, but the sources actually vendored were upstream **v1.3.0** — so the automatic merge-base logic had nothing valid to compare against and silently dropped the app's own engine patches. The baseline was identified, the patches were re-applied with a genuine **three-way merge**, and `native/aether/.upstream-baseline/` was repaired so the next automatic upgrade has a real merge base.
 - **Upstream refactors absorbed, app features kept.** Core v1.5.0 turned the endpoint-range constants into functions (`masque_cidrs_v4()`, `wg_prefixes_v4()`, `wg_seeds_v4()`) with Zero-Trust-aware ordering. Both merge conflicts were resolved by **adopting upstream's new ordering** while keeping the app's manual-range override intact. The merged files now differ from pure upstream by nothing but the additive patch.
-<!-- core-sync:en -->
 
 ### 🆕 Everything new in core v1.5.0 is now in the UI
 

@@ -89,13 +89,17 @@ GH_WEB="${CORE_GIT_BASE:-${SCHEME}://${GH_HOST}}"
 # The baseline this app was engineered against; also the floor we never go below.
 # 1.2.3: raised to 1.5.0 (the release that fixed the mislabelled 1.4/1.3.0 vendor
 # and rebased the app's engine patches onto the real upstream baseline).
-BASELINE="1.5.0"
+# 1.2.6: raised to 1.7.0 (routing by sniffed name, upstream proxy, identity
+# reprovisioning); the app's manual-range patches were rebased onto it by hand.
+BASELINE="1.7.0"
 
 # App-specific patches carried on top of the upstream engine. These are MERGED
 # (three-way) onto the new upstream sources, never blind-copied over them.
-#   prober.rs     -> custom_cidrs_v4() + manual-range mode in build_candidates()
+#   prober.rs     -> custom_masque_cidrs_v4() + manual-range mode in build_candidates()
 #   wg_prober.rs  -> custom_wg_cidrs_v4() + manual-range mode in build_wg_candidates()
-# Both power the 1.2.2 location picker (AETHER_SCAN_CIDRS).
+# Both power the 1.2.2 location picker (AETHER_SCAN_CIDRS). From 1.2.6 every
+# patched region is wrapped in AETHER-APP-PATCH markers, which is what makes the
+# pristine merge base reconstructible offline (see "pristine base" below).
 PATCHED_FILES=(
   "aether/src/prober.rs"
   "aether/src/wg_prober.rs"
@@ -189,6 +193,49 @@ if [[ ! -d "$staging/new/aether" ]]; then
   warn "Unexpected upstream layout (no aether/ dir) - aborting upgrade, keeping ${current_v}."
   exit 0
 fi
+
+# ------------------------------------------------- pristine base from markers
+# Every app engine patch is wrapped in
+#
+#   // >>> AETHER-APP-PATCH <name>   ...   // <<< AETHER-APP-PATCH <name>
+#
+# so a pristine merge base can always be rebuilt offline by stripping those
+# blocks out of our own file - no clone of the old tag needed.
+#
+# WHY (1.2.6): 1.2.5 shipped a POLLUTED baseline. The cached "pristine"
+# wg_prober.rs was in fact the patched copy, so base == ours. git merge-file then
+# reads the app patch as an upstream deletion and drops it without a single
+# warning: the manual endpoint range would have stopped working on the next
+# automatic core upgrade, silently, exactly like the 1.2.3 regression.
+PATCH_MARK="AETHER-APP-PATCH"
+
+strip_app_patch() {
+  awk -v mark="$PATCH_MARK" '
+    index($0, ">>> " mark) { skip = 1; next }
+    index($0, "<<< " mark) { skip = 0; next }
+    !skip { print }
+  ' "$1"
+}
+
+for rel in "${PATCHED_FILES[@]}"; do
+  ours_now="$CORE_DIR/$rel"
+  base_now="$BASELINE_DIR/$rel"
+  [[ -f "$ours_now" ]] || continue
+  grep -qF -- "$PATCH_MARK" "$ours_now" || continue
+
+  if [[ ! -f "$base_now" ]]; then
+    why="no cached baseline"
+  elif grep -qF -- "$PATCH_MARK" "$base_now"; then
+    why="the cached baseline was polluted with the app patch"
+  else
+    continue
+  fi
+
+  mkdir -p "$(dirname "$base_now")"
+  strip_app_patch "$ours_now" > "$base_now"
+  log "Rebuilt a pristine merge base for ${rel} (${why})."
+  notice_gh "Merge base for ${rel} rebuilt from AETHER-APP-PATCH markers (${why})."
+done
 
 # ------------------------------------------------------- baseline for merge
 # The pristine upstream copy of each patched file AT THE CURRENTLY VENDORED
@@ -291,6 +338,19 @@ for rel in "${PATCHED_FILES[@]}"; do
     # trustworthy; keep pure upstream so the engine still compiles.
     warn "Could not merge the app patch into ${rel} (upstream rewrote it)."
     warn "Keeping the pure upstream file so the build stays green; re-apply the patch by hand."
+    dropped+=("$rel")
+  fi
+done
+
+# ------------------------------------------------------- verify the patches
+# With the markers this check is trivial: if our file carried a marked patch and
+# the merged file no longer does, the patch was lost. Never guess - report it.
+for rel in "${PATCHED_FILES[@]}"; do
+  ours_pre="$backup/$rel"
+  final="$CORE_DIR/$rel"
+  [[ -f "$ours_pre" && -f "$final" ]] || continue
+  if grep -qF -- "$PATCH_MARK" "$ours_pre" && ! grep -qF -- "$PATCH_MARK" "$final"; then
+    warn "The app patch markers are gone from ${rel} after the merge - the patch was NOT carried over."
     dropped+=("$rel")
   fi
 done

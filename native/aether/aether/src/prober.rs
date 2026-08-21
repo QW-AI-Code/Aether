@@ -439,6 +439,23 @@ async fn verify_one(
 
 fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u16)> {
     let primary = ports.first().copied().unwrap_or(443);
+
+    // >>> AETHER-APP-PATCH manual-masque-range
+    // Aether Mobile: same manual-range override as wg_prober.rs, for the
+    // MASQUE/gool scanner. Reads AETHER_MASQUE_CIDRS, else AETHER_SCAN_CIDRS.
+    // Before 1.2.6 only the WireGuard scanner honoured the app's manual range,
+    // so a pinned range was silently ignored on MASQUE and gool.
+    if ip.want_v4() {
+        if let Some(cidrs) = custom_masque_cidrs_v4() {
+            if ip.want_v6() {
+                log::warn!("[!] manual ranges are IPv4 only; ignoring IPv6 for this scan");
+            }
+            log::info!("[i] manual masque range mode: {}", cidrs.join(", "));
+            return manual_masque_candidates(st, ports, &cidrs);
+        }
+    }
+    // <<< AETHER-APP-PATCH manual-masque-range
+
     let mut out: Vec<(IpAddr, u16)> = Vec::new();
     let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
 
@@ -602,6 +619,97 @@ fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
     }
     out
 }
+
+// >>> AETHER-APP-PATCH manual-masque-range
+/// App-owned manual IPv4 range parser for the MASQUE scanner:
+/// `AETHER_MASQUE_CIDRS`, else the shared `AETHER_SCAN_CIDRS`.
+fn custom_masque_cidrs_v4() -> Option<Vec<String>> {
+    let raw = std::env::var("AETHER_MASQUE_CIDRS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("AETHER_SCAN_CIDRS")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })?;
+    let list: Vec<String> = raw
+        .split([',', ';', ' ', '\n'])
+        .filter_map(app_normalize_cidr_v4)
+        .collect();
+    if list.is_empty() {
+        None
+    } else {
+        Some(list)
+    }
+}
+
+/// Normalises one user-typed IPv4 range. Accepts `188.114.96.0/24`,
+/// `188.114.96.x` / `188.114.96.*` (read as /24) and a bare `188.114.96.7`
+/// (read as /32). Anything malformed is dropped.
+fn app_normalize_cidr_v4(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    if v.is_empty() {
+        return None;
+    }
+    if let Some((ip, prefix)) = v.split_once('/') {
+        let addr = ip.trim().parse::<Ipv4Addr>().ok()?;
+        let bits: u8 = prefix.trim().parse().ok()?;
+        if bits > 32 {
+            return None;
+        }
+        return Some(format!("{addr}/{bits}"));
+    }
+    if v.ends_with(".x") || v.ends_with(".X") || v.ends_with(".*") {
+        let addr = format!("{}0", &v[..v.len() - 1]).parse::<Ipv4Addr>().ok()?;
+        return Some(format!("{addr}/24"));
+    }
+    let addr = v.parse::<Ipv4Addr>().ok()?;
+    Some(format!("{addr}/32"))
+}
+
+/// Candidate builder for manual-range mode: every user range on the primary
+/// port first (that is where a WARP edge answers), then the remaining ports.
+fn manual_masque_candidates(st: &Strategy, ports: &[u16], cidrs: &[String]) -> Vec<(IpAddr, u16)> {
+    let primary = ports.first().copied().unwrap_or(443);
+
+    let cidr_hosts: Vec<Vec<Ipv4Addr>> = cidrs
+        .iter()
+        .map(|c| {
+            if st.full_subnet {
+                enumerate_cidr_v4(c)
+            } else {
+                sample_cidr_v4(c, st.sample_per_cidr)
+            }
+        })
+        .collect();
+
+    let mut hosts: Vec<Ipv4Addr> = Vec::new();
+    let max_len = cidr_hosts.iter().map(|v| v.len()).max().unwrap_or(0);
+    for i in 0..max_len {
+        for list in &cidr_hosts {
+            if let Some(a) = list.get(i) {
+                hosts.push(*a);
+            }
+        }
+    }
+
+    let mut out: Vec<(IpAddr, u16)> = Vec::new();
+    let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
+    for a in &hosts {
+        if seen.insert((IpAddr::V4(*a), primary)) {
+            out.push((IpAddr::V4(*a), primary));
+        }
+    }
+    for a in &hosts {
+        for &port in ports {
+            if port != primary && seen.insert((IpAddr::V4(*a), port)) {
+                out.push((IpAddr::V4(*a), port));
+            }
+        }
+    }
+    out
+}
+// <<< AETHER-APP-PATCH manual-masque-range
 
 #[cfg(test)]
 mod tests {

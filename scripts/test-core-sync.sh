@@ -12,6 +12,9 @@
 #   2. Upstream rewrites it beyond merge -> pure upstream is kept (compiles),
 #                                           and the run is flagged, not failed.
 #   3. Downgrade / same version         -> no-op.
+#   4. Polluted merge baseline          -> the base is rebuilt from the app's
+#                                          AETHER-APP-PATCH markers and the
+#                                          patch still survives (the 1.2.5 bug).
 #
 # Usage: bash scripts/test-core-sync.sh
 #
@@ -70,6 +73,20 @@ fn custom_cidrs_v4() -> Option<Vec<String>> {
 RS
 }
 
+# 1.2.6: the same patch, wrapped in the markers the real engine patches use.
+ours_marked() {
+  upstream_v1
+  cat <<'RS'
+
+// >>> AETHER-APP-PATCH manual-range
+/// APP PATCH: custom IPv4 scan ranges (AETHER_SCAN_CIDRS).
+fn custom_cidrs_v4() -> Option<Vec<String>> {
+    std::env::var("AETHER_SCAN_CIDRS").ok()
+}
+// <<< AETHER-APP-PATCH manual-range
+RS
+}
+
 make_upstream_repo() {
   local root="$1"
   rm -rf "$root"
@@ -97,7 +114,11 @@ make_app_repo() {
   mkdir -p "$app/native/aether/aether/src" "$app/scripts" "$app/app/src/main/java"
   cp "$SCRIPT" "$app/scripts/sync-core.sh"
   echo "1.4" > "$app/native/aether/CORE_VERSION"
-  ours_v1 > "$app/native/aether/aether/src/prober.rs"
+  if [[ "${1:-plain}" == "marked" ]]; then
+    ours_marked > "$app/native/aether/aether/src/prober.rs"
+  else
+    ours_v1 > "$app/native/aether/aether/src/prober.rs"
+  fi
   echo "fn wg() {}" > "$app/native/aether/aether/src/wg_prober.rs"
   printf '## v1.2.2\n<!-- core-sync:en -->\n' > "$app/README.md"
   printf '## v1.2.2\n<!-- core-sync:fa -->\n' > "$app/README.fa.md"
@@ -182,6 +203,28 @@ echo "$out3" | grep -q 'already current' && r=yes || r=no
 check "a downgrade is refused" "$r"
 [[ "$(tr -d '[:space:]' < "$APP3/native/aether/CORE_VERSION")" == "1.4" ]] && r=yes || r=no
 check "vendored core left untouched" "$r"
+
+# -------------------------------------------- 4. polluted baseline self-heal
+echo
+echo "[4] the cached baseline is the PATCHED file (the bug shipped in 1.2.5)"
+make_upstream_repo "$TMP/upstream" upstream_v2
+APP4="$(make_app_repo marked)"
+# Reproduce the pollution exactly: baseline = our patched file, not upstream's.
+mkdir -p "$APP4/native/aether/.upstream-baseline/aether/src"
+cp "$APP4/native/aether/aether/src/prober.rs" \
+   "$APP4/native/aether/.upstream-baseline/aether/src/prober.rs"
+out4="$(run_sync "$APP4" 1.5)"
+echo "$out4" | sed 's/^/      /'
+res4="$APP4/native/aether/aether/src/prober.rs"
+
+echo "$out4" | grep -q 'Rebuilt a pristine merge base' && r=yes || r=no
+check "the polluted baseline was detected and rebuilt from the markers" "$r"
+grep -qF 'AETHER-APP-PATCH' "$res4" && r=yes || r=no
+check "the app patch survived a polluted baseline" "$r"
+grep -q 'expected_pins' "$res4" && r=yes || r=no
+check "upstream's new fields survived too" "$r"
+grep -qF 'AETHER-APP-PATCH' "$APP4/native/aether/.upstream-baseline/aether/src/prober.rs" && r=no || r=yes
+check "the cached baseline is pristine again for the next upgrade" "$r"
 
 echo
 printf 'core-sync tests: %d passed, %d failed\n' "$pass" "$fail"

@@ -297,6 +297,51 @@ fun AdvancedPanel(
                     HelperText(stringResource(R.string.routes_help))
                     Spacer(Modifier.height(8.dp))
 
+                    // Core 1.7.0: match the domain rules above on the name read
+                    // from the first bytes. Android is always a tun front end,
+                    // so without this the engine only ever sees an address and
+                    // every domain rule above would quietly do nothing.
+                    ToggleRow(
+                        title = stringResource(R.string.route_sniff_title),
+                        description = stringResource(R.string.route_sniff_desc),
+                        checked = profile.routeSniff,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(routeSniff = it)) },
+                    )
+                    if (profile.routeSniff) {
+                        LtrOutlinedTextField(
+                            value = if (profile.routeSniffMs == 0) "" else profile.routeSniffMs.toString(),
+                            onValueChange = {
+                                onProfileChange(
+                                    profile.copy(
+                                        routeSniffMs = it.filter(Char::isDigit).take(4).toIntOrNull() ?: 0,
+                                    ),
+                                )
+                            },
+                            enabled = enabled,
+                            singleLine = true,
+                            label = { Text(stringResource(R.string.route_sniff_ms_label)) },
+                            placeholder = { Text(stringResource(R.string.route_sniff_ms_hint)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                    }
+
+                    // ---------- Upstream proxy / chaining (engine v1.7.0) ----------
+                    SectionHeader(stringResource(R.string.section_upstream))
+
+                    LtrOutlinedTextField(
+                        value = profile.upstreamProxy,
+                        onValueChange = { onProfileChange(profile.copy(upstreamProxy = it)) },
+                        enabled = enabled,
+                        singleLine = true,
+                        label = { Text(stringResource(R.string.upstream_label)) },
+                        placeholder = { Text(stringResource(R.string.upstream_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    HelperText(stringResource(R.string.upstream_help))
+                    Spacer(Modifier.height(8.dp))
+
                     // ---------- Zero Trust / organization (engine v1.5.0) ----------
                     SectionHeader(stringResource(R.string.section_zerotrust))
 
@@ -498,6 +543,13 @@ fun AdvancedPanel(
                         checked = profile.ipv6LeakProtection,
                         enabled = enabled,
                         onChange = { onProfileChange(profile.copy(ipv6LeakProtection = it)) },
+                    )
+                    ToggleRow(
+                        title = stringResource(R.string.reprovision_title),
+                        description = stringResource(R.string.reprovision_desc),
+                        checked = profile.autoReprovision,
+                        enabled = enabled,
+                        onChange = { onProfileChange(profile.copy(autoReprovision = it)) },
                     )
                     ToggleRow(
                         title = stringResource(R.string.smart_reconnect_title),
