@@ -256,12 +256,41 @@ jobs:
           git push origin "HEAD:${GITHUB_REF_NAME}" \
             || echo "WARNING: could not push the purge commit; the next build will purge again."
 
+      # A release must never die because an artifact repository had a bad
+      # minute. The 1.2.6 build in the release repository failed with
+      # "Received status code 403 from server: Forbidden" from Maven Central on
+      # EVERY buildscript dependency, so the root project could not even be
+      # configured. settings.gradle.kts now has a mirror to fall through to,
+      # and this step retries a failure that is clearly a download problem
+      # (403/408/429/5xx, timeouts, "Could not resolve"). A real build error is
+      # never retried, so a genuine compile failure still fails fast.
       - name: Build release APKs
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
         env:
-          # Kotlin/Compose compilation of the new location picker needs more
-          # heap than the 1 GB Gradle default on the hosted runners.
+          # Kotlin/Compose compilation needs more heap than the 1 GB Gradle
+          # default on the hosted runners.
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8"
+        run: |
+          set -uo pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/gradle-release-build.log"
+          for attempt in 1 2 3; do
+            set +e
+            gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! grep -qE 'Could not (resolve|GET|get resource|download)|Received status code (403|408|429|50[0-9])|Read timed out|Connection reset|Premature end of Content-Length' "$LOG"; then
+              echo "::error::Release build failed for a reason that is NOT an artifact download problem - not retrying."
+              exit "$status"
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Dependency download kept failing after 3 attempts (Maven Central / plugin portal unreachable or blocking this runner)."
+              exit "$status"
+            fi
+            echo "::warning::Attempt ${attempt} failed while downloading dependencies - retrying in $((attempt * 30))s."
+            sleep $((attempt * 30))
+          done
 
       # PLAY-PROTECT SAFEGUARD: never publish an APK that is unsigned or
       # debug-signed. Throwaway debug certificates (a different one on every
