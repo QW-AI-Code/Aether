@@ -12,12 +12,16 @@
 #                    native pthread the bridge creates itself.
 #   libaether.so  <- the Aether engine, cross-compiled from Rust with cargo-ndk,
 #                    with the `tor` cargo feature ON (see AETHER_FEATURES).
+#   libpsiphon.so <- 1.4.0: psiphon-tunnel-core, the console client the ENGINE
+#                    runs for --psiphon (core 2.1.0), built by the engine's own
+#                    psiphon-build.sh as a static linux ELF (upstream's Android
+#                    recipe). Required: the app's two Psiphon modes need it.
 #   libpt-lyrebird.so <- the obfs4/meek_lite/webtunnel pluggable transport, only
 #                    needed for Tor BRIDGES. Optional: skipped with a warning when
 #                    no Go toolchain is present, and the app degrades to Tor
 #                    without bridges (it says so in the log).
 #
-# Usage:  build-natives.sh [hev|aether|pt|all]   (default: all)
+# Usage:  build-natives.sh [hev|aether|pt|psiphon|all]   (default: all)
 #
 # Requires: ANDROID_NDK_HOME, rustup android targets, cargo-ndk.
 #           `pt` additionally needs Go >= 1.21.
@@ -34,7 +38,10 @@ AETHER_SRC="${NATIVE_DIR}/aether"
 JNI_DIR="${PROJECT_DIR}/app/src/main/jniLibs"
 
 API="${ANDROID_API:-26}"
-ABIS=("arm64-v8a" "armeabi-v7a")
+# 1.3.1, issue #8: x86_64 joins the two ARM ABIs, so Chromebooks and emulators
+# get a native engine instead of ARM translation or a refused install. The
+# engine, hev and the pluggable transports are all built for it below.
+ABIS=("arm64-v8a" "armeabi-v7a" "x86_64")
 
 # ============================================================================
 # 1.3.0: THE ENGINE MUST BE BUILT WITH `--features tor`.
@@ -86,6 +93,7 @@ clang_for_abi() {
   case "$1" in
     arm64-v8a)   echo "${NDK_TOOLCHAIN}/aarch64-linux-android${API}-clang" ;;
     armeabi-v7a) echo "${NDK_TOOLCHAIN}/armv7a-linux-androideabi${API}-clang" ;;
+    x86_64)      echo "${NDK_TOOLCHAIN}/x86_64-linux-android${API}-clang" ;;
     *) echo "" ;;
   esac
 }
@@ -405,6 +413,7 @@ build_aether() {
 
   build_aether_abi "arm64-v8a"   "aarch64-linux-android"
   build_aether_abi "armeabi-v7a" "armv7-linux-androideabi"
+  build_aether_abi "x86_64"      "x86_64-linux-android"
 
   # Prove Tor is IN the binary rather than trusting that the flag was honoured.
   # `--tor-bind` is a string the Tor module owns, so it is absent from a build
@@ -413,7 +422,20 @@ build_aether() {
   if [ -n "${AETHER_FEATURES}" ] && [[ "${AETHER_FEATURES}" == *tor* ]]; then
     local abi
     for abi in "${ABIS[@]}"; do
-      if strings -a "${JNI_DIR}/${abi}/libaether.so" 2>/dev/null | grep -q -- '--tor-bind'; then
+      # NOT `grep -q` (1.3.1, issue #48). This script runs under `set -euo
+      # pipefail`. `grep -q` exits as soon as it matches, which closes the pipe
+      # under `strings`; `strings` then dies of SIGPIPE, that non-zero status
+      # becomes the status of the whole pipeline because of `pipefail`, and the
+      # build fails claiming the Tor feature is missing from a binary that in
+      # fact contains it. The report is a FALSE NEGATIVE and it is timing
+      # dependent, so it fires on some runners and not others.
+      #
+      # Letting grep read to the end and throwing its output away keeps the exit
+      # status meaningful with no early close. (The upstream patch this came from
+      # wrote `grep -- '--tor-bind' />/dev/null`, which the shell splits into an
+      # argument `/` plus the redirection - that greps the root DIRECTORY and
+      # never looks at the binary at all.)
+      if strings -a "${JNI_DIR}/${abi}/libaether.so" 2>/dev/null | grep -- '--tor-bind' >/dev/null; then
         echo "    [${abi}] tor feature verified in the binary."
       else
         echo "ERROR: ${abi}/libaether.so contains no Tor support although --features ${AETHER_FEATURES}" >&2
@@ -479,14 +501,57 @@ build_pt() {
 
   build_pt_abi "arm64-v8a"   "arm64" "aarch64-linux-android"
   build_pt_abi "armeabi-v7a" "arm"   "armv7a-linux-androideabi"
+  build_pt_abi "x86_64"      "amd64" "x86_64-linux-android"
+}
+
+# ============================================================================
+# build_psiphon (1.4.0): the Psiphon the ENGINE runs.
+#
+# Core 2.1.0 moved Psiphon into the engine: `--psiphon` spawns psiphon-tunnel-core
+# (CluvexStudio's fork, pinned in native/aether/psiphon-build.sh). Built exactly
+# the way upstream builds its Android archives - GOOS=linux, CGO_ENABLED=0, a
+# static ELF that runs as-is on Android - and installed as `libpsiphon.so`,
+# because only lib*.so files in jniLibs land on an executable path. The app
+# points the engine at it with AETHER_PSIPHON_BIN.
+# ============================================================================
+build_psiphon() {
+  local script="${AETHER_SRC}/psiphon-build.sh"
+  [ -f "${script}" ] || script="${PROJECT_DIR}/native/aether/psiphon-build.sh"
+  if [ ! -f "${script}" ]; then
+    echo "ERROR: psiphon-build.sh not found (is the vendored core 2.1.0 or newer?)." >&2
+    exit 1
+  fi
+  if ! command -v go >/dev/null 2>&1; then
+    if [ "${AETHER_ALLOW_NO_PSIPHON:-}" = "1" ]; then
+      echo "==> [psiphon] no Go toolchain - SKIPPED on request; Psiphon modes will not work." >&2
+      return 0
+    fi
+    echo "ERROR: building libpsiphon.so needs Go (set AETHER_ALLOW_NO_PSIPHON=1 to skip)." >&2
+    exit 1
+  fi
+  build_psiphon_abi() {
+    local abi="$1" goarch="$2" goarm="$3" tmp
+    tmp="$(mktemp -d)"
+    echo "==> [psiphon] building psiphon-tunnel-core for ${abi} (linux/${goarch}${goarm:+ v${goarm}})"
+    bash "${script}" linux "${goarch}" "${tmp}" "${goarm}"
+    mkdir -p "${JNI_DIR}/${abi}"
+    cp "${tmp}/psiphon-tunnel-core" "${JNI_DIR}/${abi}/libpsiphon.so"
+    chmod 755 "${JNI_DIR}/${abi}/libpsiphon.so"
+    rm -rf "${tmp}"
+    echo "    installed libpsiphon.so for ${abi}"
+  }
+  build_psiphon_abi "arm64-v8a"   "arm64" ""
+  build_psiphon_abi "armeabi-v7a" "arm"   "7"
+  build_psiphon_abi "x86_64"      "amd64" ""
 }
 
 case "${TARGET}" in
   hev)    build_hev ;;
   aether) build_aether ;;
   pt)     build_pt ;;
-  all)    build_hev; build_aether; build_pt ;;
-  *) echo "Usage: build-natives.sh [hev|aether|pt|all]" >&2; exit 2 ;;
+  psiphon) build_psiphon ;;
+  all)    build_hev; build_aether; build_pt; build_psiphon ;;
+  *) echo "Usage: build-natives.sh [hev|aether|pt|psiphon|all]" >&2; exit 2 ;;
 esac
 
 echo "==> Done (${TARGET}). Installed libs:"

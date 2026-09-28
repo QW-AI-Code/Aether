@@ -20,6 +20,33 @@
          can pick which apps to include/exclude from the tunnel. We only query
          launcher-visible apps (not QUERY_ALL_PACKAGES), which keeps Play policy
          happy and avoids the sensitive all-packages permission. -->
+    <!--
+      ANDROID TV (1.3.1, issue #21).
+
+      A VPN app is exactly what a TV needs and nothing here was stopping it from
+      working - it was stopping it from being INSTALLABLE and FINDABLE. Two things
+      were missing:
+
+        * A TV has no touchscreen. Android treats android.hardware.touchscreen as
+          implicitly REQUIRED, so Google Play and the TV launcher filtered this app
+          out of a TV entirely. Declaring it not required is what makes the APK
+          eligible at all.
+        * A TV launcher only shows activities in the LEANBACK_LAUNCHER category,
+          which is added to MainActivity below along with a banner.
+
+      android.software.leanback is declared NOT required on purpose: the same APK
+      must keep installing on phones, which do not have it. This is a
+      compatibility declaration, not a separate TV build - the Compose UI is
+      unchanged and remains touch-shaped. D-pad focus traversal has NOT been
+      designed for, and that is the honest limit of what 1.3.1 does here.
+    -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.software.leanback"
+        android:required="false" />
+
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
@@ -37,6 +64,7 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
+        android:banner="@drawable/tv_banner"
         android:supportsRtl="true"
         android:theme="@style/Theme.AetherMobile"
         tools:replace="android:fullBackupContent">
@@ -50,6 +78,9 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <!-- Issue #21: without this category a TV launcher never lists the
+                     app, however well it would otherwise run. -->
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
 

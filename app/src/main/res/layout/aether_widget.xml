@@ -1,43 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  1x1 widget layout (1.3.1, issues #23 and #15).
+
+  The old layout was horizontal with an app-name title next to the button, which
+  is what forced a 3-cell width. The title is gone: the launcher already shows
+  the widget's own label, so it was one line of text paid for in two grid cells.
+
+  What is left fits one cell and still answers the only question the widget is
+  there for - is it on? The icon is tinted by state from
+  AetherWidgetProvider.paint (setColorFilter), and the status line under it
+  carries the same colour, so state is legible at a glance and still readable as
+  words when the user makes the widget wider.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/widget_root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="horizontal"
-    android:gravity="center_vertical"
-    android:padding="12dp"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:padding="4dp"
     android:background="@drawable/widget_bg">
-
-    <LinearLayout
-        android:layout_width="0dp"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"
-        android:orientation="vertical">
-
-        <TextView
-            android:id="@+id/widget_title"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/app_name"
-            android:textColor="#FFFFFF"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/widget_status"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/state_idle"
-            android:textColor="#8E8E93"
-            android:textSize="12sp" />
-    </LinearLayout>
 
     <ImageButton
         android:id="@+id/widget_toggle"
-        android:layout_width="44dp"
-        android:layout_height="44dp"
+        android:layout_width="36dp"
+        android:layout_height="36dp"
         android:background="@drawable/widget_button_bg"
         android:contentDescription="@string/widget_toggle_desc"
-        android:padding="10dp"
+        android:padding="8dp"
+        android:scaleType="fitCenter"
         android:src="@drawable/ic_notification" />
+
+    <TextView
+        android:id="@+id/widget_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:ellipsize="end"
+        android:gravity="center"
+        android:maxLines="1"
+        android:text="@string/state_idle"
+        android:textColor="#8E8E93"
+        android:textSize="11sp" />
 </LinearLayout>

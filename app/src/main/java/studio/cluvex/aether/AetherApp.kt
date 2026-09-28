@@ -38,17 +38,21 @@ class AetherApp : Application() {
         DiagnosticsLog.init(File(filesDir, "diagnostics.log"))
         installCrashHandler()
 
-        // 1.2.9-r3 SECURITY: is this build the build the project published?
-        // One PackageManager call; writes a single line into the log, and an
-        // unmissable error line if the certificate is not ours. See
-        // [SignerIdentity] for why this exists and what it is not.
-        SignerIdentity.logIdentity(this)
-
-        // 1.2.9-r3 SECURITY: everything below touches the keystore and the
-        // filesystem, so it runs OFF the main thread - startup latency is a
-        // product feature on a VPN app that is often opened to fix a dead
-        // connection. None of it is needed before the first frame.
+        // 1.2.9-r3 SECURITY: everything below touches the keystore, the package
+        // manager and the filesystem, so it runs OFF the main thread - startup
+        // latency is a product feature on a VPN app that is often opened to fix a
+        // dead connection. None of it is needed before the first frame.
         thread(name = "aether-secure-init", isDaemon = true) {
+            // 1.2.9-r3 SECURITY: is this build the build the project published?
+            // Writes a single line into the log, and an unmissable error line if
+            // the certificate is not ours. See [SignerIdentity] for why this
+            // exists and what it is not.
+            //
+            // 1.3.1: moved off the main thread. It reads the signing certificate
+            // through PackageManager (a binder call) and SHA-256s it, and the
+            // result is only ever a log line - nothing on the first frame waits
+            // for it, so nothing should have been blocking on it.
+            runCatching { SignerIdentity.logIdentity(this) }
             // F-3: a session that ended in a crash leaves the engine's identity
             // (WireGuard private key + WARP device) in the clear. Put it away
             // before anything else can read it. No-op while a tunnel is running.

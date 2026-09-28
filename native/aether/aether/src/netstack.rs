@@ -632,7 +632,7 @@ impl Device for StackDevice {
 }
 
 pub enum Cmd {
-    OpenTcp { dst: SocketAddr, resp: OpenTcpResp },
+    OpenTcp { dst: SocketAddr, resp: OpenTcpResp, carrier: bool },
     OpenUdp { resp: OpenUdpResp },
     SetAddrs {
         v4: Option<(Ipv4Addr, u8)>,
@@ -815,7 +815,20 @@ impl StackHandle {
     pub async fn open_tcp(&self, dst: SocketAddr) -> Result<TcpConn> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.cmd_tx
-            .send(Cmd::OpenTcp { dst, resp: resp_tx })
+            .send(Cmd::OpenTcp { dst, resp: resp_tx, carrier: false })
+            .await
+            .map_err(|_| AetherError::Other("netstack closed".into()))?;
+        resp_rx
+            .await
+            .map_err(|_| AetherError::Other("netstack dropped".into()))?
+            .map_err(AetherError::Other)
+    }
+
+    /// Like [open_tcp], for a flow that carries another tunnel. See `TcpState::carrier`.
+    pub async fn open_tcp_carrier(&self, dst: SocketAddr) -> Result<TcpConn> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(Cmd::OpenTcp { dst, resp: resp_tx, carrier: true })
             .await
             .map_err(|_| AetherError::Other("netstack closed".into()))?;
         resp_rx
@@ -863,6 +876,11 @@ struct TcpState {
     orphaned_at: Option<std::time::Instant>,
     /// Set once this flow has been reset; the next service pass reaps it.
     aborted: bool,
+    /// 1.4.0 MIM fix: this flow CARRIES another tunnel (the inner MASQUE hop of
+    /// masque-in-masque). Its liveness is owned by that tunnel's own h2
+    /// keepalive, so the drain-stall / flap reaper must never reset it: doing so
+    /// is what tore the whole MIM session down (issue #67).
+    carrier: bool,
     // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
     /// Last time this flow actually swallowed some of its pending bytes. Used
     /// to tell "slow" from "wedged" (see [TCP_WEDGE_TIMEOUT]).
@@ -1058,7 +1076,9 @@ fn reap_wedged(s: &mut NetStack, backlog: &mut Backlog) {
         .tcp_conns
         .iter()
         .filter(|(_, st)| {
-            st.send_queue_high > 0 && st.last_drain.elapsed() >= TCP_DRAIN_STALL_TIMEOUT
+            !st.carrier
+                && st.send_queue_high > 0
+                && st.last_drain.elapsed() >= TCP_DRAIN_STALL_TIMEOUT
         })
         .map(|(id, _)| *id)
         .collect();
@@ -1098,7 +1118,7 @@ fn reap_wedged(s: &mut NetStack, backlog: &mut Backlog) {
         .filter(|id| {
             s.tcp_conns
                 .get(id)
-                .map(|st| st.last_progress.elapsed() >= TCP_WEDGE_TIMEOUT)
+                .map(|st| !st.carrier && st.last_progress.elapsed() >= TCP_WEDGE_TIMEOUT)
                 .unwrap_or(true)
         })
         .collect();
@@ -1768,7 +1788,7 @@ async fn sleep_opt(delay: Option<std::time::Duration>) {
 
 fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
     match cmd {
-        Cmd::OpenTcp { dst, resp } => {
+        Cmd::OpenTcp { dst, resp, carrier } => {
             let rx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_rx_buf()]);
             let tx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_tx_buf()]);
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
@@ -1844,6 +1864,7 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
                     connect_deadline: std::time::Instant::now() + s.tcp_limits.connect,
                     orphaned_at: None,
                     aborted: false,
+                    carrier,
                     // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
                     last_progress: std::time::Instant::now(),
                     // >>> AETHER-APP-PATCH netstack-drain-liveness
@@ -2117,7 +2138,7 @@ fn service_tcp(s: &mut NetStack) -> bool {
                 }
                 st.stall_mark = std::time::Instant::now();
                 st.stall_count = st.stall_count.saturating_add(1);
-                if st.stall_count >= STALL_FLAP_LIMIT {
+                if st.stall_count >= STALL_FLAP_LIMIT && !st.carrier {
                     flap_reset = true;
                 }
                 // <<< AETHER-APP-PATCH netstack-uplink-admission

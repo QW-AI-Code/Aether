@@ -1,5 +1,1243 @@
 # Changelog
 
+## 1.4.0 — engine core 2.1.0, Psiphon inside the engine
+
+App **1.4.0**, version code **16**, engine core **2.1.0**, `PATCHLEVEL` 1.4.0. Same signing
+identity as 1.3.0, so it installs over 1.3.0 without an uninstall. File-by-file list in
+`PATCH_NOTES_1.4.0.md`. 1.3.1 was never published on its own: every fix in the 1.3.1 section
+below (built from the 1.3.0 field reports) ships in 1.4.0.
+
+### Engine (core 2.0.0 → 2.1.0)
+- Vendored core upgraded to 2.1.0; the app's engine patches rebased three-way.
+- New engine patch `tor-only-psiphon-chain` (`--tor-only --psiphon`).
+- New engine patch `psiphon-embedded-servers` (psiphon.rs, baseline added): the engine's
+  Psiphon is started with the embedded server list (`assets/server_entries.txt`,
+  `-serverList`), so a failed remote-list download never leaves Psiphon with no server.
+- Build fix: the three-way merge of the gool UDP relay (`spawn_udp_forwarder`, `lib.rs`)
+  left the 2.1.0 "follow the inner peer" block and the 1.2.8 bounded handoff interleaved
+  (E0425 on `known` / `n`, and no `Err` arm on the receive `match`). Rebuilt as one loop:
+  receive (stop on error), follow the peer under a short parking_lot lock, then the 20 ms
+  bounded handoff.
+
+### Psiphon runs inside the engine
+- The app's own Psiphon (the AAR and its health watchdog) is removed; `Aether → Psiphon`
+  and `Tor → Psiphon` run on the engine's built-in Psiphon (`libpsiphon.so`, the
+  psiphon-tunnel-core console client).
+- Fixed: both Psiphon modes could not connect. `libpsiphon.so` is a static GOOS=linux Go
+  binary and finds no CA roots on Android, so the remote server list download failed with
+  `x509: certificate signed by unknown authority`. New `core/PsiphonBootstrap.kt` exports
+  the system CA store to a PEM bundle and passes it via `SSL_CERT_FILE`, `SSL_CERT_DIR`
+  and Psiphon's `TrustedCACertificatesFilename` (config overlay, `AETHER_PSIPHON_CONFIG`).
+- The `PsiphonTransport` readiness probe no longer logs `socksPeekByte() failed: EOF`.
+
+### Smart routing: bypass Iranian sites, block ads (#66, #67)
+- Two new routing switches, **Bypass Iranian sites** and **Block ads and trackers**, backed
+  by built-in lists (`assets/routing/`) refreshed weekly THROUGH the tunnel
+  (`core/SmartLists.kt`). The Iranian bypass is a direct rule, so it is suspended while
+  sharing (zero leak), like every other direct rule.
+- Engine sessions: the lists travel as a routes file (`AETHER_ROUTES_FILE`); ad names get an
+  NXDOMAIN answer and an address -> name memory lets BLOCK rules catch flows that carry no
+  server name (block only, never direct).
+- Fixed (#66): in `Aether -> Psiphon` / `Tor -> Psiphon` no block or direct rule ever
+  matched, because the engine only sees Psiphon's own server connections. The rules (the
+  user's plus the built-in lists) are now applied in `PsiphonSocksFront`, where the
+  destination is visible: TLS SNI / HTTP Host sniffing, DNS sinkhole, the same address ->
+  name memory, DIRECT flows (TCP and UDP) sent out of the real uplink, BLOCK refused.
+  Same grammar and precedence as the engine (`core/SmartRoutes.kt`, `SmartRoutesTest`).
+  A session with no rules takes exactly the pre-1.4.0 path.
+- In `Aether -> Psiphon` / `Tor -> Psiphon` stage 1 (the engine) no longer receives the user's
+  block/direct rules: it only carries Psiphon's own server connections, where a direct rule could
+  send Psiphon out without Aether. The front applies them instead. Tor modes unchanged.
+- #67: with an h2 outer hop, the MASQUE-in-MASQUE inner hop tries QUIC first and falls
+  back to h2 (`AETHER_MIM_INNER_QUIC=0` restores the old behaviour).
+- The bundled Iranian CIDR seed is incomplete above 185.219.x; the full list is downloaded
+  through the tunnel on the first connection that uses the bypass.
+
+### Fixed: Gemini Live on home Wi-Fi drove ping past 1000 ms and stopped all data
+- Root cause: uplink bufferbloat plus head-of-line blocking in Psiphon's single SSH
+  connection; full analysis in `docs/UPLINK_SQM_1.4.0.md`.
+- New `transport/UplinkGovernor.kt` (SQM): delay-gradient rate controller, token bucket
+  and fair queueing with sparse-flow priority, applied to every byte `PsiphonSocksFront`
+  hands to Psiphon (TCP relays and udpgw). Stays open on fat uplinks. Unit test
+  `UplinkGovernorTest`.
+
+### VPN sharing, rewritten (`core/ShareBridge.kt`, `core/ShareLeakGuard.kt`, `core/SharePages.kt`, `ui/SharePanel.kt`)
+- Two modes, **Home Wi-Fi** and **Mobile hotspot** (Wi-Fi hotspot / USB / Bluetooth
+  tethering), detected per interface and re-bound automatically when an address changes.
+- Every tethering downstream is bound at once (hotspot + USB + Bluetooth). Downstreams are
+  recognised by ROLE through ConnectivityManager (an interface that backs no upstream
+  network), not by vendor name (`ap_br_wlan2`, `wlan2`, MediaTek `ap0` ...). Modem links
+  (`rmnet`, `ccmni`, `seth` ...) are never shared; bogus IPv4 prefixes fall back to /24. A
+  peer on any bound share subnet is admitted, nothing outside them; every address is shown
+  in the Share card.
+- Zero IP leak: the engine gets no Direct (bypass) rules while sharing (LAN refused if a
+  running engine still has them); the bridge only ever dials loopback (fail closed); real
+  SOCKS5 UDP ASSOCIATE relay through the tunnel; non-public, obfuscated-numeric,
+  localhost and `.local` targets refused; identity headers stripped; fail-closed PAC at
+  `/proxy.pac`.
+- `http://aether.check/` is answered on HTTP proxy, HTTP CONNECT (443 refused at once so
+  HTTPS-first browsers fall back), SOCKS5 CONNECT, and DNS over the SOCKS5 UDP relay
+  (A → 198.51.100.254 sentinel, AAAA → empty NOERROR) so VPN/TUN clients can resolve it.
+  `/check` on the phone address tests reachability directly.
+- WebRTC: browsers send STUN outside an HTTP proxy (on home Wi-Fi it never reaches the
+  phone; on hotspot/USB it goes through Android's tethering NAT, which an unrooted app
+  cannot filter). The check/setup pages run a live WebRTC test against the tunnel exit;
+  one-click locks are served under `/webrtc/` (Chrome/Edge/Brave/Chromium
+  `disable_non_proxied_udp`, Firefox `proxy_only_if_behind_proxy`, macOS/Linux scripts);
+  STUN handed to the share is carried through the tunnel.
+- Optional username/password (off by default), editable or generated; RFC 1929 + HTTP
+  Basic. Every address copyable (per row, selectable text, "Copy all"); PAC URL shown.
+- Share pages redesigned: dark navy layout, language switch (Persian default, English),
+  RTL throughout with every English token isolated LTR, Vazirmatn/Vazir via `local()` only
+  with the system Persian font as fallback (nothing loaded from the network); plain
+  step-by-step Persian, copy buttons, per-device proxy steps (Windows, macOS, Android,
+  iPhone/iPad, Firefox, TV/whole device) and a guide for both share modes with the current
+  one opened and marked. The password is never in a page.
+- Share page hardening: CSP meta (`default-src 'none'`, no forms, no base), `no-referrer`,
+  `esc()` for every outside value, WebRTC result built from escaped addresses.
+- Diagnostics name the interface of the first device and warn after 90 s if no device has
+  reached the share (no addresses logged). `ShareCredentials.ensure` attaches the bridge to
+  the app context. Proxy mode: turning LAN sharing off keeps the loopback proxy running.
+- Tests: `ShareLeakGuardTest` (DNS answer, check targets, STUN, role classification, lock
+  files, bilingual pages, CSP, hostile host escaped).
+
+### Zero Trust: sign in first, then connect (issue #12)
+- `core/ZeroTrustWeb.kt`, `core/ZeroTrustSignIn.kt`, `core/TeamSignInRecord.kt`,
+  `core/TeamMembership.kt`, `data/TeamSignInStore.kt` (`SecretStore.ACCESS_SIGNIN`).
+- `core/TeamSignInHandoff.kt`: one decision shared by the service and the screen (no
+  sign-in / other profile / already enrolled / expired / use).
+- `ConnectionProfile.accessSignInToken` (never persisted, never in `ProfileCodec`); EMAIL
+  mode passes `AETHER_ACCESS_TOKEN` instead of the address when set. Filled only in
+  `AetherVpnService.hydrateSecrets`; spent or expired sign-ins are discarded there.
+- `ui/settings/ZeroTrustMembership.kt`: membership status, sign-in dialog (FLAG_SECURE,
+  3 attempts per code, 30 s resend cool-down, token re-read after sealing), sign out,
+  remove membership (refused while an engine runs), service-token test.
+- `TeamMembership` pattern covers `-secondary-lastconn`; `TeamSignInRecord.toString`
+  redacts the token. en/fa strings updated.
+- Tests: `ZeroTrustWebTest`, `ZeroTrustSignInTest`, `TeamSignInRecordTest`,
+  `TeamMembershipTest`, `ZeroTrustEnvTest`. Details in `docs/ZERO_TRUST.md`.
+
+### AI (Gemini)
+- Default model is **Gemini 3.1 Flash-Lite** (highest free daily limit). A newly entered
+  key starts on it; app-made picks follow it; a model the user chose is kept. Fallback:
+  3.1 Flash-Lite preview, flash-lite-latest, then display order.
+- The model picker shows a one-line description under each model. `SettingsChoiceRow`
+  gained an optional `optionDescription` (other callers unchanged).
+- Fixed: the chat never received the log. With "Analyse the log on every connect" ON, a
+  fresh redacted digest (AiRedaction rules) travels with every chat request; when OFF, the
+  model says access is off and where to enable it. The switch defaults to **OFF** (pref key
+  `autoOptimize_v2`, so it applies to existing installs once).
+- Answers render like Gemini: `ai/AiMarkdown.kt` (parser) + `ui/ai/AiRichText.kt`
+  (renderer) for headings, bullets, numbered steps, bold/italic/code, quotes, tables and
+  code blocks; no `*` or `#` reaches the screen; direction chosen per block by letter
+  majority. Used in the chat, the explain sheet and the advisor; Copy gives clean text.
+- Accuracy: grounding procedure and format rules in the prompts; the settings snapshot
+  marks `[default]` / `[changed by user; default: X]`; live connection status in the chat
+  prompt. Verify-and-revise: proposals that equal the current value, are invalid,
+  duplicated or not writable are fed back to the model once and the answer is rewritten
+  before display (chat + advisor). Chat temperature 0.6 → 0.35.
+- Fixed: the assistant mark was half hidden in Persian (MessageRow clipped to an 18dp
+  rounded rect). The tint is drawn with the shape instead of clipping content.
+
+### Home screen and settings UI
+- Fixed: the home screen (connect button + card) shrank on connect / resume.
+  `FitToHeight` is two-way and deterministic (ideal factor derived every pass, 1 %
+  hysteresis, overshoot ceiling, grow budget per epoch), ignores degenerate 0 px
+  viewports, re-opens on ON_RESUME and on every connection-state change, and fails open
+  after 450 ms so a window never measured with a usable height cannot leave a black screen.
+- New `FitLineText`: status title, caption, pipeline and endpoint rows are one line in a
+  slot whose height comes from the FONT (natural single-line height of a probe with the
+  deepest Persian descenders and tallest Latin ascenders), so Persian descenders
+  (ل, ر, م ...) are never clipped and every connection state has the same card height.
+- `BaseRow` is a measured layout: a summary that would take 3+ lines beside a wide trailing
+  slot goes full width under the row (fa + en).
+- `SegmentedSelector`: every option is its own card, columns chosen by measuring labels
+  (Protocol, IP version, Endpoint mode, Split mode). Home card: Endpoint row removed.
+
+### Build and release pipeline
+- New step **Enforce release tree** (first step after checkout,
+  `scripts/enforce-release-tree.sh`): when a release is uploaded over an older one, every
+  tracked file that is not in `SOURCE_MANIFEST.sha256` is removed and the cleanup is
+  committed, so files left over from an older version can never break the build. It first
+  verifies that every release file is present with the right hash and deletes nothing if
+  the upload is incomplete; signing files and workflows are never deleted; it runs once per
+  release (`.github/release-tree.applied`).
+- **Free runner disk space** (after checkout), **Reclaim disk space (native build
+  intermediates)** (after the engine build) and **Reclaim disk space before the Gradle
+  cache save** keep the runner from running out of disk with the Tor-enabled engine, the
+  Psiphon and lyrebird Go builds and Gradle in one job.
+- `scripts/build-natives.sh psiphon` + CI step + APK check for `libpsiphon.so`.
+
+### Security audit 1.4.0: 92 / 100
+- `docs/SECURITY_AUDIT_1.4.0.md` (ten areas; the LAN share scored as its own area for the
+  first time). Summary tables (English + Persian) in `README.md` and
+  `.github/release-notes.md`.
+
+## 1.3.1 — cold start, the widget, Zero Trust, the endpoint cache, Private Space, Android TV
+
+App 1.3.1 / versionCode 15, same signing certificate, installs over 1.3.0 without
+uninstalling. Engine core unchanged (2.0.0). `PATCHLEVEL` is `1.3.1`.
+
+Everything in this release came out of the 1.3.0 field reports. No new transport,
+no new protocol: nineteen things that were wrong, fixed at the cause.
+
+### Fixed — the app took about ten seconds to open (#33, #30, #29, and the crashes)
+
+ROOT CAUSE, and it was one bug behind four reports. `AetherApp.onCreate` called
+`DiagnosticsLog.init(...)` on the MAIN THREAD, and that method read the whole
+on-disk diagnostics log and decrypted it inline before returning.
+
+The log is stored as a sequence of individually sealed records, and
+`EncryptedLogFile.readLines` opens EVERY one of them. Each record costs one
+`Cipher.init` plus one `doFinal` against a non-exportable Android Keystore key —
+a binder round trip into keystore2 and an operation in the TEE, not an in-process
+AES call. The log writer sealed one record per drained batch, and on an idle app
+"a batch" is one line, so the file filled with roughly one record PER LINE: at the
+512 KB size cap, thousands of records, thousands of keystore operations back to
+back, before the first frame. Then `init` threw all but the newest 800 lines away,
+so almost all of that work bought nothing.
+
+That is the whole shape of the reports: "the app takes ten seconds to open", "it
+opens slowly or stays on a black screen and won't open unless you clear data" —
+clearing app data deletes this file, which is exactly why it worked — and "it gets
+worse the longer I use it", because the cost grows with the file.
+
+It is also why the `ForegroundServiceDidNotStartInTimeException` crashes kept
+coming (#37, #26, #17, #16, #9): a main thread parked in the keystore cannot
+answer `startForegroundService()` with `startForeground()` inside the framework's
+ten-second window. 1.3.0-r2 added a handler that survives that exception; this
+release removes the reason it was being thrown.
+
+Four changes:
+
+- `DiagnosticsLog.init` now returns immediately and does the restore on a
+  background thread. Lines logged while it is still running are kept: the restored
+  block is spliced in FRONT of them rather than clearing the buffer, so the panel
+  reads in order either way.
+- New `EncryptedLogFile.readLastLines(file, maxRecords)`. The record frame is
+  length-prefixed, so the file can be WALKED without a key — read four bytes, skip
+  that many, repeat — and only the tail that will actually be kept is decrypted.
+  Same forgiving contract as `readLines`: a truncated or unopenable record ends
+  the readable log rather than raising. The size-cap trim uses it too.
+- The log writer LINGERS 250 ms for more lines before sealing a record, instead of
+  draining only what was already queued. A trickle of lines becomes one record
+  instead of one record each, which cuts both the write cost and everything the
+  next start has to read back. 250 ms is below the panel's own publish interval,
+  so the disk copy never lags the screen by more than one refresh.
+- `SignerIdentity.logIdentity` moved off the main thread into the existing
+  `aether-secure-init` thread. It makes a PackageManager call and SHA-256s a
+  certificate, and the result is only ever a log line — nothing on the first frame
+  was waiting for it.
+
+Nothing about the security properties changed: the log is still sealed with
+AES-256-GCM under the same non-exportable keystore key, still fails CLOSED if the
+keystore refuses, and is still never written in plaintext.
+
+### Fixed — the widget and the notification said "Disconnecting…" forever (#20, #23, #15)
+
+Four separate bugs, all visible as one symptom.
+
+- **The repaint that never happened.** `AetherWidgetProvider.updateAllWidgets` was
+  called from exactly one place: `updateNotification()`. The disconnect path does
+  not go through it — the notification is being dropped there, not updated — so
+  after `stopEverything()` painted "Disconnecting…" and then flipped the state to
+  `Idle`, nothing ever repainted the widget. The tile was refreshed on the line
+  above; the widget was simply missed. It is now repainted on that transition, and
+  in `onDestroy` as well, for the deaths that never reach `stopEverything`: task
+  removal, a system kill, revoked VPN consent.
+- **The widget read an in-process singleton.** `AetherController` is an `object`,
+  correct only inside the process that owns the tunnel. An `AppWidgetProvider` is a
+  `BroadcastReceiver`, and `APPWIDGET_UPDATE` after a reboot or a launcher restart
+  is delivered into a freshly forked process where that flow still holds its
+  initialiser. New `widget/WidgetStateCache` persists the state name (nothing
+  identifying — no endpoint, no exit IP, no profile) and applies one rule on a cold
+  read: **a transient state does not survive a process death.** `Connecting`,
+  `Verifying`, `Launching`, `Reconnecting` and `Disconnecting` all describe work
+  some thread was doing; if the process is gone the work is gone, and the honest
+  answer is `Idle`. No timer, nothing to expire.
+- **The notification's action button was labelled with a state.**
+  `addAction(..., R.string.state_disconnecting, ...)` — so the ongoing notification
+  read "Disconnecting…" / "در حال قطع…" the entire time the tunnel was UP, which is
+  precisely what #20 describes. New string `notif_action_disconnect`
+  ("Disconnect" / "قطع اتصال") in both languages. A button is an instruction, not a
+  state.
+- **An orphaned notification.** `updateNotification` posts through
+  `NotificationManager.notify()`, but `stopForeground(STOP_FOREGROUND_REMOVE)` only
+  removes the notification the service currently holds the foreground WITH. A
+  disconnect arriving after the foreground was already dropped left that
+  "Disconnecting…" notification belonging to nobody. `stopForegroundCompat` now
+  cancels the id explicitly.
+
+### Changed — the widget is 1×1 and shows its state by colour (#23, #15)
+
+"widget is 3*1 (big!) but 1*1 is enough" and "please make it smaller". It was
+`targetCellWidth=3` / `minWidth=180dp`, and the width was being spent on an
+app-name title the launcher already shows next to the widget.
+
+Now a 1×1 widget (40dp) that can still be RESIZED in both directions up to the old
+shape for anyone who preferred it. The title is gone; the power icon is tinted by
+connection state via `setColorFilter`, the same colour the status line carries, so
+on/off is legible without reading anything — which is what #15 asked for.
+`updatePeriodMillis` stays 0: repaints happen on real state changes, so the system
+never wakes the app on a timer.
+
+### Fixed — wrong operator on dual-SIM phones (#7)
+
+`TelephonyManager.networkOperatorName` answers for the manager's OWN subscription,
+and the manager from `getSystemService` carries the DEFAULT one — usually SIM 1,
+regardless of which SIM carries data. A phone with IR-TCI in slot 1 and Irancell as
+the data SIM was fingerprinted as `operator="IR-TCI"`, so Smart Auto built its
+strategy ladder for the wrong carrier.
+
+`SmartAuto.readOperator` now asks for the manager bound to the subscription that is
+actually carrying data: `getActiveDataSubscriptionId()` on API 30+, otherwise
+`getDefaultDataSubscriptionId()`, then `createForSubscriptionId()`. Both ids are
+static on `SubscriptionManager` and need no runtime permission — unlike the
+subscription LIST, which needs `READ_PHONE_STATE` and is deliberately not used. If
+no id is valid (no SIM, Wi-Fi only) the default manager is used exactly as before,
+and every call is wrapped so an OEM build that reports an unusable id leaves the
+fingerprint working rather than failing the connect.
+
+### Added — x86_64 builds (#8)
+
+Chromebooks and Android emulators are x86_64. With no such split the APK either
+refused to install or ran the engine through ARM translation. `x86_64` is added to
+`abiFilters`, to the ABI split, to `ABIS` in `scripts/build-natives.sh` (which
+carries hev, the JNI bridge, the engine and the pluggable transports with it), to
+the Rust target list in CI and to the release artifact map. Its versionCode offset
+is 4, APPENDED rather than inserted, so the codes already published for the three
+existing ABIs do not move — a versionCode that goes backwards is an update that
+can never be offered to the users who already have it. The Psiphon AAR already
+ships `jni/x86_64`, so the chained mode works there too.
+
+### Fixed — the Tor feature check could fail a good build (#48)
+
+`scripts/build-natives.sh` runs under `set -euo pipefail` and verified the Tor
+feature with `strings … | grep -q -- '--tor-bind'`. `grep -q` exits on the first
+match, closing the pipe under `strings`, which then dies of SIGPIPE; `pipefail`
+promotes that to the pipeline's status, and the build fails claiming Tor is missing
+from a binary that contains it. A false negative, and timing dependent, so it
+fired on some runners and not others.
+
+Fixed by letting grep read to the end and discarding its output, which keeps the
+exit status meaningful. Reported with a patch that wrote
+`grep -- '--tor-bind' />/dev/null`; that one does not work — the shell splits it
+into an argument `/` plus the redirection, so it greps the root directory and never
+looks at the binary. The form used here is `| grep -- '--tor-bind' >/dev/null`.
+
+### Fixed — `Tor → Aether` never connected, in 1.3.0 or 1.3.1
+
+A field log settled this one. **Tor was never the problem** — it bootstrapped
+perfectly on all three attempts:
+
+```
+tor reaching the network: 100%: connecting successfully
+[+] tor reaching the network: the way out is open
+[+] tor is ready; the tunnel goes out through 127.0.0.1:1820
+```
+
+What failed was the endpoint SCAN, run THROUGH that Tor proxy:
+
+```
+[*] scan mode=turbo ip=ipv4 candidates=896 ports=[443,500,1701,4500,4443,8443,8095]
+    concurrency=20 per_probe=6s budget=45s
+[+] dialling out through the socks5 proxy at 127.0.0.1:1820
+[-] scan deadline reached with no gateway
+```
+
+896 candidates across seven ports, twenty at a time, in 45 seconds, with every
+probe a fresh Tor circuit. Tor exit policies do not even permit most of those
+ports. And the two `/24` ranges came from a DPI fingerprint measured on the DIRECT
+path, so they describe what the phone can reach, not what a Tor exit can. Three
+rungs, three bootstraps, no gateway, and the engine's SOCKS5 port never opened.
+
+**The bug was a comment that described an intention the code did not implement.**
+`connectFlow` says the reverse chain's budget and transport "are decided in
+connectAetherStage's plan" — and that plan does hold the right rung. But
+`connectAetherStage` is only ever reached from `connectExternal`, the chained
+Psiphon path, which this backend is not. So with `protocol=AUTO` the reverse chain
+fell through to `connectSmartAuto` and got the ordinary four-rung scan ladder.
+
+New `reversePlan()`: ONE candidate, because through Tor there is nothing to scan
+for — the engine dials one endpoint out through the SOCKS proxy.
+
+- **MASQUE over HTTP/2**, the only carrier core 2.0.0 accepts here (Tor is
+  TCP-only, WARP's WireGuard endpoints are UDP-only). This is also why the log read
+  `Attempt 1/4 → WIREGUARD` while the command line said `--masque`.
+- **`ScanMode.TURBO`**, the narrowest budget the engine has, so it commits to the
+  endpoint Cloudflare assigns instead of hunting.
+- **Manual ranges cleared** (`endpointMode`, `manualRange`) — see above for why
+  directly-measured ranges are worthless behind a Tor exit.
+- **`torBudget()`**, minutes rather than the ladder's 60 s, which expired while Tor
+  was still fetching a directory.
+
+The backend did not have to be removed, so plain Psiphon was not substituted for
+it. **Not yet confirmed on a device** — the change is reasoned from the log and
+compiles, but only a handset on a real network can prove it connects.
+
+### Fixed — the About card was English even in Persian
+
+Two feature lists were hardcoded as Kotlin `listOf(...)` in `ui/AboutPanel.kt`, so
+they bypassed `strings.xml` entirely and stayed English whatever the app's language
+was. One of them even carried a comment saying it was "deliberately English-only,
+mirroring the upstream README" — overruled on request, because a Persian user
+reading an all-English card cannot tell the two projects apart, which is the one
+thing that card exists to do.
+
+Both are now `<string-array>` resources (`about_original_features`,
+`about_port_improvements`) read with `stringArrayResource`, with a fluent,
+plain-spoken Persian translation rather than a literal one. Technical proper nouns
+— MASQUE, WireGuard, SOCKS5, VpnService, Zero Trust — are kept as they are and
+carry BiDi isolates, so they read left-to-right inside a right-to-left line.
+
+Right alignment needed no change: `FeatureList` renders each item as a `Row`, and a
+`Row` follows the layout direction, so the bullet moves to the right side by itself.
+`scripts/fix-fa-bidi.py` was extended to cover `<item>` inside `<string-array>` and
+re-run.
+
+### Fixed — Persian menus were not right-aligned and mixed lines were scrambled
+
+Reported from a device with a screenshot of **Transport & anti-DPI**. Two separate
+BiDi defects, and neither was about the layout code.
+
+**1. Wrong paragraph direction.** Android resolves a text paragraph's direction
+from its FIRST STRONG character. A Persian string that begins with a Latin word —
+`"MASQUE روی HTTP/2"`, `"Keepalive (ثانیه)"`, `"Zero Trust (سازمانی)"` — is
+therefore laid out left-to-right *as a whole*, which is why those rows sat
+left-aligned between right-aligned neighbours. Eleven strings were affected.
+Prefixing them with U+200F RIGHT-TO-LEFT MARK makes the first strong character RTL.
+
+**2. Neutral absorption.** Inside an RTL paragraph the Unicode Bidi Algorithm shows
+a Latin run left-to-right correctly, but the neutral characters touching it —
+brackets, slashes, colons, commas, full stops, digits — have no direction of their
+own and get absorbed into whichever run wins. That is what moves a closing bracket
+to the wrong end and strands a full stop at the start of a line. Each Latin passage
+is now wrapped in U+2068 FIRST STRONG ISOLATE … U+2069 POP DIRECTIONAL ISOLATE:
+laid out LTR internally, with the text around it keeping the paragraph direction.
+102 strings.
+
+Done by `scripts/fix-fa-bidi.py`, which is committed so it can be re-run after any
+translation change, and is idempotent. **One island per PASSAGE, not per word** —
+the first attempt isolated each word and that was worse: two adjacent LTR islands
+with a neutral space between them are reordered by the RTL paragraph, so
+`"Zero Trust"` rendered as `"Trust Zero"`. Format specifiers (`%1$s`, `%d`) and
+escapes are skipped; a value that is purely Latin (`MASQUE`, `IPv4`) is left alone,
+because forcing RTL on a word that reads LTR either way would be wrong.
+
+Verified two ways: stripping the three invisible characters back out yields a
+file byte-identical to the original — so no word, digit or mark was added, removed
+or moved — and `aapt2 dump resources` confirms the marks survive into the packaged
+APK.
+
+### Fixed — the home screen clung to the top of tall screens (1.3.0 report)
+
+*"The on/off button used to sit in a better position and the connection info used
+to scale to the full screen; now the home screen looks out of order."*
+
+`FitToHeight` measures the home screen's natural height and, when the viewport is
+smaller, shrinks the whole subtree by one factor so nothing needs scrolling. It
+then placed the result with `place(0, 0)` — **top-aligned**.
+
+So the behaviour split by device, which is why the report was hard to act on:
+
+- On a **short** screen the block is shrunk to fit exactly, fills the height, and
+  looks right.
+- On a **tall** screen the content is shorter than the viewport, the factor stays
+  1, and the whole block was pinned to the top with every pixel of slack dumped
+  below the connection card — a high button and a half-empty screen.
+
+Persian made it more likely either way: more strings wrap to two lines, so the
+natural height is greater. 1.3.0 also added the Tor rows, which is why a 1.3.0
+user noticed what a 1.2.x user did not.
+
+The block is now centred in the height it is given. When it had to be shrunk the
+offset is zero and nothing changes; when it did not, the button comes off the top
+edge. An overflowing block — below `minFactor` — still anchors top-left.
+
+### Not a defect — Android TV is not a setting (#21)
+
+A user went looking for it in the app's settings and found nothing. Correct: there
+is nothing to find. TV support is three manifest declarations — `touchscreen` and
+`leanback` marked not required, plus the `LEANBACK_LAUNCHER` category and a banner
+— which decide whether the APK may be INSTALLED on a TV and whether the TV's
+launcher LISTS it. There is no switch, and there is no TV-specific screen: the
+Compose UI is the phone one. Verify it by installing on a TV, not by looking in
+Settings.
+
+### Fixed — a working endpoint was thrown away on every reconnect (user report)
+
+*"It takes forever to find a healthy IP, and the moment the connection drops it is
+thrown away. It should be saved, the way the original core does it."*
+
+The core does save it — `lastconn.rs` plus `want_quick_reconnect` have always
+worked. What discarded it was one of THIS app's own engine patches,
+`AETHER-APP-PATCH quick-reconnect-rtt-budget`, together with the numbers the app
+was feeding it.
+
+`fastEndpointOnly` defaulted to ON, sending budgets of 320 ms / 1400 ms direct and
+180 ms / 900 ms chained, chosen "above the good edges observed on Iranian mobile
+(100-150 ms)". The 1.3.0 field logs contain no such edges:
+
+- a cached WireGuard endpoint rejected at `rtt 1.272s` against the 180 ms budget;
+- a cached MASQUE gateway that verified as WORKING, rejected at `handshake 2.778s`
+  against the 1.4 s budget — after which a `thorough` scan ran for 300 s, found no
+  gateway at all, and the connect FAILED. That session ended with nothing, having
+  held a working gateway seconds earlier;
+- a scan whose every accepted candidate sat between 727 ms and 1.8 s.
+
+So the option was never choosing the faster of two endpoints. It was discarding the
+only one there was, and buying a full scan on every single reconnect.
+
+- `fastEndpointOnly` now defaults to **false**, in `ConnectionProfile` AND in the
+  `ProfileStore` fallback — both were needed, or a fresh install would have kept the
+  old behaviour. Unset, the engine is back to its own rule: reuse a cached endpoint
+  that answers. Throughput on a good link is what is traded away, and that is the
+  right way round — a slow tunnel is usable, a missing one is not. A user's explicit
+  choice still wins.
+- The budgets it sends when switched ON are recalibrated to 2000 / 5000 direct and
+  1200 / 3500 chained, above what those logs actually show, so the option rejects an
+  endpoint that has become genuinely bad instead of every endpoint that exists.
+
+**An engine-side half is NOT applied.** On the MASQUE path, going over budget sets
+`quick_peer = None` and nothing remembers the gateway, so a scan that finds nothing
+strands the session — the second bullet above. (The WireGuard path is already
+protected: `wg_prober::set_rtt_floor` / `apply_rtt_floor` returns the cache when the
+scan cannot beat it. MASQUE has no equivalent.) The fix is
+`patches/0001-masque-quick-reconnect-budget-fallback.patch`: keep the demoted peer
+and use it if `hunt_masque_peer` fails. It applies cleanly (`patch --dry-run`) but
+is **not applied and not compiled** — building that crate needs Rust 1.98 and a
+BoringSSL compile, which was not available, and every other change in 1.3.1 was
+built and tested. Apply it where cargo exists.
+
+### Fixed — Zero Trust: the e-mail code path did nothing at all (#12)
+
+The reporter had the diagnosis exactly right: *"no code arrives and the app never
+asks for one — this section is simply ignored"*, and *"you cannot do the
+authentication inside the connection; it has to be signed in beforehand."*
+
+The app treated enrolment as part of connecting: it put `AETHER_ACCESS_EMAIL` into
+the engine's environment and started a tunnel. Cloudflare mailed a code, the engine
+blocked waiting for someone to type it, nobody was listening, and the session died
+with the reason in a log line no ordinary user reads.
+
+Core 2.0.0 was built for exactly this parent. `zerotrust::prompt_login_code` tests
+`stdin().is_terminal()`, and when stdin is NOT a terminal — which is how this app
+spawns the engine — it writes one machine-readable line to stdout:
+
+```
+[zerotrust] login-code-needed attempt=1 email=someone@example.com
+```
+
+and then reads a line from **stdin**, bounded by `CODE_WAIT` (300 s) and retried
+`CODE_ATTEMPTS` (3) times. The whole protocol is: watch for that line, ask, write
+the code back. No JNI, no engine change. The app had simply never looked for it, and
+had never written a byte to the engine's stdin.
+
+- New `core/LoginCodePrompt.kt` — recognises the marker, parses `attempt` and
+  `email`, publishes a `StateFlow`, and writes the code with the newline the engine's
+  `read_line` is blocked on plus an explicit `flush()`. The code itself is never
+  logged: it is a single-use credential.
+- `AetherProcess` hands the child's `outputStream` over on spawn, calls `ingest` in
+  the stdout loop it already had, and detaches when the engine exits, so a dialog
+  cannot outlive the process that asked for it.
+- New `ui/LoginCodeDialog.kt`, hosted at the top of the composition in
+  `MainActivity` because the prompt can arrive on any screen. Tapping outside does
+  not dismiss it — that is how a one-time code gets lost. "Not now" writes nothing
+  and says so in the log: the prompt belongs to the engine, which keeps waiting
+  until its own timeout, and claiming the app can cancel it would be untrue.
+
+**The criticism still stands in part.** This is authentication DURING a connect,
+not "sign in, then connect". A real pre-login is possible — `ffi.rs` exports
+`aether_team_code_request` / `_resend` / `_submit` / `aether_team_sign_in`, which
+are precisely a sign-in flow decoupled from any tunnel — but the app cannot call
+them: it runs the engine as a child PROCESS, and those are a C ABI in the same
+`.so`, reachable only from a JNI binding built against the NDK. The design, and
+what already exists for it, is in `docs/ZERO_TRUST.md`.
+
+### Changed — the enrolment token is checked as you paste it (#12)
+
+The token path is the one that does match "signed in beforehand": sign in at
+`https://<team>.cloudflareaccess.com/warp`, copy the value after `token=`, paste it.
+Its two natural mistakes — pasting the URL instead of the token, and pasting
+something that expired — used to become a failed connect whose reason lived in the
+diagnostics log.
+
+New `core/AccessToken.kt` mirrors the two checks the engine makes
+(`looks_like_jwt`, `jwt_expired`) so the verdict appears under the field: malformed,
+expired, or valid with the days remaining. Covered by `AccessTokenTest`, 14 cases,
+including the URL paste, `exp` exactly now, a missing `exp`, a non-JSON payload and
+a 25-digit `exp`. It uses `java.util.Base64` rather than `android.util.Base64`
+deliberately — the project's tests are plain JUnit and the Android one is a stub
+that throws off-device.
+
+It is **not** verification. The signature is not checked and cannot be; the key is
+Cloudflare's. The engine remains the only thing that decides whether a token is
+accepted.
+
+The settings screen also now says which of the three methods needs the user
+present: the service token does not, the e-mail code does and will interrupt a
+connect to ask.
+
+### Added — Android TV (#21)
+
+Nothing about the tunnel was stopping this. Two declarations were stopping the APK
+from being installable and findable on a TV:
+
+- Android treats `android.hardware.touchscreen` as implicitly REQUIRED, and a TV
+  has none — so the app was filtered out of TVs entirely. It is now declared
+  `required="false"`.
+- A TV launcher only lists activities in `android.intent.category.LEANBACK_LAUNCHER`.
+  `MainActivity` has it now, with an `android:banner` (320×180, `drawable-xhdpi`).
+
+`android.software.leanback` is declared NOT required on purpose: one APK has to keep
+installing on phones, which do not have it. Verified in the packaged manifest with
+`aapt2 dump xmltree`.
+
+**The honest limit:** this is a compatibility declaration, not a TV build. The
+Compose UI is unchanged and still touch-shaped; D-pad focus traversal has not been
+designed for. Declaring leanback also switched on lint's TV checks, which is where
+two of the three new warnings come from — one of them, `LeanbackUsesWifi`, is in the
+Psiphon AAR's own manifest and cannot be fixed from here.
+
+### Added — type an MTU instead of picking one (#33)
+
+*"Let the MTU be chosen freely, not by clicking between options."* Correct: path MTU
+is a property of a network, and a user hunting for the value that stops Telegram
+stalling needs to enter it.
+
+A numeric field joins the presets, which stay — they are the values that matter for
+most people. Bounds are `MTU_MIN = 1280` and `MTU_MAX = 9000`: 1280 because it is
+IPv6's minimum link MTU (RFC 8200 §5) and this app routes `::/0` unconditionally in
+its chained and lockdown modes, 9000 because the existing 8500 preset has to stay
+reachable by hand.
+
+The field owns its own text and only commits a value inside that range. A partially
+typed number — "12" on the way to "1280" — is not an MTU, and handing one to the
+engine builds a TUN that connects and carries nothing.
+
+### Fixed — the Gemini API key message named the wrong cause (#31, #11)
+
+*"The app has the old Gemini and does not support the new format."* The cause is
+real but it is not in the app's request shape: Google retired the old **standard**
+Gemini API keys during 2026 — unrestricted ones stopped working on 19 June 2026 and
+all standard keys are rejected from September 2026. Keys created in AI Studio since
+then are "auth keys" bound to a Cloud service account.
+
+So a key that used to work and now does not is far more likely to be retired than
+mistyped, and `ai_error_bad_key` said only "check it and try again". It now names the
+retirement first, in both languages.
+
+**The transport was already correct and was deliberately left alone**: the
+`x-goog-api-key` header on `generativelanguage.googleapis.com/v1beta` is still
+Google's documented form, and `models/<id>:generateContent` still works. Changing it
+would have been changing something that is right.
+
+`gemini-3.7-flash` (shipped 2026-08-13) was missing from `AiModelPolicy.ALLOWED` and
+is inserted at rank 2. That renumbers the labels after it, so
+`AiModelPolicyTest` was updated rather than the insertion walked back: the number is
+a label in the model picker and the SELECTION is stored by id, while rank order is
+what the file exists for and has to follow the models.
+
+### Added — paste your own ECHConfigList (#44)
+
+New `ConnectionProfile.echConfig`. Empty means `--ech auto`, exactly as before;
+a value is passed to the engine instead. It is checked as plausible base64 first,
+because the engine's answer to a bad value is `[-] bad AETHER_ECH: …; continuing
+without ECH` — one line in a log nobody reads, leaving the user believing ECH is on.
+The field only appears while the ECH switch is on.
+
+**Not what was asked for, and the request cannot be met here.** #44 asked for
+v2rayNG's shape: name a *different* domain (`gitlab.io+https://8.8.8.8/dns-query`) so
+the DPI sees a handshake for a host it does not filter. The engine's `--ech` takes
+`auto | <base64>` and nothing else — `auto` fetches the list for the hosts in
+`dns::ECH_HOSTS`. Naming an arbitrary domain means the engine resolving an HTTPS RR
+for it, which is engine work. What ships is the half that exists, and the UI says so.
+
+### Added — a prompt when Android is still allowed to suspend the app (#5)
+
+*"When I turn the screen off and on again the connection drops — the VPN still says
+connected but nothing loads."* On most vendor builds that is Doze / app standby
+suspending the process the tunnel lives in, and only the user can grant the
+exemption.
+
+A settings row appears **while the exemption is missing** and opens the system's own
+battery-optimisation list. It uses `ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS`,
+which needs no permission, rather than `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`,
+which would have added `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS` to a manifest the
+audit counts at five permissions. One extra tap was the better trade.
+
+### Verified, not changed — per-app tunnelling was already there (#3)
+
+`SplitMode.INCLUDE` / `EXCLUDE` in `ConnectionProfile`, the picker in
+`ui/components/AppPickerDialog.kt`, and `AetherVpnService` calling
+`addAllowedApplication` / `addDisallowedApplication` — plus a separate userspace
+filter for `blockedApps`. The request dates from 22 July and a 1.2.x build. No code
+was written; the issue can be closed.
+
+### Fixed — Private Space: the second instance could not connect (#27, #52)
+
+Running Aether in Android's Private Space (or a work profile) while it was already
+connected in the Main Space failed for the second instance, on every protocol and
+every fallback strategy, and failed BEFORE any tunnel was attempted:
+
+```
+the socks5 listener cannot use 127.0.0.1:1819:
+Address already in use (os error 98); another program already listens there
+...
+Engine exited before it opened the SOCKS5 port.
+```
+
+Private Space runs the app as a separate Android user but **shares the network
+namespace**, and every local port in `core/TunnelConfig.kt` was a `const` that the
+app bound unconditionally — 1819 engine, 1820 Tor, 1821 Tor front, 1825 chain,
+1827 Psiphon. Two instances reached for the same five numbers and the second lost.
+
+The engine already accepted `--bind <addr>` and `--tor-bind <addr>` (core 2.0.0
+`cli.rs`, also `AETHER_SOCKS` / `AETHER_TOR_BIND`). The app never passed either and
+relied on the built-in default, which is where the fixed 1819 came from. So no
+engine change was needed.
+
+New `core/PortLease.kt` resolves the five ports once per session, and the rule is
+**preferred first**: 1819/1820/1821/1825/1827 whenever they are free, so a normal
+single-profile install behaves exactly as before and the documented Proxy-only
+address does not move. Only a busy port is stepped over, in tens, with the five
+guaranteed distinct. `Profile.toArgs()` now always emits
+`--bind 127.0.0.1:<port>` — even when it names the default — so the log states the
+port instead of leaving it implied.
+
+Everything else reads `PortLease` instead of the constants:
+`TransportBackend.exposedSocksPort` / `torSocksPort`, `ExternalTransport`,
+`PsiphonTransport`, `ShareBridge`, `Diagnostics`, `PingMonitor`, `MainActivity`,
+and the three `const val` in `AetherVpnService`'s companion became accessors — which
+is why the twenty-odd use sites inside that file did not have to change.
+
+**What this is not.** It is not a lock. Between the probe that finds a port free and
+the engine binding it there is a time-of-check / time-of-use gap, and a bound socket
+cannot be handed to a native child process here. What is gone is the CERTAIN
+collision of two instances insisting on the same number; what remains needs two
+processes to pick the same free port in the same instant. If nothing free is found
+the preferred port is kept, so the worst case is the old behaviour rather than a
+refused connect.
+
+**LAN sharing is NOT covered.** `ShareBridge` binds 10810/10811 and retries the same
+port rather than moving, so a second instance still cannot share over the LAN. That
+is left alone deliberately: those are addresses users type into a PC or a TV, and
+moving them silently is worse than a clear failure. Issue #28 asks for them to be
+*configurable*, which is a different change. What was fixed is that the two copyable
+rows in **Settings → Apps** now show the port the bridge is actually on instead of
+printing the constant — the Share card on the home screen already did, so the two
+screens could disagree, and this was the one with a copy button.
+
+### Fixed — `lint` could never pass (pre-existing)
+
+`res/values/themes.xml` declared `android:windowLayoutInDisplayCutoutMode`
+unconditionally. The attribute exists from API 27 and this app's `minSdk` is 26,
+so it was the project's single `lint` ERROR — `[NewApi]`, on that line. Harmless
+at runtime, because the framework ignores an attribute it does not know, but a
+check that always fails is a check nobody reads. Nothing in CI runs `lint`, which
+is why it survived.
+
+The style is now overridden in `res/values-v27/themes.xml`, which is how the
+resource system does this: a qualified folder REPLACES a resource rather than
+merging into it, so the three items above the cutout mode are repeated there and
+the two files have to be kept in step. Verified in the packaged APK: the base
+style carries three items, the `(v27)` variant four.
+
+Not from this release's work — it was in 1.3.0 exactly as shipped.
+
+### Fixed — the connection row named the second hop twice (field report)
+
+On every chained mode the home screen's connection row read
+
+```
+Aether(WIREGUARD → PSIPHON) → Psiphon
+Aether(WIREGUARD → TOR) → Tor
+```
+
+instead of `Aether(WIREGUARD) → Psiphon`. The bracket is supposed to hold the
+engine's transport and nothing else.
+
+The defect was not in the label but in what was handed to it. Both chained paths
+in `AetherVpnService` published the whole chain through `EngineMeta.setProtocol`:
+
+```kotlin
+EngineMeta.setProtocol("${stageProfile.protocol.name} → ${profile.backend.externalKind?.name}")
+EngineMeta.setProtocol(if (usesWarp) "${engineProfile.protocol.name} → TOR" else "TOR")
+```
+
+That was the right shape before 1.3.1, when this value WAS the row and there was
+no other way to say a second hop existed. Since 1.3.1 the row asks
+`TransportBackend.pipelineLabel(transport)` for the path and puts this value in
+the brackets, so the composite string produced the arrow and the exit twice.
+
+Both callers now publish the transport alone. `pipelineLabel` additionally keeps
+only the part before an arrow, so a future caller cannot bring the doubling back;
+`TransportBackendLabelTest` pins both halves across all six modes. `EngineMeta`'s
+protocol field has exactly one consumer (`ConnectionCard`), so nothing else
+changes shape.
+
+### Fixed — the endpoint row was empty (field report)
+
+The info row's endpoint showed an ellipsis on a working connection. `EngineMeta`
+recognised two engine log lines, and both are printed by the SCAN and by nothing
+else:
+
+```
+[+] selected WireGuard endpoint 162.159.195.96:946 (rtt 412ms)
+[+] selected MASQUE gateway 162.159.198.1:443 (rtt 88ms)
+```
+
+Every other way the engine arrives at a peer is silent as far as those two
+patterns go — the cached reuse (`[+] cached gateway … still works; skipping
+scan`), a retry of the last known-good gateway, a hand-pinned peer.
+
+This is why it showed up now and not in 1.3.0: this very release stopped
+discarding a working cached endpoint (the quick-reconnect RTT budget is off by
+default now, see below), so the reuse path became the ordinary one on every
+reconnect — and the reuse path prints no `selected …` line.
+
+The fix reads the line the engine prints on EVERY path instead, in `run_masque`,
+`run_wireguard` and `run_warp_in_warp` alike, right before the tunnel comes up:
+
+```
+[+] using cloudflare edge 162.159.198.1:443
+[+] using cloudflare edge 162.159.198.1:443 (outer) and 162.159.192.1:443 (inner)
+```
+
+MASQUE-in-MASQUE has no such line and announces itself once both hops are up, so
+it gets a second pattern (`masque-in-masque ready: …`). Both capture the OUTER
+peer — the address the device actually dials, which is what the row names. The two
+scan patterns stay. `EngineMetaTest` holds every one of these strings, copied from
+the engine's own `log::info!` calls, so an engine bump that renames one fails in
+CI instead of on a phone.
+
+### Fixed — Persian text under a technical field was left-aligned (field report)
+
+Reported on the MTU helper text: `هر مقداری بین ۱۲۸۰ و ۹۰۰۰. اگر تونل بالا است ولی
+بعضی سایت‌ها یا تلگرام باز نمی‌شوند، کمترش کنید.` rendered left-aligned with the
+full stop at the wrong end.
+
+Root cause, and it applied to EVERY technical field in the app rather than to that
+one string: `LtrOutlinedTextField` wrapped the whole `OutlinedTextField` in
+
+```kotlin
+CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr)
+```
+
+That island was there for the VALUE — an `ip:port` must not be reordered by the
+BiDi algorithm — but it took the decorations with it, and `label`, `placeholder`
+and `supportingText` are Persian prose. Inside an LTR paragraph the trailing full
+stop of a Persian sentence is a direction-neutral character that resolves to the
+paragraph direction, so it was laid out at the right-hand end and the whole block
+sat left-aligned among right-aligned neighbours.
+
+The layout-direction island is gone; the field follows the app's language like
+every other row. The value is unaffected, because what governs the reordering of
+the field's CONTENT is the paragraph direction of its text —
+`textDirection = TextDirection.Ltr` in the text style — not the layout direction
+of the box around it. `textAlign` moved from `Start` to `Left` so the value stays
+visually where it has always been instead of flipping to the right edge.
+
+Checked, and deliberately not changed: `scripts/fix-fa-bidi.py` was re-run over
+`values-fa/strings.xml` and reported 0 strings changed, so the resources were
+already correct and this was purely a rendering defect. After this fix the only
+`LocalLayoutDirection` provider left in the app is the one in `AetherTheme`, which
+is pinned from the stored language choice and which `Dialog`, `Popup`,
+`DropdownMenu` and `ModalBottomSheet` inherit.
+
+### Changed — each option in a choice sheet is its own card (field report)
+
+`SettingsChoiceRow`'s bottom sheet — the one every picker in the app opens:
+obfuscation, exit country, scan mode, IP family, keepalive, Tor mode — stacked
+bare rows directly on the sheet background with nothing between them, which reads
+as one block of text rather than as a set of separate, tappable things.
+
+Every option is now a card in the same visual language as the rest of the
+settings: rounded corners, the `Navy850` surface, a hairline border, 8 dp between
+cards, a 54 dp minimum height. The selected one is tinted, outlined and
+semi-bold in the primary colour as well as ticked, so the current value is
+visible from the shape of the list and not only from one glyph. Still a
+`LazyColumn`, because the exit-country picker is 56 rows.
+
+### Added — Smart races two routes and remembers what worked on this network
+
+Smart (`Protocol.AUTO`) now has two implementations and picks between them itself:
+a two-lane RACE where the backend allows it, and the ladder it always had
+everywhere else. The hand-picked protocols are untouched.
+
+**This shipped once as a separate selector entry called "Smart Plus" and was
+withdrawn in the same release.** Two reasons, both found on a phone:
+
+* The split was invisible where it mattered. A user selecting "Smart Plus" on
+  `Aether → Psiphon` got the Smart ladder, silently, because a race needs two
+  engine processes with two identity files and two ports and a chained stage-1
+  cannot give it those. A mode that behaves like another mode on most of what the
+  app offers is a worse answer than no mode.
+* Worse, it could not connect there at all. `connectAetherStage` chooses its plan
+  with `stage.protocol == Protocol.AUTO -> SmartAuto.buildPlan(...) else ->
+  directPlan(stage)`, so `AUTO_PLUS` fell through to the HAND-PICKED path and
+  `toArgs()` emitted no protocol flag for it — an engine command line with no
+  `--wg`, no `--masque`, nothing. Field report: "with Smart Plus and Aether +
+  Psiphon it does not connect at all, with Smart it connects easily."
+
+The capability was never a mode; it is a property of the backend. `Protocol.AUTO`
+now asks `SmartPlusPlan.eligible(profile)` and the settings screen says which of
+the two this profile will get.
+
+**What Smart does today.** `SmartAuto.buildPlan` builds a ladder of four rungs and
+`runLadder` walks it one rung at a time, each with its own timeout: three TURBO
+attempts at 60 s plus a last resort on the user's own scan mode. On the networks
+this app exists for that is up to `60 + 60 + 60 + 150 = 330 s` before the user is
+told anything — the shape of the field log in report #47, where four attempts
+failed over about five and a half minutes.
+
+**What Smart Plus adds.** Two things, and they work together:
+
+1. **Per-network memory** (`core/SmartPlusMemory.kt`, keyed by
+   `core/NetworkIdentity.kt`). The route that carried traffic on THIS network is
+   tried first next time on this network, as one 45 s attempt, before anything is
+   raced. A success is trusted for 14 days, a failure for 6 hours, and at most 32
+   networks are kept.
+2. **A race** (`core/SmartPlusPlan.kt`). Independent strategies run side by side
+   and the first one that carries real outbound TCP wins. Worst case drops from
+   330 s to the race ceiling of 187 s, and the ordinary case is one lane
+   connecting in seconds.
+
+#### Two lanes, not five — the one place a straight port would have broken the app
+
+The reference implementation (WhiteAesther 1.9.3, `data/AutoRoute.kt`) races three
+CARRIERS — its engine, Psiphon, Tor — and its own comment states the rule:
+*"different carriers can be tried at once, while two routes of one carrier cannot:
+there is one engine and one tor."* Aether has one carrier and five protocols, so
+"race the protocols" looks like the translation. It is not, because of what the
+engine keeps on disk (`native/aether/aether/src/lib.rs`):
+
+```
+ --wg     -> aether.toml         + aether-lastconn.toml
+ --gool   -> aether.toml         + aether-secondary.toml
+ --masque -> aether-masque.toml  + aether-masque-lastconn.toml
+ --mim    -> aether-masque.toml  + aether-masque-secondary.toml
+```
+
+Two engines sharing an identity file provision over each other's WARP device
+registration and overwrite each other's remembered gateway — the cache this very
+release already had to repair once. So the unit that can be raced is the IDENTITY
+FAMILY, not the protocol: `WARP` (WireGuard, gool) and `MASQUE` (MASQUE, MASQUE×2).
+Two lanes, two engine processes at most, and inside a lane the tactics run one
+after another exactly as the ladder does. `SmartPlusPlanTest` asserts that
+invariant for every DPI class rather than leaving it to a comment.
+
+#### A race selects a strategy; it never becomes the session
+
+Each lane brings up a throwaway engine on a port of its own
+(`PortLease.leaseRacePorts`, based at 19819 so a relocated Private Space session
+cannot collide with it), proves it carries outbound TCP with
+`Diagnostics.runProxyStage` — the gate the chained stage already uses, which takes
+a port parameter and leaves the four self-test circles alone — and is then killed,
+winner included. The session the user ends up with is established afterwards by
+`connectAttempt`, the same call Smart and a hand-picked protocol go through, on the
+ordinary ports.
+
+So the TUN, the LAN bridge, the self-test, the supervisor and the notification
+behave identically in all three modes. The cost is one extra engine start for the
+winner, and it is small by construction: the winning engine saved its gateway to
+the engine's own `lastconn` file while proving itself, so the confirming connect
+takes the cached path rather than scanning again.
+
+If the race finds nothing, Smart Plus hands over to the Smart ladder instead of
+failing. It can be slower than Smart in battery; it cannot be worse in outcome.
+
+#### What it will not race, and why each one is a reason rather than caution
+
+- **A pinned endpoint or range.** The user named the gateway; there is nothing to
+  search for.
+- **Zero Trust with the e-mail code.** That flow has the engine print a marker and
+  wait on ITS OWN stdin. `LoginCodePrompt` can hold exactly one stdin, and asking
+  the user for one code while two engines wait for it cannot be made correct.
+- **A chained or Tor-fronted backend.** There the engine is stage one behind
+  another carrier and the ports and lifecycle belong to the chain.
+
+In all three the Smart ladder runs, the settings screen says so next to the
+selector, and the diagnostics log names which condition applied.
+
+#### Ordering rules
+
+Evidence before inference. What connected here before goes first; then what the
+network measurably looks like, reused from `SmartAuto.fingerprint` so the two modes
+cannot drift apart in their reading of the same network; then general knowledge —
+HTTP/2 before HTTP/3 on mobile data and on a UDP-throttled network, because
+carriers have dropped QUIC for weeks at a time, and the two-hop protocols never
+first because they pay for two handshakes and two scans. A tactic that failed here
+inside the last six hours moves to the back of its lane rather than being dropped.
+
+The second lane starts 7 s in, not at once and not at the reference
+implementation's 45 s: the two lanes here cost the same, so a long stagger would be
+the old ladder with extra steps, while a short one lets a cached gateway on the
+first lane finish before a second engine has to start at all.
+
+#### Supporting changes
+
+- `IdentityVault.running` became a reference COUNT. With a boolean, the first lane
+  to be reaped would seal — and sealing SHREDS the plaintext — pulling the WARP
+  identity and the WireGuard private key out from under a lane that is still
+  connecting.
+- A racing engine publishes nothing to the UI: no `EngineMeta`, no `TorBootstrap`,
+  no `BuildProvenance`, no `LoginCodePrompt`. Its log lines are tagged
+  `engine/lane:<port>` so two interleaved engines can be told apart. A losing lane
+  must not be able to write its endpoint into a row the user reads as "what I am
+  connected through".
+- Every lane kills its engine in `finally`, which also runs on cancellation, and
+  `coroutineScope` does not return until all children have finished. This project
+  has been bitten by exactly one stray engine before — a cancelled ladder left an
+  unsupervised `libaether.so` running after Disconnect — and a race makes that
+  failure mode multiply if it is not closed.
+- `ConnectionProfile.bindOverride` carries a lane's port into `--bind`. Never
+  persisted and not in `AetherController`'s wire format: a port borrowed for one
+  race must not come back on the next connect.
+
+Version unchanged: this ships as 1.3.1 / versionCode 15.
+
+### Reverted — the "Repairing" connection state
+
+1.3.1 briefly published a `ConnectionState.Repairing` so a chained session would
+stop claiming **Connected** while its second stage carried nothing. The state was
+truthful and the supervisor did know; publishing it still made things worse, and it
+is gone.
+
+`MainActivity` buckets every state into connected / busy / idle to decide what the
+exit-IP pill shows, and the busy bucket CLEARS it. So each repair blanked the IP and
+the flag — and the refill afterwards waits for the self-test's value and otherwise
+fetches through `PortLease.socks`, the ENGINE's port rather than the chained
+pipeline's front, so on a session whose second stage was still broken it never came
+back. The field report was exactly that: the repair notice appeared, then "IP not
+available" and a session that stayed dead.
+
+Doing this properly needs the IP pill to survive a transient state and the fallback
+fetch to use the pipeline's own port. Until that is built, the behaviour the user
+had been running without this complaint is the better of the two. The reasoning is
+kept as a comment in `ConnectionState.kt` so the next attempt starts from it.
+
+What stays from that round is the QUIC latch below, which is unrelated to the state
+and which the field log did not contradict.
+
+### Fixed — a chained session said "Connected" while it carried nothing, and QUIC came and went (field report)
+
+Report: *"Aether alone is perfect — speed is great, ping under 100 ms, no drops.
+With Aether + Psiphon the first minutes are excellent, then the ping goes over
+900–1000 ms, it cuts in and out, and sometimes it says connected and nothing moves
+at all."* A six-minute diagnostics log of the `Aether → Psiphon` session came with
+it.
+
+**The cause is not in this app, and the log is unambiguous about that.** The Psiphon
+tunnel dies and psiphon-tunnel-core re-establishes on another server:
+
+```
+15:04:59  PsiphonSocksFront udpgw session closed
+15:04:59  Dial#1895: no active tunnels
+15:04:59  this server refused the udpgw port forward (SOCKS reply 1)
+15:04:59  this server does not allow outbound TCP/53
+15:06:16  … the same again on the next rotation
+15:07:20  session drops: udp/443 (QUIC) dropped=30, IPv6 flows refused locally=15
+```
+
+The Aether stage never reconnected once in those six minutes and its netstack
+reported `tail-drops 0` throughout; the `flow N … nothing acknowledged for 3s`
+resets cluster exactly on the rotations. One tunnel carried 1.9 MB and then died.
+That is Psiphon's server pool, not the app.
+
+Two things in the app made it feel worse than it was, and both are fixed.
+
+**1. The app kept saying Connected.** `PsiphonTransport.onConnecting` only wrote a
+line to the log — deliberately, because psiphon-tunnel-core emits it for its own
+internal re-establish and clearing the connected flag would have made the
+supervisor tear a healthy session down. The supervisor knew, the log knew, and the
+user was looking at a green badge over a pipeline carrying nothing.
+
+New `ConnectionState.Repairing`, published from the three places in the supervisor
+that already knew: stage 2 not answering, a deliberate exit rotation settling, and
+"up but carries nothing". Published on the EDGE only, so the card does not restart
+its animation on every loop. It counts as busy, so the button still offers
+Disconnect, and the connected timer keeps running because the session did not end.
+Nothing about when the supervisor rebuilds changed.
+
+**2. QUIC appeared and disappeared with every rotation.** This one is a real defect,
+and this project had already written down why: `docs/PSIPHON_MEDIA_STALL.md` §4
+suppressed UDP/443 from the first datagram and gave the reason — *"Consistency is
+the point: intermittently working QUIC is far worse than QUIC that never works,
+because Chromium caches 'HTTP/3 works for this origin'."* Later `CARRY_QUIC` turned
+QUIC back on, correctly, because a server that intercepts udpgw carries it well —
+and `onServerRotated` cleared the refusal so each new server got a fresh chance.
+Together those two produce precisely the state §4 warned about.
+
+`quicAllowed()` now latches: once ANY server in a session has refused the udpgw port
+forward, QUIC stays off for the rest of that session. Apps fall back to HTTP/2 over
+TCP and stay there. DNS is untouched — it has its own chain (TCP/53, then
+DNS-over-HTTPS on 443) and every rotation still gets a fresh attempt at real UDP for
+it, which is what `udpgwRefused` alone controls.
+
+**Not changed, and why:** nothing tries to signal the failure back to the device.
+SOCKS5 `UDP ASSOCIATE` has no per-datagram error, and injecting an ICMP
+port-unreachable into the TUN belongs to hev-socks5-tunnel, which is fetched at
+build time and is not in this tree — so any claim about its behaviour would be a
+guess. The latch above makes the drop CONSISTENT, which is what browsers and apps
+need in order to stop trying.
+
+This applies to every chained backend, not only `Aether → Psiphon`: they all go
+through the same front and the same supervisor.
+
+### Fixed — live audio killed a chained session (field report)
+
+Report: on `Aether -> Psiphon`, browsing, YouTube and downloads are fine and the
+ping is good — but the moment the microphone opens for Gemini live dubbing or a
+ChatGPT voice chat, the ping goes over 1000 ms and the session carries nothing.
+Close the microphone and it slowly recovers.
+
+The two numbers in the session summary settle what it was:
+
+```
+session drops: udp/443 (QUIC) dropped=272, congested udpgw frames dropped=0
+```
+
+The bulk lane never overflowed, so this was never congestion or head-of-line
+blocking. Those 272 datagrams were discarded BY POLICY: both Psiphon servers in
+that session had refused the udpgw port forward, and real-time audio rides UDP.
+
+A silently discarded datagram tells the application nothing, so it retried for as
+long as the microphone was open — and the retry storm is the rest of that log: a
+flow holding 48 KB with nothing acknowledged, stalling twice inside a minute, and
+`PsiphonHealth` rotating off a server for "refusing 6 different destinations" that
+was in truth refusing our own retries. Closing the microphone stopped the storm,
+which is exactly why it recovered.
+
+**The fix: end the flow instead of swallowing it.** SOCKS5 has no per-datagram
+error, but it has an end-of-association, and `hev.yaml` asks hev for `udp: 'udp'`
+with a per-session timeout — so hev opens one association per UDP flow. When this
+server has refused udpgw and a non-DNS datagram arrives, that association is now
+closed. hev tears down exactly that one flow, the app's UDP socket fails, and both
+Gemini Live and voice chat fall back to their own TCP path in about a second
+instead of fighting for minutes and taking the tunnel down with them.
+
+**The guard that makes it safe without hev's source.** hev is fetched at build time
+and is not in this tree, so "one association per flow" is read off the config
+rather than proven. An association that has carried even one DNS query is therefore
+never closed. If the reading is right, audio flows end and DNS — which has its own
+associations — is untouched; if hev instead multiplexes everything onto one
+association, that association sees a DNS query almost immediately and becomes
+permanently immune, leaving today's behaviour exactly as it is. The worst case of
+this change is no improvement, never a broken resolver — which matters, because
+once udpgw is refused this front answers DNS itself (DNS-over-TCP, then
+DNS-over-HTTPS on 443) and those queries arrive through an association like
+everything else.
+
+An earlier attempt at this refused the UDP ASSOCIATE outright when udpgw was
+refused. That was withdrawn before it was ever built: it would have cut the
+device's DNS off entirely, for exactly the reason above.
+
+**What this does not do.** It does not bring real UDP back. A Psiphon server that
+refuses the udpgw port forward cannot carry UDP and no app-side code changes that;
+audio then runs over TCP, with slightly more latency than UDP and unlike today it
+runs at all. Applies to every chained backend — `Aether -> Psiphon`,
+`Tor -> Psiphon` and the Tor paths all go through this front.
+
+### Verification status
+
+Unlike the source-level-only changes some earlier entries in this file describe,
+this release was BUILT and checked:
+
+| Check | Result |
+| --- | --- |
+| `gradle :app:compileDebugKotlin` | BUILD SUCCESSFUL, no errors |
+| `gradle :app:testDebugUnitTest` | 128 tests, 0 failures, 0 errors, 0 skipped (74 → 88 `AccessToken`, → 100 label + endpoint parsers, → 128 Smart Plus planner + memory) |
+| re-run after the QUIC latch, the Repairing-state revert and the UDP-flow fix | same: 128 tests, 0 lint errors, 40 warnings, four APKs |
+| `gradle :app:lintDebug` | 0 errors, 40 warnings (was 1 error / 42 warnings) |
+| `gradle :app:assembleDebug` | BUILD SUCCESSFUL, four APKs |
+
+Every one of those four was re-run after the Private Space port work landed, after
+the four field-report fixes, and again after Smart Plus, with the same result. Two
+lint findings came out of this work and were fixed rather than suppressed: a
+`NewApi` ERROR on `SubscriptionManager.getActiveDataSubscriptionId` in
+`NetworkIdentity` (API 30 against minSdk 26 — now guarded exactly as
+`SmartAuto.forActiveDataSim` guards it), and no warning remains on any file this
+release touched apart from the pre-existing `ObsoleteSdkInt` in
+`AetherVpnService.stopForegroundCompat` — same code as in the uploaded 1.3.0 tree,
+only its line number moved.
+
+Toolchain: OpenJDK 17.0.20, Gradle 8.9, AGP 8.7.2, Kotlin 2.0.21, compileSdk 35,
+build-tools 35.0.0.
+
+The four APKs are `armeabi-v7a` (versionCode 15001), `arm64-v8a` (15002),
+`universal` (15003) and `x86_64` (15004) — monotonic, all above 1.3.0's
+14001–14003, all `versionName 1.3.1`. The x86_64 one existing at all is the proof
+that #8 is done.
+
+Also confirmed against the packaged APK rather than against the source: the widget
+metadata is `targetCellWidth/Height=1`, `minWidth/minHeight=40dp`,
+`resizeMode=horizontal|vertical`, `maxResize 250x110dp`; `notif_action_disconnect`
+is present in both locales ("Disconnect" / "قطع اتصال"); the v27 theme split is in
+place. For the last round: the two new endpoint patterns and all four pipeline
+labels are in the compiled dex, and the four APKs still report `versionName 1.3.1`
+with versionCodes 15001–15004 — the version did not move. Zero lint findings
+remain on any file this release touched, apart from the inherited one named above.
+
+**What was NOT verified, and it matters.** No APK here can tunnel, and none has
+been run on a phone. `app/src/main/jniLibs/` is absent from the tree these builds
+used, so `libaether.so`, `libhev-socks5-tunnel.so`, `libaethertun.so` and the
+pluggable transports are missing from every APK above — they are produced by
+`scripts/build-natives.sh` and need the NDK, the Rust toolchain and the vendored
+quiche checkout. The only native libraries packaged are the ones that arrive
+inside AARs (Psiphon's `libgojni.so` and two AndroidX ones). So:
+
+- the x86_64 split is proven to BUILD; whether the Rust engine cross-compiles
+  cleanly for `x86_64-linux-android` is untested,
+- the startup fix changes threading in `Application.onCreate`, the widget fix
+  changes what a broadcast receiver reads in a cold process, and the Private Space
+  fix changes which ports the engine is told to bind. All three compile and pass
+  lint; none has been observed behaving.
+- the Private Space fix in particular is the one claim here that CANNOT be checked
+  without two Android profiles and a working engine. Two instances connecting side
+  by side is untested.
+- the Zero Trust e-mail flow depends on the engine printing the marker line and
+  accepting the code on stdin. The app's half compiles and passes lint; that
+  handshake has not been observed happening, and could not be here - an APK with no
+  engine cannot perform it.
+
+Before release, build with natives and confirm on a handset: the app opens
+promptly with a large existing `diagnostics.log`, and the widget returns to
+"Disconnected" after a disconnect, after a reboot, and after the launcher
+restarts. From the last round, three more that only a phone can answer: the
+connection row reads `Aether(WIREGUARD) → Psiphon` on all six modes, the endpoint
+row fills in on a reconnect that reuses a cached gateway, and no Persian row is
+left misaligned.
+
+And Smart Plus, which is the claim in this release that a sandbox can say least
+about. The planner's rules are covered by 18 unit tests and the lane mechanics
+compile and pass lint, but a race only means anything on a real network: two
+engines coming up side by side, the loser being killed cleanly, the winner's
+gateway still being cached when the confirming connect runs, and the per-network
+memory making the second connect on the same Wi-Fi quick. None of that has been
+observed.
+
+### Not in this release
+
+Stated plainly, because these were reported and are NOT fixed here:
+
+- **MASQUE / MASQUE×2 / WireGuard not connecting (#47, #46, #45, #43, #39, #38,
+  #42).** Not an app bug. Every log ends at
+  `api.cloudflareclient.com/v0a4471/reg` failing, with the camouflaged route timing
+  out after it — WARP/MASQUE account REGISTRATION is blocked on those carriers, and
+  the app never gets as far as a tunnel. Fixing it means not depending on that API,
+  which is a transport decision rather than a patch.
+- **LAN sharing: a configurable port and an option to switch the proxy credential
+  off (#28, and the TV case in #35 / #36).** Deliberately NOT done. Exposing a
+  loopback proxy to the LAN without a credential is precisely audit finding F-5 of
+  1.2.9, the accept path (`LanGuard`) has tests that exist because of that hole, and
+  the change could not be exercised on a device here. An untested change to that
+  path is worse than the missing feature. The shape it should take: `sharePort: Int`
+  (0 = 10810) and `shareRequireAuth: Boolean = true` threaded into `bindWithRetry`,
+  with `LanGuard`'s local-address check staying MANDATORY even when the credential is
+  off, and an explicit warning in the UI.
+- Chinese (#25) was dropped from the list at the maintainer's request.
+
 ## 1.3.0 — Tor in four modes, engine core 2.0.0
 
 App 1.3.0 / versionCode 14, signed with the same certificate, so it installs over

@@ -216,6 +216,9 @@ fun HomeScreen(
             // every device, at full rendering sharpness, and there is nothing
             // left to scroll. See FitToHeight.
             FitToHeight(
+                // r2: every connection-state change re-opens the fit, so a size
+                // forced down by a transient is restored as soon as it passes.
+                epochKey = state::class,
                 modifier = Modifier
                     .fillMaxSize()
                     // Insets are applied OUTSIDE the scaled subtree: system bars
@@ -257,6 +260,7 @@ fun HomeScreen(
                         ipInfo = ipInfo,
                         ipLoading = ipLoading,
                         error = state is ConnectionState.Error,
+                        backend = profile.backend,
                     )
                 }
             }

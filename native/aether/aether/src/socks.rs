@@ -626,6 +626,58 @@ fn decide_route(set: &RuleSet, target: &Target, sniffed: Option<&str>, port: u16
     }
 }
 
+// >>> AETHER-APP-PATCH smart-routes-dns
+/// `Some(Action::Block)` when [target] is an address whose remembered DNS name
+/// (see `routing::recall_name`) is covered by a BLOCK rule. Never returns
+/// `Direct`: see the note at the call sites.
+fn recalled_block(set: &RuleSet, target: &Target, port: u16) -> Option<Action> {
+    let Target::Ip(ip) = target else {
+        return None;
+    };
+    if !set.has_domain_rules() {
+        return None;
+    }
+    let name = crate::routing::recall_name(*ip)?;
+    if set.decide(Host::Domain(&name), port) == Action::Block {
+        log::debug!("[route] {ip}:{port} was resolved from {name}, which is blocked");
+        return Some(Action::Block);
+    }
+    None
+}
+
+/// The routing verdict for one UDP datagram: the address rules, then (block
+/// only) the remembered DNS name. A dropped QUIC datagram makes the app fall
+/// back to TCP, where the real server name decides - so a wrong guess here
+/// costs one fallback, never a leak.
+fn decide_udp(set: &RuleSet, target: &Target, port: u16) -> Action {
+    match set.decide(host_of(target), port) {
+        Action::Proxy => recalled_block(set, target, port).unwrap_or(Action::Proxy),
+        decided => decided,
+    }
+}
+
+/// DNS sinkhole for one datagram of a UDP association: the NXDOMAIN answer to
+/// hand straight back when [payload] asks for a blocked name.
+fn sinkhole_reply(dst: &Target, dst_port: u16, payload: &[u8]) -> Option<Vec<u8>> {
+    if dst_port != DNS_PORT {
+        return None;
+    }
+    let answer = routes().dns_block_reply(payload)?;
+    let from = match dst {
+        Target::Ip(ip) => SocketAddr::new(*ip, dst_port),
+        Target::Domain(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), dst_port),
+    };
+    Some(build_udp_reply(from, &answer))
+}
+
+/// Feeds a DNS answer coming back from port 53 into the address -> name memory.
+fn learn_if_dns(src_port: u16, data: &[u8]) {
+    if src_port == DNS_PORT && routes().has_domain_rules() {
+        crate::routing::learn_dns_answer(data);
+    }
+}
+// <<< AETHER-APP-PATCH smart-routes-dns
+
 fn sniff_enabled() -> bool {
     !matches!(
         std::env::var("AETHER_ROUTE_SNIFF").as_deref(),
@@ -684,7 +736,18 @@ async fn handle_connect(
         }
     }
 
-    match decide_route(routes(), &target, named.as_deref(), port) {
+    let mut verdict = decide_route(routes(), &target, named.as_deref(), port);
+    // >>> AETHER-APP-PATCH smart-routes-dns
+    // A flow that DID send its first bytes but carried no TLS server name and no
+    // HTTP Host (some other protocol) can still be matched against the BLOCK
+    // rules through the name its address was last resolved from. Block only:
+    // the memory is a hint (CDN addresses are shared), and a wrong "direct"
+    // would send a foreign site out of the real uplink.
+    if verdict == Action::Proxy && named.is_none() && !head.is_empty() {
+        verdict = recalled_block(routes(), &target, port).unwrap_or(verdict);
+    }
+    // <<< AETHER-APP-PATCH smart-routes-dns
+    match verdict {
         Action::Block => {
             log::debug!("[route] block tcp {target}:{port}");
             if !replied {
@@ -780,7 +843,7 @@ pub(crate) async fn serve_connector<F, Fut, S>(
 ) -> Result<()>
 where
     F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = std::io::Result<S>> + Send,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let listen = listener.local_addr()?;
@@ -800,8 +863,8 @@ where
 
 async fn serve_one_through<F, Fut, S>(mut sock: TcpStream, connect: F) -> Result<()>
 where
-    F: Fn(String, u16) -> Fut,
-    Fut: Future<Output = std::io::Result<S>>,
+    F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (cmd, target, port) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_request(&mut sock))
@@ -810,10 +873,14 @@ where
             AetherError::Other("the client did not finish the socks5 handshake in time".into())
         })??;
 
+    if cmd == CMD_UDP_ASSOCIATE {
+        return handle_udp_over_connector(sock, connect, target).await;
+    }
+
     if cmd != CMD_CONNECT {
         let _ = reply(&mut sock, REP_NOT_SUPPORTED).await;
         return Err(AetherError::Other(
-            "only connect is carried on this listener".into(),
+            "only connect and udp associate are carried on this listener".into(),
         ));
     }
 
@@ -835,6 +902,151 @@ where
     }
 }
 
+const DNS_PORT: u16 = 53;
+const DNS_OVER_TCP_TIMEOUT: Duration = Duration::from_secs(20);
+const DNS_MAX_IN_FLIGHT: usize = 32;
+
+async fn dns_over_stream<S>(mut stream: S, query: Vec<u8>) -> std::io::Result<Vec<u8>>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin,
+{
+    if query.len() > u16::MAX as usize {
+        return Err(std::io::Error::other("dns query is too long to frame"));
+    }
+
+    let mut framed = Vec::with_capacity(query.len() + 2);
+    framed.extend_from_slice(&(query.len() as u16).to_be_bytes());
+    framed.extend_from_slice(&query);
+    stream.write_all(&framed).await?;
+    stream.flush().await?;
+
+    let mut len = [0u8; 2];
+    stream.read_exact(&mut len).await?;
+    let mut answer = vec![0u8; u16::from_be_bytes(len) as usize];
+    stream.read_exact(&mut answer).await?;
+    Ok(answer)
+}
+
+async fn handle_udp_over_connector<F, Fut, S>(
+    mut sock: TcpStream,
+    connect: F,
+    requested: Target,
+) -> Result<()>
+where
+    F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let control_peer = sock.peer_addr()?;
+    let expected_ip = expected_udp_source(control_peer, &requested);
+    let bind_ip = sock.local_addr()?.ip();
+
+    let relay = UdpSocket::bind(SocketAddr::new(bind_ip, 0)).await?;
+    let relay_addr = relay.local_addr()?;
+    reply_bound(&mut sock, relay_addr).await?;
+
+    let (answers_tx, mut answers_rx) = mpsc::channel::<(SocketAddr, Vec<u8>)>(64);
+    let in_flight = Arc::new(Semaphore::new(DNS_MAX_IN_FLIGHT));
+
+    let mut client: Option<SocketAddr> = None;
+    let mut refused: u64 = 0;
+    let mut dropped_udp: u64 = 0;
+    let mut cbuf = vec![0u8; 65535];
+    let mut ctrl = [0u8; 256];
+
+    loop {
+        tokio::select! {
+            r = relay.recv_from(&mut cbuf) => {
+                let (n, from) = match r { Ok(v) => v, Err(_) => break };
+                if !udp_source_allowed(expected_ip, client, from) {
+                    refused += 1;
+                    if refused == 1 || refused.is_multiple_of(64) {
+                        log::warn!(
+                            "[-] udp relay {relay_addr} dropped a datagram from {from}; \
+                             this association only serves {expected_ip} (refused={refused})"
+                        );
+                    }
+                    continue;
+                }
+                if client.is_none() {
+                    log::debug!("udp relay {relay_addr} latched to client {from}");
+                    client = Some(from);
+                }
+
+                let Some((dst, (dst_port, payload))) = parse_udp_request(&cbuf[..n]) else {
+                    continue;
+                };
+
+                if dst_port != DNS_PORT {
+                    dropped_udp += 1;
+                    if dropped_udp == 1 || dropped_udp.is_multiple_of(64) {
+                        log::debug!(
+                            "[-] udp to {dst}:{dst_port} cannot be carried: this listener \
+                             reaches the internet over tcp only (dropped={dropped_udp})"
+                        );
+                    }
+                    continue;
+                }
+
+                // >>> AETHER-APP-PATCH smart-routes-dns
+                if let Some(pkt) = sinkhole_reply(&dst, dst_port, &payload) {
+                    let _ = relay.send_to(&pkt, from).await;
+                    continue;
+                }
+                // <<< AETHER-APP-PATCH smart-routes-dns
+
+                let resolver = match dst {
+                    Target::Ip(ip) => SocketAddr::new(ip, dst_port),
+                    Target::Domain(name) => {
+                        log::debug!("[-] dns resolver given as the name {name}; give an address instead");
+                        continue;
+                    }
+                };
+
+                let permit = match in_flight.clone().try_acquire_owned() {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        log::debug!("[-] too many dns lookups are already in flight; dropping one");
+                        continue;
+                    }
+                };
+
+                let connect = connect.clone();
+                let answers_tx = answers_tx.clone();
+                tokio::spawn(async move {
+                    let _permit = permit;
+                    let exchange = async {
+                        let stream = connect(resolver.ip().to_string(), resolver.port()).await?;
+                        dns_over_stream(stream, payload).await
+                    };
+                    match tokio::time::timeout(DNS_OVER_TCP_TIMEOUT, exchange).await {
+                        Ok(Ok(answer)) => {
+                            let _ = answers_tx.send((resolver, answer)).await;
+                        }
+                        Ok(Err(e)) => log::debug!("dns over tcp to {resolver} failed: {e}"),
+                        Err(_) => log::debug!("dns over tcp to {resolver} timed out"),
+                    }
+                });
+            }
+
+            maybe = answers_rx.recv() => {
+                let Some((src, answer)) = maybe else { break };
+                learn_if_dns(src.port(), &answer); // AETHER-APP-PATCH smart-routes-dns
+                if let Some(c) = client {
+                    let pkt = build_udp_reply(src, &answer);
+                    let _ = relay.send_to(&pkt, c).await;
+                }
+            }
+
+            r = sock.read(&mut ctrl) => {
+                match r { Ok(0) | Err(_) => break, Ok(_) => {} }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn relay_generic<A, B>(client: A, remote: B, linger: Duration)
 where
     A: AsyncRead + AsyncWrite + Send + Unpin,
@@ -845,12 +1057,12 @@ where
     let activity = Activity::new();
 
     let upload = async {
-        let _ = pump(&mut client_rd, &mut remote_wr, &activity).await;
+        let _ = pump(&mut client_rd, &mut remote_wr, &activity, Way::Up).await;
         let _ = remote_wr.shutdown().await;
     };
 
     let download = async {
-        if pump(&mut remote_rd, &mut client_wr, &activity)
+        if pump(&mut remote_rd, &mut client_wr, &activity, Way::Down)
             .await
             .is_ok()
         {
@@ -940,6 +1152,7 @@ pub(crate) async fn relay_tunneled(
                     if sender.send(buf[..n].to_vec()).await.is_err() {
                         return;
                     }
+                    crate::stats::add_up(n);
                     activity.touch();
                 }
             }
@@ -952,6 +1165,7 @@ pub(crate) async fn relay_tunneled(
             if wr.write_all(&chunk).await.is_err() {
                 return;
             }
+            crate::stats::add_down(chunk.len());
             activity.touch();
         }
         let _ = wr.shutdown().await;
@@ -966,12 +1180,12 @@ async fn relay_direct(client: TcpStream, remote: TcpStream, linger: Duration) {
     let activity = Activity::new();
 
     let upload = async {
-        let _ = pump(&mut client_rd, &mut remote_wr, &activity).await;
+        let _ = pump(&mut client_rd, &mut remote_wr, &activity, Way::Up).await;
         let _ = remote_wr.shutdown().await;
     };
 
     let download = async {
-        if pump(&mut remote_rd, &mut client_wr, &activity)
+        if pump(&mut remote_rd, &mut client_wr, &activity, Way::Down)
             .await
             .is_ok()
         {
@@ -982,7 +1196,13 @@ async fn relay_direct(client: TcpStream, remote: TcpStream, linger: Duration) {
     relay_halves(upload, download, &activity, linger).await;
 }
 
-async fn pump<R, W>(from: &mut R, to: &mut W, activity: &Activity) -> std::io::Result<()>
+#[derive(Clone, Copy)]
+enum Way {
+    Up,
+    Down,
+}
+
+async fn pump<R, W>(from: &mut R, to: &mut W, activity: &Activity, way: Way) -> std::io::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -995,6 +1215,10 @@ where
         }
         to.write_all(&buf[..n]).await?;
         to.flush().await?;
+        match way {
+            Way::Up => crate::stats::add_up(n),
+            Way::Down => crate::stats::add_down(n),
+        }
         activity.touch();
     }
 }
@@ -1210,7 +1434,7 @@ async fn handle_udp_associate(
                 let (n, from) = match r { Ok(v) => v, Err(_) => break };
                 if !udp_source_allowed(expected_ip, client, from) {
                     refused += 1;
-                    if refused == 1 || refused % 64 == 0 {
+                    if refused == 1 || refused.is_multiple_of(64) {
                         log::warn!(
                             "[-] udp relay {relay_addr} dropped a datagram from {from}; \
                              this association only serves {expected_ip} (refused={refused})"
@@ -1225,7 +1449,14 @@ async fn handle_udp_associate(
                 if let Some((dst, payload)) = parse_udp_request(&cbuf[..n]) {
                     let dst_port = payload.0;
 
-                    match routes().decide(host_of(&dst), dst_port) {
+                    // >>> AETHER-APP-PATCH smart-routes-dns
+                    if let Some(pkt) = sinkhole_reply(&dst, dst_port, &payload.1) {
+                        let _ = relay.send_to(&pkt, from).await;
+                        continue;
+                    }
+                    // <<< AETHER-APP-PATCH smart-routes-dns
+
+                    match decide_udp(routes(), &dst, dst_port) {
                         Action::Block => {
                             log::debug!("[route] block udp {dst}:{dst_port}");
                             continue;
@@ -1272,6 +1503,7 @@ async fn handle_udp_associate(
 
             maybe = from_stack.recv() => {
                 let (src, data) = match maybe { Some(v) => v, None => break };
+                learn_if_dns(src.port(), &data); // AETHER-APP-PATCH smart-routes-dns
                 if let Some(c) = client {
                     let pkt = build_udp_reply(src, &data);
                     let _ = relay.send_to(&pkt, c).await;
@@ -1280,6 +1512,7 @@ async fn handle_udp_associate(
 
             r = direct_relay.recv_from(&mut dbuf) => {
                 let (n, from) = match r { Ok(v) => v, Err(_) => continue };
+                learn_if_dns(from.port(), &dbuf[..n]); // AETHER-APP-PATCH smart-routes-dns
                 if let Some(c) = client {
                     let pkt = build_udp_reply(from, &dbuf[..n]);
                     let _ = relay.send_to(&pkt, c).await;
@@ -1838,6 +2071,112 @@ pub async fn serve_http(listener: TcpListener, stack: StackHandle) -> Result<()>
         }
     })
     .await
+}
+
+pub(crate) async fn serve_http_connector<F, Fut, S>(
+    listener: TcpListener,
+    kind: &'static str,
+    connect: F,
+) -> Result<()>
+where
+    F: Fn(String, u16) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = std::io::Result<S>> + Send + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let listen = listener.local_addr()?;
+    log::info!("[+] {kind} listening on {listen}");
+    warn_if_world_reachable(kind, listen);
+
+    accept_clients(listener, kind, client_limit(), move |sock, peer| {
+        let connect = connect.clone();
+        async move {
+            if let Err(e) = handle_http_through(sock, connect).await {
+                log::debug!("{kind} client {peer} ended: {e}");
+            }
+        }
+    })
+    .await
+}
+
+async fn handle_http_through<F, Fut, S>(mut sock: TcpStream, connect: F) -> Result<()>
+where
+    F: Fn(String, u16) -> Fut,
+    Fut: Future<Output = std::io::Result<S>>,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let (head, early) = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_head(&mut sock))
+        .await
+        .map_err(|_| {
+            AetherError::Other("the client did not send a request head in time".into())
+        })??;
+    let text = String::from_utf8_lossy(&head).to_string();
+    let first_line = text.lines().next().unwrap_or_default();
+
+    let request = match parse_request_line(first_line) {
+        Some(value) => value,
+        None => {
+            let _ = sock
+                .write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n")
+                .await;
+            return Err(AetherError::Other(format!(
+                "unsupported http proxy request: {first_line}"
+            )));
+        }
+    };
+
+    let target = match request.authority.parse::<IpAddr>() {
+        Ok(ip) => Target::Ip(ip),
+        Err(_) => Target::Domain(request.authority.clone()),
+    };
+
+    match routes().decide(host_of(&target), request.port) {
+        Action::Block => {
+            log::debug!("[route] block http {}:{}", request.authority, request.port);
+            let _ = sock
+                .write_all(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
+                .await;
+            return Ok(());
+        }
+        Action::Direct => {
+            log::debug!("[route] direct http {}:{}", request.authority, request.port);
+            return relay_http_direct(sock, &request, &head, &early).await;
+        }
+        Action::Proxy => {}
+    }
+
+    let remote = match connect(request.authority.clone(), request.port).await {
+        Ok(remote) => remote,
+        Err(error) => {
+            let _ = sock
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n")
+                .await;
+            return Err(AetherError::Other(format!(
+                "{}:{}: {error}",
+                request.authority, request.port
+            )));
+        }
+    };
+
+    let mut remote = remote;
+
+    match &request.rewritten {
+        Some(line) => {
+            let rest = text.split_once("\r\n").map(|(_, tail)| tail).unwrap_or("");
+            remote.write_all(format!("{line}{rest}").as_bytes()).await?;
+        }
+        None => {
+            sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await?;
+        }
+    }
+
+    if !early.is_empty() {
+        remote.write_all(&early).await?;
+    }
+    remote.flush().await?;
+
+    relay_generic(sock, remote, half_close_linger()).await;
+    Ok(())
 }
 
 #[derive(Debug, PartialEq, Eq)]

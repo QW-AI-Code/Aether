@@ -57,6 +57,7 @@ import studio.cluvex.aether.ai.AiAvailability
 import studio.cluvex.aether.ai.AiChange
 import studio.cluvex.aether.ai.AiErrorKind
 import studio.cluvex.aether.ai.AiGate
+import studio.cluvex.aether.ai.AiMarkdown
 import studio.cluvex.aether.ai.AiPatch
 import studio.cluvex.aether.ai.AiResult
 import studio.cluvex.aether.ai.AiSession
@@ -280,7 +281,9 @@ fun AiExplainSheet(topic: AiTopic, onDismiss: () -> Unit) {
                         )
                     }
                     Spacer(Modifier.height(8.dp))
-                    Text(
+                    // r4: rendered, not printed. The raw Markdown used to reach the
+                    // sheet verbatim ("Split tunneling ###", "**۱. چیست؟**").
+                    AiRichText(
                         text = answer!!,
                         style = MaterialTheme.typography.bodyMedium,
                         color = OnDark,
@@ -516,7 +519,7 @@ fun AiChangesCard(
                 )
                 if (change.why.isNotBlank()) {
                     Text(
-                        text = change.why,
+                        text = AiMarkdown.plainInline(change.why),
                         style = MaterialTheme.typography.bodySmall,
                         color = OnDarkDim,
                     )

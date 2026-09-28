@@ -17,9 +17,18 @@ aether-masque-lastconn.toml
 *-secondary.toml
 *-lastconn.toml
 *.toml.corrupt
+.*.toml.*.tmp
 *.pem
 *.key
 
 # Zero Trust routing rule files may name internal hosts.
 routes.conf
 routes-*.conf
+
+# Tor keeps its directory cache, guard state and fetched bridges here.
+# Large, machine-local and rebuilt on demand.
+*-tor/
+
+# Pluggable transport binaries put here by pt-build.sh. The release archives
+# carry their own, built for the target they ship to.
+pt/

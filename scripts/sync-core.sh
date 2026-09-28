@@ -106,7 +106,10 @@ GH_WEB="${CORE_GIT_BASE:-${SCHEME}://${GH_HOST}}"
 # modes would fail at connect time. All ten app patches were rebased onto
 # 2.0.0 (three-way, against .upstream-baseline), and netstack.rs was rebased
 # BY HAND - see .upstream-baseline/README.txt for why that one is not a merge.
-BASELINE="2.0.0"
+# 1.4.0: raised to 2.1.0 - Psiphon moved INTO the engine (psiphon.rs, the
+# psiphon-tunnel-core console client) and the app's own Psiphon AAR was removed,
+# so a core below 2.1.0 has no Psiphon at all for the app's two Psiphon modes.
+BASELINE="2.1.0"
 
 # App-specific patches carried on top of the upstream engine. These are MERGED
 # (three-way) onto the new upstream sources, never blind-copied over them.

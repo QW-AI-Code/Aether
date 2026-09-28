@@ -47,6 +47,11 @@ object AiModelPolicy {
      */
     val ALLOWED: List<String> = listOf(
         "gemini-3.8-flash",
+        // 1.3.1: 3.7-flash shipped 2026-08-13 and was missing from this list, so a
+        // key that offers it was ranked below older ids. Not fatal - the list only
+        // ORDERS what ListModels returns, it does not gate it - but the ordering is
+        // the whole point of the file.
+        "gemini-3.7-flash",
         "gemini-3.5-flash-lite",
         "gemini-3.1-flash-lite",
         "gemini-3.1-flash-lite-preview",
@@ -92,13 +97,58 @@ object AiModelPolicy {
             .toList()
 
     /**
-     * The model to use when the user has not chosen, or has chosen one that is no
-     * longer offered: simply the newest allowed model the key can see.
+     * 1.4.0-r5: the DEFAULT is no longer "the newest model".
      *
-     * No substring heuristics. The old `contains("flash")` ladder existed to cope
-     * with an unbounded list; with a fixed list of five, "the first one" is both
-     * correct and explainable.
+     * The newest Flash models are the fastest, but on a free key they have the
+     * smallest daily request allowance, and the field complaint was the chat
+     * going dead with a 429 halfway through the day. Gemini 3.1 Flash-Lite has
+     * the highest free daily ceiling of the supported set, so it is what a freshly
+     * entered key starts on. The newer models stay one tap away in the picker,
+     * each labelled with what it trades (see [tier]).
+     *
+     * Ordered fallback: if a key cannot see 3.1 Flash-Lite, its preview build and
+     * the rolling `flash-lite-latest` alias are the next-best high-allowance
+     * choices, and only after those does the pick fall back to display order.
+     */
+    val DEFAULT_PREFERENCE: List<String> = listOf(
+        "gemini-3.1-flash-lite",
+        "gemini-3.1-flash-lite-preview",
+        "gemini-flash-lite-latest",
+    )
+
+    /** The model a new key starts on when the key can see it. */
+    const val DEFAULT_MODEL: String = "gemini-3.1-flash-lite"
+
+    /** How each model trades speed against the free-tier daily allowance. */
+    enum class Tier {
+        /** The default: highest daily ceiling, best for continuous use. */
+        RECOMMENDED_DEFAULT,
+        /** Very fast, but the daily limit is reached noticeably sooner. */
+        FAST_LOW_QUOTA,
+        /** Rolling alias / preview build of a high-allowance model. */
+        HIGH_QUOTA_ALT,
+    }
+
+    fun tier(rawId: String): Tier? = when (normalise(rawId)) {
+        DEFAULT_MODEL -> Tier.RECOMMENDED_DEFAULT
+        "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash-lite" -> Tier.FAST_LOW_QUOTA
+        "gemini-3.1-flash-lite-preview", "gemini-flash-lite-latest" -> Tier.HIGH_QUOTA_ALT
+        else -> null
+    }
+
+    fun isDefault(rawId: String): Boolean = normalise(rawId) == DEFAULT_MODEL
+
+    /** Default pick over bare ids - the cached-list path ([AiSettings.effectiveModel]). */
+    fun pickDefaultId(ids: List<String>): String? {
+        val usable = filterIds(ids)
+        return DEFAULT_PREFERENCE.firstOrNull { it in usable } ?: usable.firstOrNull()
+    }
+
+    /**
+     * The model to use when the user has not chosen, or has chosen one that is no
+     * longer offered: [DEFAULT_PREFERENCE] first, then the first allowed model the
+     * key can see.
      */
     fun pickDefault(models: List<GeminiModel>): String? =
-        filter(models).firstOrNull()?.id
+        pickDefaultId(models.map { it.id })
 }

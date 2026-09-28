@@ -6,6 +6,19 @@
         <item name="android:windowBackground">@color/aether_background</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <!--
+          1.3.1: android:windowLayoutInDisplayCutoutMode moved to values-v27.
+
+          It was declared here unconditionally, and the attribute was added in
+          API 27 while this app's minSdk is 26 - the single `lint` ERROR in the
+          project ([NewApi] at this line). Harmless at runtime, because the
+          framework ignores an attribute it does not know, but it means `lint`
+          can never pass, and a check that always fails is a check nobody reads.
+          Nothing in CI runs lint, which is why it went unnoticed.
+
+          Overriding the whole style in values-v27 rather than splitting out one
+          item is how the resource system works: a qualified folder replaces the
+          resource, it does not merge into it. Keep the two files in step.
+        -->
     </style>
 </resources>

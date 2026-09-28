@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -44,14 +45,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.compose.material.icons.rounded.BatteryAlert
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import studio.cluvex.aether.R
 import studio.cluvex.aether.ai.AiSession
 import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.core.AccessToken
 import studio.cluvex.aether.core.ShareBridge
+import studio.cluvex.aether.core.SmartPlusPlan
 import studio.cluvex.aether.data.AppLanguage
 import studio.cluvex.aether.data.LanguagePrefs
 import studio.cluvex.aether.model.ConnectionProfile
@@ -412,6 +425,53 @@ private fun SettingsHomePage(
                     onClick = { onOpen(SettingsRoute.ZERO_TRUST) },
                     aiTopic = AiTopic.ZERO_TRUST,
                 )
+                // ISSUE #5 (1.3.1): "when I turn the screen off and on again the
+                // connection drops - the VPN still says connected but nothing
+                // loads." On most vendor Android builds that is Doze / app standby
+                // suspending the process the tunnel lives in, and the only cure is
+                // an exemption the USER has to grant; an app cannot grant it to
+                // itself.
+                //
+                // The row only appears while the exemption is missing, so it
+                // disappears once it is dealt with rather than becoming permanent
+                // furniture. It opens the system's own battery-optimisation list:
+                // ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS needs NO permission,
+                // unlike ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which needs
+                // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS in the manifest. Keeping the
+                // permission count at five was worth one extra tap.
+                val power = context.getSystemService(PowerManager::class.java)
+                fun readExempt(): Boolean =
+                    runCatching { power?.isIgnoringBatteryOptimizations(context.packageName) }
+                        .getOrNull() ?: true
+                var exempt by remember(power) { mutableStateOf(readExempt()) }
+                // r8: read once and remembered, the row outlived the grant: the
+                // user taps it, allows Aether in the system list, comes back - and
+                // this page, which never left the composition, still shows it.
+                // Re-read on every resume, which is exactly the moment the user
+                // returns from that system screen.
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner, power) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) exempt = readExempt()
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+                if (!exempt) {
+                    RowDivider()
+                    SettingsNavRow(
+                        title = stringResource(R.string.battery_title),
+                        summary = stringResource(R.string.battery_desc),
+                        icon = Icons.Rounded.BatteryAlert,
+                        onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                                )
+                            }
+                        },
+                    )
+                }
                 RowDivider()
                 SettingsNavRow(
                     title = stringResource(R.string.about_title),
@@ -633,6 +693,22 @@ private fun ConnectionPage(
                         icon = Icons.Rounded.Info,
                     )
                 }
+                // Smart says which of its two implementations this profile gets:
+                // the race needs the plain Aether backend and automatic endpoint
+                // selection, and a user who picked Smart on a chained backend should
+                // not have to read the diagnostics log to learn that.
+                if (profile.protocol == Protocol.AUTO) {
+                    SettingsNoticeRow(
+                        text = stringResource(
+                            if (SmartPlusPlan.eligible(profile)) {
+                                R.string.protocol_auto_race
+                            } else {
+                                R.string.protocol_auto_ladder
+                            },
+                        ),
+                        icon = Icons.Rounded.Info,
+                    )
+                }
             }
             RowDivider(inset = false)
             SettingsChoiceRow(
@@ -745,11 +821,57 @@ private fun TransportPage(
             SettingsChoiceRow(
                 title = stringResource(R.string.mtu_label),
                 options = ConnectionProfile.MTU_PRESETS,
-                selected = profile.mtu,
+                selected = profile.mtu.takeIf { it in ConnectionProfile.MTU_PRESETS } ?: 0,
                 label = { "$it" },
                 onSelect = { onProfileChange(profile.copy(mtu = it)) },
                 enabled = editable,
                 aiTopic = AiTopic.MTU,
+            )
+            RowDivider(inset = false)
+            // ISSUE #33 (1.3.1): "let the MTU be chosen freely, not by clicking
+            // between options." The presets stay - they are the four or five values
+            // that actually matter and most users should not be typing here - but
+            // path MTU is a property of a network, and a user hunting for the one
+            // value that stops Telegram stalling needs to be able to enter it.
+            //
+            // The field owns its own text rather than reading profile.mtu back,
+            // because a partially typed number ("12" on the way to "1280") is not a
+            // valid MTU and must not be pushed into the profile: the SCRAMBLED-INPUT
+            // fix in MainActivity solved echo, not semantics. Only a value inside
+            // the range the TUN can actually carry is committed.
+            var mtuText by remember(profile.mtu) { mutableStateOf(profile.mtu.toString()) }
+            val mtuTyped = mtuText.toIntOrNull()
+            val mtuBad = mtuText.isNotEmpty() &&
+                (mtuTyped == null || mtuTyped !in ConnectionProfile.MTU_MIN..ConnectionProfile.MTU_MAX)
+            LtrOutlinedTextField(
+                value = mtuText,
+                onValueChange = { typed ->
+                    mtuText = typed.filter { it.isDigit() }.take(5)
+                    mtuText.toIntOrNull()
+                        ?.takeIf { it in ConnectionProfile.MTU_MIN..ConnectionProfile.MTU_MAX }
+                        ?.let { onProfileChange(profile.copy(mtu = it)) }
+                },
+                enabled = editable,
+                singleLine = true,
+                isError = mtuBad,
+                label = { Text(stringResource(R.string.mtu_custom_label)) },
+                supportingText = {
+                    Text(
+                        if (mtuBad) {
+                            stringResource(
+                                R.string.mtu_custom_range,
+                                ConnectionProfile.MTU_MIN,
+                                ConnectionProfile.MTU_MAX,
+                            )
+                        } else {
+                            stringResource(R.string.mtu_custom_help)
+                        },
+                    )
+                },
+                keyboardType = KeyboardType.Number,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
             )
         }
         GroupFooter(stringResource(R.string.mtu_desc))
@@ -775,6 +897,22 @@ private fun TransportPage(
                 onCheckedChange = { onProfileChange(profile.copy(ech = it)) },
                 aiTopic = AiTopic.ECH,
             )
+            // ISSUE #44 (1.3.1): only meaningful while ECH is on, so it is not
+            // shown otherwise - an always-visible field for a switched-off feature
+            // is a setting people fill in and then wonder about.
+            if (profile.ech) {
+                LtrOutlinedTextField(
+                    value = profile.echConfig,
+                    onValueChange = { onProfileChange(profile.copy(echConfig = it.trim())) },
+                    enabled = editable,
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.ech_config_label)) },
+                    supportingText = { Text(stringResource(R.string.ech_config_help)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
             RowDivider(inset = false)
             SettingsSwitchRow(
                 title = stringResource(R.string.masque_http2),
@@ -838,6 +976,23 @@ private fun DnsRoutingPage(
     settingsSection {
         GroupCaption(stringResource(R.string.section_routes), aiTopic = AiTopic.ROUTE_BLOCK)
         SettingsGroup {
+            // 1.4.0 smart routing (core/SmartLists.kt)
+            SettingsSwitchRow(
+                title = stringResource(R.string.bypass_iran_title),
+                summary = stringResource(R.string.bypass_iran_desc),
+                checked = profile.bypassIran,
+                enabled = editable,
+                onCheckedChange = { onProfileChange(profile.copy(bypassIran = it)) },
+            )
+            RowDivider(inset = false)
+            SettingsSwitchRow(
+                title = stringResource(R.string.block_ads_title),
+                summary = stringResource(R.string.block_ads_desc),
+                checked = profile.blockAds,
+                enabled = editable,
+                onCheckedChange = { onProfileChange(profile.copy(blockAds = it)) },
+            )
+            RowDivider(inset = false)
             SettingsBlock(aiTopic = AiTopic.ROUTE_DIRECT) {
                 LtrOutlinedTextField(
                     value = profile.routeBlock,
@@ -974,6 +1129,10 @@ private fun ZeroTrustPage(
                                 enabled = editable,
                                 singleLine = true,
                                 label = { Text(stringResource(R.string.access_id_label)) },
+                                // 1.3.1: which of the three methods needs the user
+                                // present, and which does not, was nowhere on this
+                                // screen. This one does not.
+                                supportingText = { Text(stringResource(R.string.team_auth_service_note)) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(12.dp))
@@ -996,11 +1155,25 @@ private fun ZeroTrustPage(
                                 enabled = editable,
                                 singleLine = true,
                                 label = { Text(stringResource(R.string.access_email_label)) },
+                                // 1.3.1, issue #12: say what actually happens. Since
+                                // 1.4.0-r9 the user can sign in beforehand in the
+                                // group below (ZeroTrustMembershipGroup); without
+                                // that, the code is asked for DURING the connect, in
+                                // a dialog (see LoginCodeDialog), and the engine
+                                // waits five minutes for it.
+                                supportingText = { Text(stringResource(R.string.team_auth_email_note)) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
                         TeamAuth.TOKEN -> {
                             Spacer(Modifier.height(12.dp))
+                            // 1.3.1: tell the user what the verdict on their paste
+                            // is, next to the field, instead of letting a bad or
+                            // expired token become a failed connect whose reason is
+                            // one line in the diagnostics log. Same two checks the
+                            // engine makes; see [AccessToken] for why this is not
+                            // and cannot be a verification.
+                            val verdict = AccessToken.inspect(profile.accessToken)
                             LtrOutlinedTextField(
                                 value = profile.accessToken,
                                 onValueChange = { onProfileChange(profile.copy(accessToken = it)) },
@@ -1008,7 +1181,32 @@ private fun ZeroTrustPage(
                                 singleLine = true,
                                 visualTransformation = PasswordVisualTransformation(),
                                 label = { Text(stringResource(R.string.access_token_label)) },
-                                supportingText = { Text(stringResource(R.string.access_secret_help)) },
+                                isError = verdict is AccessToken.Verdict.Malformed ||
+                                    verdict is AccessToken.Verdict.Expired,
+                                supportingText = {
+                                    Text(
+                                        when (verdict) {
+                                            AccessToken.Verdict.Empty ->
+                                                stringResource(R.string.access_token_how)
+                                            AccessToken.Verdict.Malformed ->
+                                                stringResource(R.string.access_token_bad)
+                                            AccessToken.Verdict.Expired ->
+                                                stringResource(R.string.access_token_expired)
+                                            is AccessToken.Verdict.Usable -> when (val d = verdict.daysLeft) {
+                                                null -> stringResource(R.string.access_token_nodate)
+                                                0L -> stringResource(R.string.access_token_ok_soon)
+                                                // See the note in LoginCodeDialog:
+                                                // a count in front of a noun is a
+                                                // <plurals>, not a format string.
+                                                else -> pluralStringResource(
+                                                    R.plurals.access_token_ok,
+                                                    d.toInt(),
+                                                    d,
+                                                )
+                                            }
+                                        },
+                                    )
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
@@ -1025,6 +1223,12 @@ private fun ZeroTrustPage(
                     aiTopic = AiTopic.GATEWAY,
                 )
             }
+        }
+        // 1.4.0-r9 (issue #12): membership and "sign in first, then connect".
+        // Its own group, below the fields it reads, so the status always sits
+        // under the team and address it is about. See ZeroTrustMembership.kt.
+        settingsSection {
+            ZeroTrustMembershipGroup(profile, editable)
         }
     }
 }
@@ -1044,8 +1248,19 @@ private fun AppsPage(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val copied = stringResource(R.string.share_copied)
-    val socks = "127.0.0.1:${ShareBridge.SOCKS_SHARE_PORT}"
-    val http = "127.0.0.1:${ShareBridge.HTTP_SHARE_PORT}"
+    // The ports the bridge is ACTUALLY listening on, falling back to the standard
+    // ones while it is not running (1.3.1).
+    //
+    // These two rows used to print the constants unconditionally, while the Share
+    // card on the home screen showed the live values from the same object - so the
+    // two screens could disagree, and this one is the one with a copy button. The
+    // bridge binds a fixed port and retries it rather than moving, so today the
+    // live value is either the constant or null; reading it anyway means this row
+    // cannot start lying if that ever changes.
+    val liveSocksPort by ShareBridge.socksPort.collectAsState()
+    val liveHttpPort by ShareBridge.httpPort.collectAsState()
+    val socks = "127.0.0.1:${liveSocksPort ?: ShareBridge.SOCKS_SHARE_PORT}"
+    val http = "127.0.0.1:${liveHttpPort ?: ShareBridge.HTTP_SHARE_PORT}"
 
     SettingsScaffold(stringResource(R.string.cat_apps), onBack, modifier) {
         settingsSection {

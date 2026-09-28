@@ -1,5 +1,6 @@
 package studio.cluvex.aether.model
 
+import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.core.TunnelConfig
 
 /** The external stack a backend needs, independent of which one is chained. */
@@ -164,27 +165,27 @@ enum class TransportBackend {
     /** The local SOCKS5 port the FINISHED pipeline exposes to tun2socks. */
     val exposedSocksPort: Int
         get() = when {
-            usesExternal -> TunnelConfig.CHAIN_SOCKS_PORT
-            needsTorFront -> TunnelConfig.TOR_FRONT_PORT
-            else -> TunnelConfig.SOCKS_PORT
+            usesExternal -> PortLease.chain
+            needsTorFront -> PortLease.torFront
+            else -> PortLease.socks
         }
 
     /**
      * The engine's own Tor listener for this mode, or null when Tor is off.
      *
      * With `--tor-only` the engine's single proxy IS Tor, so it is on the usual
-     * [TunnelConfig.SOCKS_PORT]. With `--tor` the usual port keeps the WARP exit
-     * and Tor gets its own listener on [TunnelConfig.TOR_SOCKS_PORT].
+     * [PortLease.socks]. With `--tor` the usual port keeps the WARP exit
+     * and Tor gets its own listener on [PortLease.torSocks].
      */
     val torSocksPort: Int?
         get() = when (torMode) {
             null -> null
-            TorMode.ONLY -> TunnelConfig.SOCKS_PORT
+            TorMode.ONLY -> PortLease.socks
             // Both of these keep the main listener for the tunnel and put Tor on a
             // second one. In CHAIN that second listener is the device's path; in
             // REVERSE it is a bonus (a plain Tor proxy beside a WARP tunnel that is
             // already reached through Tor) and nothing in the app routes through it.
-            TorMode.CHAIN, TorMode.REVERSE -> TunnelConfig.TOR_SOCKS_PORT
+            TorMode.CHAIN, TorMode.REVERSE -> PortLease.torSocks
         }
 
     /**
@@ -200,6 +201,46 @@ enum class TransportBackend {
             TOR_PSIPHON -> "Tor \u2192 Psiphon"
             TOR_AETHER -> "Tor \u2192 Aether"
         }
+
+    /**
+     * The pipeline with the engine's transport named inside the Aether hop, e.g.
+     * `Aether(WireGuard) → Tor`.
+     *
+     * ## Why (1.3.1)
+     *
+     * The home screen's card used to show the engine's PROTOCOL on its own, read
+     * out of the log by [studio.cluvex.aether.core.EngineMeta]. On every chained
+     * mode that was simply the wrong answer to the question the row asks: a user
+     * on `Aether → Tor` saw "WireGuard" and had no way to tell whether Tor was in
+     * the path at all, and a user on `Tor → Psiphon` saw "Auto" — a protocol
+     * belonging to a WARP tunnel that mode never builds.
+     *
+     * So the row now names the whole path, with the transport in brackets on the
+     * hop it actually belongs to.
+     *
+     * The brackets appear only when this mode brings up a WARP tunnel ([usesWarp]).
+     * In the two `--tor-only` modes there is no Aether hop and no transport to
+     * name, which is exactly why "Auto" was misleading there; those render as
+     * `Tor` and `Tor → Psiphon` with nothing added.
+     *
+     * [transport] is whatever the engine reported. Blank or null gives the plain
+     * label, so the row degrades to the pipeline alone rather than to `Aether()`
+     * while a connect is still deciding.
+     */
+    fun pipelineLabel(transport: String?): String {
+        // Only the transport belongs inside the brackets. A caller that hands over
+        // a composite - "WIREGUARD \u2192 PSIPHON", the shape both chained paths in
+        // AetherVpnService published before 1.3.1-r2 - would otherwise render as
+        // "Aether(WIREGUARD \u2192 PSIPHON) \u2192 Psiphon", naming the second hop twice.
+        // The callers are fixed; this keeps the row correct if another one appears.
+        val name = transport
+            ?.substringBefore('\u2192')
+            ?.substringBefore("->")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+        if (name == null || !usesWarp) return pipelineLabel
+        return pipelineLabel.replaceFirst("Aether", "Aether($name)")
+    }
 
     companion object {
         /**

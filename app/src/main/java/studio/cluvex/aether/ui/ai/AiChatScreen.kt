@@ -72,14 +72,10 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import studio.cluvex.aether.R
+import studio.cluvex.aether.ai.AiMarkdown
 import studio.cluvex.aether.ai.AiMessage
 import studio.cluvex.aether.ai.AiPatch
 import studio.cluvex.aether.ai.AiSession
@@ -446,12 +442,20 @@ private fun MessageRow(
     onToggle: () -> Unit,
     content: @Composable () -> Unit,
 ) {
+    // r4: the selection tint is DRAWN with the rounded shape instead of clipping
+    // the row to it. A clip cuts the content too, and the AI mark in the top-start
+    // corner of a model turn was losing the part that fell outside the 18dp curve
+    // - the "half of the icon is hidden" report. Nothing inside a turn is clipped
+    // any more; only the tint is rounded.
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
             .then(
-                if (selected) Modifier.background(AetherViolet.copy(alpha = 0.12f)) else Modifier,
+                if (selected) {
+                    Modifier.background(AetherViolet.copy(alpha = 0.12f), RoundedCornerShape(18.dp))
+                } else {
+                    Modifier
+                },
             )
             .combinedClickable(
                 onLongClick = onToggle,
@@ -621,11 +625,26 @@ private fun ModelTurn(
 ) {
     val clipboard = LocalClipboardManager.current
     Column(modifier = Modifier.fillMaxWidth()) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+        // r4: the mark sits at the START of the name, like Gemini's own sparkle -
+        // on the RIGHT of "هوش مصنوعی اتر" in Persian, on the left of "Aether AI"
+        // in English - by letting the Row follow the layout direction instead of
+        // pinning it to LTR as r2 did.
+        //
+        // r2 pinned it to the left because at the start it was drawn half-hidden.
+        // The real cause was not the position: MessageRow CLIPPED every turn to an
+        // 18dp rounded rectangle (for the selection tint), and a 22dp mark placed
+        // flush in the top-start corner of that rectangle lost the part that fell
+        // outside the curve. MessageRow no longer clips its content (see there),
+        // and the header is also inset from the corner, so the mark is drawn whole
+        // on either side, in either language, selected or not.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.padding(start = 4.dp, end = 4.dp, top = 2.dp),
+        ) {
             Box(
                 modifier = Modifier
-                    .size(22.dp)
-                    .clip(RoundedCornerShape(7.dp))
+                    .size(24.dp)
+                    .clip(RoundedCornerShape(8.dp))
                     .background(AetherViolet.copy(alpha = 0.16f)),
                 contentAlignment = Alignment.Center,
             ) {
@@ -633,7 +652,7 @@ private fun ModelTurn(
                     imageVector = Icons.Rounded.AutoAwesome,
                     contentDescription = null,
                     tint = AetherViolet,
-                    modifier = Modifier.size(13.dp),
+                    modifier = Modifier.size(14.dp),
                 )
             }
             Spacer(Modifier.width(8.dp))
@@ -641,6 +660,7 @@ private fun ModelTurn(
                 text = stringResource(R.string.ai_title),
                 style = MaterialTheme.typography.labelMedium,
                 color = AetherViolet,
+                maxLines = 1,
             )
         }
         Spacer(Modifier.height(6.dp))
@@ -694,8 +714,11 @@ private fun ModelTurn(
                 }
             }
         } else {
-            Text(
-                text = renderLightMarkdown(message.text),
+            // r4: real Markdown rendering (headings, lists, bold, code, tables)
+            // with per-block text direction - no `*` or `#` reaches the screen.
+            AiRichText(
+                text = message.text,
+                modifier = Modifier.padding(horizontal = 2.dp),
                 style = MaterialTheme.typography.bodyMedium,
                 color = OnDark,
             )
@@ -710,7 +733,7 @@ private fun ModelTurn(
             if (actionsEnabled) {
                 Spacer(Modifier.height(2.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    IconButton(onClick = { clipboard.setText(AnnotatedString(message.text)) }) {
+                    IconButton(onClick = { clipboard.setText(AnnotatedString(AiMarkdown.toPlainText(message.text))) }) {
                         Icon(
                             imageVector = Icons.Rounded.ContentCopy,
                             contentDescription = stringResource(R.string.ai_chat_copy),
@@ -728,53 +751,6 @@ private fun ModelTurn(
                     }
                 }
             }
-        }
-    }
-}
-
-/**
- * Renders the small subset of Markdown a model actually emits in short answers.
- *
- * `**bold**`, `` `code` `` and `*` bullets, and nothing else. A full Markdown
- * renderer is a dependency and a maintenance surface; leaving the asterisks in the
- * text is worse than either, because a model told to be concise uses bold for
- * every setting name it mentions and the answer ends up looking like source code.
- */
-private fun renderLightMarkdown(raw: String): AnnotatedString = buildAnnotatedString {
-    var i = 0
-    while (i < raw.length) {
-        val bold = raw.indexOf("**", i)
-        val code = raw.indexOf('`', i)
-        val next = when {
-            bold < 0 -> code
-            code < 0 -> bold
-            else -> minOf(bold, code)
-        }
-        if (next < 0) {
-            append(raw.substring(i))
-            return@buildAnnotatedString
-        }
-        append(raw.substring(i, next))
-        if (next == bold) {
-            val close = raw.indexOf("**", next + 2)
-            if (close < 0) {
-                append(raw.substring(next))
-                return@buildAnnotatedString
-            }
-            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
-                append(raw.substring(next + 2, close))
-            }
-            i = close + 2
-        } else {
-            val close = raw.indexOf('`', next + 1)
-            if (close < 0) {
-                append(raw.substring(next))
-                return@buildAnnotatedString
-            }
-            withStyle(SpanStyle(fontFamily = FontFamily.Monospace, fontSize = 13.sp)) {
-                append(raw.substring(next + 1, close))
-            }
-            i = close + 1
         }
     }
 }

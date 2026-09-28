@@ -8,6 +8,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import studio.cluvex.aether.ai.AiRedaction
@@ -108,6 +109,27 @@ object DiagnosticsLog {
     private const val UI_PUBLISH_INTERVAL_MS = 200L
     private const val MAX_FILE_BYTES = 512L * 1024L
 
+    /**
+     * How long the writer waits for more lines before sealing a record (1.3.1).
+     *
+     * The writer used to take one line and then drain whatever happened to be
+     * queued behind it. During a scan that is a real batch; while the app sits
+     * idle and logs a line every few seconds it is a batch of ONE, so the file
+     * filled up with one sealed record per line. Every record costs a keystore
+     * operation to write and another to read back, and reading them back is what
+     * [init] used to do on the main thread at every cold start.
+     *
+     * A short linger collapses a trickle into one record without delaying
+     * anything a user can perceive: the in-memory log the panel shows is already
+     * updated, and this only moves when the bytes reach flash. 250 ms is below
+     * the panel's own publish interval, so the disk copy never lags the screen
+     * by more than one refresh.
+     */
+    private const val WRITE_COALESCE_MS = 250L
+
+    /** Lines per sealed record. Caps the linger above on a chatty engine. */
+    private const val MAX_BATCH_LINES = 256
+
     /** Bounded in-memory ring buffer. Guarded by [bufferLock]. */
     private val buffer = ArrayDeque<LogLine>(MAX_LINES)
     private val bufferLock = Any()
@@ -142,53 +164,126 @@ object DiagnosticsLog {
         get() = logFile != null && !diskMirrorDisabled
 
     /**
-     * Wires the persistent log file (call once from Application.onCreate). If a
-     * file from a previous run exists (e.g. it ended in a crash), its contents
-     * are preserved to `<name>.prev` and loaded back into the panel so the
-     * crash is visible after relaunch.
+     * Wires the persistent log file (call once from Application.onCreate).
+     *
+     * Returns as soon as the file is wired: it never touches the disk itself.
+     *
+     * ## 1.3.1 STARTUP FIX — this method used to be the slow cold start
+     *
+     * It did three things inline, on whatever thread called it, which is the
+     * main thread in `Application.onCreate`:
+     *
+     *  1. [EncryptedLogFile.readLines] over the WHOLE file — one Android
+     *     Keystore operation per sealed record, and the writer produced roughly
+     *     one record per line, so a 512 KB log meant thousands of TEE round
+     *     trips in a row;
+     *  2. a byte copy of the same file to `<name>.prev`;
+     *  3. all of it before the first frame could be laid out.
+     *
+     * Then it kept only the newest [MAX_LINES] of what it had decrypted. Field
+     * reports called this "the app takes about ten seconds to open", "it opens
+     * slowly or stays on a black screen" and "it only comes back if I clear app
+     * data" — clearing data deletes this file, which is why that worked. It also
+     * fed the `ForegroundServiceDidNotStartInTimeException` crashes: a main
+     * thread parked in the keystore cannot answer `startForegroundService()`
+     * with `startForeground()` inside the framework's ten-second window.
+     *
+     * Now: the restore runs on a background thread, and it decrypts only the
+     * tail it is actually going to keep ([EncryptedLogFile.readLastLines]).
+     * Lines logged while it is still running are preserved — the restored block
+     * is spliced in FRONT of them, so the panel reads in order either way.
      */
     @Synchronized
     fun init(file: File) {
         logFile = file
-        var migrated = false
-        runCatching {
-            if (file.exists() && file.length() > 0L) {
-                val previous: List<String>
-                if (EncryptedLogFile.looksSealed(file)) {
-                    previous = EncryptedLogFile.readLines(file)
-                    // Rotate the SEALED bytes, so the previous session survives a
-                    // trim or a clear without ever existing in the clear.
-                    runCatching {
-                        file.copyTo(File(file.parentFile, file.name + ".prev"), overwrite = true)
-                    }
-                } else {
-                    // A log written by 1.2.9-r2 or earlier: plaintext. Read it once
-                    // so the user does not lose the session they are about to
-                    // report, then remove it - along with its plaintext rotation -
-                    // and start a sealed file in its place.
-                    previous = runCatching { file.readLines() }.getOrDefault(emptyList())
-                    EncryptedLogFile.shred(file)
-                    EncryptedLogFile.shred(File(file.parentFile, file.name + ".prev"))
-                    migrated = true
+        val previousEnd = runCatching { if (file.exists()) file.length() else 0L }.getOrDefault(0L)
+        if (previousEnd <= 0L) return
+        // r8: pin WHICH session is being restored. [clear] bumps [session]; a
+        // restore that finds it moved has been overtaken by a new session and
+        // must not splice the old lines into it or touch the rotation.
+        val restoring = session
+        thread(name = "log-restore", isDaemon = true, priority = Thread.MIN_PRIORITY) {
+            runCatching { restorePrevious(file, restoring, previousEnd) }
+        }
+    }
+
+    /**
+     * Bumped by [clear]. Read by the restore thread to tell whether the session it
+     * was started for is still the current one.
+     */
+    @Volatile
+    private var session = 0
+
+    /**
+     * The body of the old [init], off the main thread and reading the tail only.
+     *
+     * r8: a connect that starts during a slow restore (`AetherVpnService.connectFlow`
+     * calls [clear]) used to be able to interleave with it: `clear` rotates the
+     * file to `.prev` and empties it, then the restore copied the now EMPTY file
+     * over `.prev` - destroying the very previous-session log both were trying to
+     * keep - and spliced the old lines into the fresh session.
+     *
+     * Now the slow part (the keystore decrypts) runs WITHOUT the monitor, so it
+     * can never hold up [clear] or anything else on the main thread, and every
+     * side effect (rotation, shredding, splicing) runs under the same monitor as
+     * [clear], after checking that no [clear] happened in between. Whichever runs
+     * second sees what the first did.
+     */
+    private fun restorePrevious(file: File, restoring: Int, previousEnd: Long) {
+        if (session != restoring) return
+        val sealed = EncryptedLogFile.looksSealed(file)
+        // Only as many lines as can survive the MAX_LINES cap, and only from the
+        // bytes that existed before this launch: decrypting anything else was the
+        // whole cost and none of the value.
+        val previous: List<String> = if (sealed) {
+            EncryptedLogFile.readLastLines(file, MAX_LINES, previousEnd)
+        } else {
+            // A log written by 1.2.9-r2 or earlier: plaintext. Read it once so
+            // the user does not lose the session they are about to report.
+            runCatching { file.readLines() }.getOrDefault(emptyList())
+        }
+        val migrated = !sealed
+        val restored = previous.takeLast(MAX_LINES).map {
+            LogLine(0L, "prev", LogLevel.DEBUG, it, raw = true)
+        }
+        synchronized(this) {
+            // Overtaken by a new session: [clear] already rotated the previous
+            // log to `.prev` and started a fresh one. Nothing left to do, and
+            // anything done now would damage one or the other.
+            if (session != restoring) return
+            if (sealed) {
+                // Rotate the SEALED bytes, so the previous session survives a
+                // trim or a clear without ever existing in the clear.
+                runCatching {
+                    file.copyTo(File(file.parentFile, file.name + ".prev"), overwrite = true)
                 }
-                val restored = previous.takeLast(MAX_LINES).map {
-                    LogLine(0L, "prev", LogLevel.DEBUG, it, raw = true)
-                }
-                val header = LogLine(
-                    System.currentTimeMillis(),
-                    "log",
-                    LogLevel.INFO,
-                    "—— previous session restored (${restored.size} lines) ——",
-                )
-                synchronized(bufferLock) {
-                    buffer.clear()
-                    buffer.addAll(restored)
-                    buffer.addLast(header)
-                    while (buffer.size > MAX_LINES) buffer.removeFirst()
-                    _lines.value = buffer.toList()
-                }
+            } else {
+                // ...then remove the plaintext, along with its plaintext rotation,
+                // and start a sealed file in its place.
+                EncryptedLogFile.shred(file)
+                EncryptedLogFile.shred(File(file.parentFile, file.name + ".prev"))
+            }
+            if (restored.isEmpty() && !migrated) return
+            val header = LogLine(
+                System.currentTimeMillis(),
+                "log",
+                LogLevel.INFO,
+                "—— previous session restored (${restored.size} lines) ——",
+            )
+            synchronized(bufferLock) {
+                // Anything logged during startup while this thread was working is
+                // NEWER than what is being restored, so it goes after it. Splicing
+                // rather than clearing is what makes the restore safe to run late.
+                val live = buffer.toList()
+                buffer.clear()
+                buffer.addAll(restored)
+                buffer.addLast(header)
+                buffer.addAll(live)
+                while (buffer.size > MAX_LINES) buffer.removeFirst()
             }
         }
+        dirty.set(true)
+        ensurePublisher()
         if (migrated) {
             i("log", "Previous diagnostics log was plaintext: it has been loaded, then erased. From now on the on-disk log is encrypted with a device key.")
         }
@@ -237,12 +332,22 @@ object DiagnosticsLog {
             writerStarted = true
         }
         thread(name = "log-writer", isDaemon = true, priority = Thread.MIN_PRIORITY) {
-            val batch = ArrayList<String>(64)
+            val batch = ArrayList<String>(MAX_BATCH_LINES)
             while (true) {
                 batch.clear()
-                // Block for the first line, then sweep up whatever else queued.
+                // Block for the first line, then LINGER briefly for more (1.3.1).
+                // The old code drained only what was already queued, which on an
+                // idle app is nothing - one record per line, see
+                // WRITE_COALESCE_MS.
                 batch.add(pendingWrites.take())
-                pendingWrites.drainTo(batch, 256)
+                val deadline = System.nanoTime() + WRITE_COALESCE_MS * 1_000_000L
+                while (batch.size < MAX_BATCH_LINES) {
+                    val leftMs = (deadline - System.nanoTime()) / 1_000_000L
+                    if (leftMs <= 0L) break
+                    val next = pendingWrites.poll(leftMs, TimeUnit.MILLISECONDS) ?: break
+                    batch.add(next)
+                    pendingWrites.drainTo(batch, MAX_BATCH_LINES - batch.size)
+                }
                 val file = logFile ?: continue
                 if (diskMirrorDisabled) continue
                 // ONE sealed record per batch: the same single write the plaintext
@@ -269,7 +374,7 @@ object DiagnosticsLog {
     private fun trimFile(file: File) {
         runCatching {
             file.copyTo(File(file.parentFile, file.name + ".prev"), overwrite = true)
-            val keep = EncryptedLogFile.readLines(file).takeLast(MAX_LINES / 2)
+            val keep = EncryptedLogFile.readLastLines(file, MAX_LINES / 2)
             EncryptedLogFile.rewrite(file, keep)
         }
     }
@@ -307,6 +412,7 @@ object DiagnosticsLog {
      */
     @Synchronized
     fun clear() {
+        session++
         synchronized(bufferLock) { buffer.clear() }
         _lines.value = emptyList()
         runCatching {

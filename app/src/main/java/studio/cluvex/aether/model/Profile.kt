@@ -1,6 +1,7 @@
 package studio.cluvex.aether.model
 
 import androidx.compose.runtime.Immutable
+import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.core.TunnelConfig
 
 /**
@@ -10,6 +11,7 @@ import studio.cluvex.aether.core.TunnelConfig
  * exit address in a different range than a single hop gives. It is to MASQUE what
  * gool is to WireGuard, and it is appended rather than inserted because
  * [studio.cluvex.aether.data.ProfileStore] persists the NAME, not the ordinal.
+
  */
 enum class Protocol { AUTO, MASQUE, WIREGUARD, GOOL, MIM }
 
@@ -97,7 +99,9 @@ data class ConnectionProfile(
     /**
      * Share the tunnel with other devices on the same Wi-Fi / hotspot via the
      * in-app proxy bridge (see [studio.cluvex.aether.core.ShareBridge]).
-     * UI-side option only — it never reaches the engine's CLI args.
+     * 1.4.0-r5: it now also affects the engine's CLI args - while it is on,
+     * direct (bypass) rules are not passed, so nothing a shared device sends
+     * can leave outside the tunnel (see [shareSuspendsDirectRules]).
      */
     val lanShare: Boolean = false,
 
@@ -122,6 +126,31 @@ data class ConnectionProfile(
     val fragment: Boolean = false,
     /** Enable Encrypted Client Hello (hides the real SNI). */
     val ech: Boolean = false,
+    /**
+     * A base64 ECHConfigList to use instead of letting the engine fetch one
+     * (issue #44). Blank means `--ech auto`, which is the previous behaviour.
+     *
+     * ## What was asked for, and what this is
+     *
+     * The request was v2rayNG's shape: name a DIFFERENT domain, say
+     * `gitlab.io+https://8.8.8.8/dns-query`, so the DPI sees a handshake for a
+     * host it does not filter. The engine cannot do that. `--ech` takes
+     * `auto | <base64>` and nothing else: `auto` fetches the ECHConfigList for the
+     * hosts in `dns::ECH_HOSTS` (`cloudflare-ech.com`, `crypto.cloudflare.com`),
+     * and the alternative is a config the caller already holds. Naming an
+     * arbitrary domain would mean the engine resolving an HTTPS RR for it, which
+     * is engine work, not app work.
+     *
+     * So this exposes the half that exists: paste a config obtained elsewhere.
+     * On a network where fetching the default one is what fails - and the field
+     * logs show exactly that, `fetched ECHConfigList ... via 1.1.x.x:53` being the
+     * step before a stall - that is the difference between ECH working and not.
+     *
+     * Validated as base64 before it is sent, because the engine's own answer to a
+     * bad value is `[-] bad AETHER_ECH: ...; continuing without ECH`, one line in
+     * a log nobody reads, and the user is left believing ECH is on.
+     */
+    val echConfig: String = "",
 
     // ---- App-side only (never reach the engine CLI) ----
 
@@ -166,6 +195,21 @@ data class ConnectionProfile(
     /** Pre-obtained enrolment JWT (used when [teamAuth] is TOKEN). Env-only. */
     val accessToken: String = "",
     /**
+     * 1.4.0-r9: the enrolment JWT from the pre-connect e-mail sign-in in Settings
+     * (used when [teamAuth] is EMAIL). Env-only, like [accessToken].
+     *
+     * NEVER persisted with the profile and NEVER carried by [studio.cluvex.aether.core.ProfileCodec]: it is
+     * not something the user typed, it lives sealed in
+     * [studio.cluvex.aether.data.TeamSignInStore], and only the VPN service puts
+     * it here - in `hydrateSecrets`, right before the engine is started, and only
+     * when the stored sign-in belongs to exactly this team and address, has not
+     * expired, and the device is not already enrolled. Blank everywhere else, in
+     * which case the e-mail method behaves exactly as before: the engine mails a
+     * code during the connect and [studio.cluvex.aether.core.LoginCodePrompt]
+     * asks for it.
+     */
+    val accessSignInToken: String = "",
+    /**
      * Route http/https through the organization's Gateway proxy so its
      * filtering and logging apply. Off by default: it adds a hop inside the
      * tunnel AND makes the organization able to log browsing.
@@ -176,6 +220,21 @@ data class ConnectionProfile(
     val routeBlock: String = "",
     /** Destinations sent straight out, bypassing the tunnel (engine `--route-direct`). */
     val routeDirect: String = "",
+
+    // ---- 1.4.0 smart routing (core/SmartLists.kt) ----
+
+    /**
+     * Send Iranian sites straight out instead of through the tunnel: every `.ir`
+     * name, well-known Iranian services on other domains, and every Iranian IPv4
+     * block. Off by default. A DIRECT rule, so it is suspended while LAN sharing
+     * is on, exactly like [routeDirect].
+     */
+    val bypassIran: Boolean = false,
+    /**
+     * Block ads and trackers: a DNS sinkhole plus a block rule for the HaGeZi
+     * "Light" list (refreshed weekly through the tunnel). Off by default.
+     */
+    val blockAds: Boolean = false,
 
     // ---- Added in 1.2.4 (feature parity) ----
 
@@ -254,16 +313,45 @@ data class ConnectionProfile(
 
     /**
      * Only reuse the cached ("quick reconnect") endpoint while it is still FAST,
-     * instead of merely still alive.
+     * instead of merely still alive. **Off by default since 1.3.1.**
      *
-     * The engine used to skip its scan for any cached endpoint that answered at
-     * all. A field log shows it reusing one at `rtt 472ms` while 100-143ms edges
+     * ## What it is for
+     *
+     * The engine skips its scan for any cached endpoint that still answers. A
+     * 1.2.7 field log showed it reusing one at `rtt 472ms` while 100-143ms edges
      * had just been measured on the same network, which roughly halves throughput
-     * - and in the chained mode that cost is paid on both hops. With this on, an
-     * over-budget cached endpoint is ignored and a normal scan picks a faster one
-     * (a few seconds, once). See `AETHER_QUICK_RECONNECT_MAX_RTT_MS` in [toEnv].
+     * - and in the chained mode that cost is paid on both hops. With this ON, an
+     * over-budget cached endpoint is ignored and a normal scan looks for a faster
+     * one. See `AETHER_QUICK_RECONNECT_MAX_RTT_MS` in [toEnv].
+     *
+     * ## Why the default is now OFF (1.3.1)
+     *
+     * It was on, and on the networks this app exists for it threw the cache away
+     * every single time. The budgets were calibrated against "100-150ms edges on
+     * Iranian mobile"; the field logs that came in for 1.3.0 do not contain a
+     * single measurement in that range:
+     *
+     *  * a cached WireGuard endpoint rejected at `rtt 1.272s` against the 180ms
+     *    chained budget;
+     *  * a cached MASQUE gateway verified as WORKING, then rejected at
+     *    `handshake 2.778s` against the 1.4s budget - after which the rescan found
+     *    no gateway at all in 300 seconds and the connect FAILED. The session
+     *    ended with nothing, having held a working gateway seconds earlier;
+     *  * a full `thorough` scan whose every accepted candidate sat between 727ms
+     *    and 1.8s.
+     *
+     * So the feature was not choosing the faster of two endpoints. It was
+     * discarding the only one there was, and paying a full scan on every single
+     * reconnect - which is the "it takes forever to find a working IP, and the
+     * moment it drops that is thrown away" report.
+     *
+     * Unset, the engine is back to its own behaviour: reuse a cached endpoint that
+     * answers. Throughput on a good network is the thing being traded away, and
+     * that is the right way round - a slow tunnel is usable and a missing one is
+     * not. Anyone on a fast link can still switch it on, and the budgets it sends
+     * are no longer calibrated for a network nobody reported having.
      */
-    val fastEndpointOnly: Boolean = true,
+    val fastEndpointOnly: Boolean = false,
 
     // ---- Added in 1.3.0 (engine core 2.0.0: Tor) ----
 
@@ -329,7 +417,30 @@ data class ConnectionProfile(
      */
     val chainedStage: Boolean = false,
 
+    /**
+     * Local SOCKS5 port this engine must bind, overriding [PortLease.socks].
+     *
+     * Zero means "the session's port", which is every ordinary connect. It is set
+     * only for the throwaway engines of a Smart Plus race
+     * ([studio.cluvex.aether.core.SmartPlusPlan]), where two engines run at the
+     * same time and each needs a listener of its own.
+     *
+     * Never persisted: a port borrowed for one race must not come back on the next
+     * connect. [studio.cluvex.aether.data.ProfileStore] does not write it and
+     * [studio.cluvex.aether.core.AetherController]'s wire format does not carry it.
+     */
+    /**
+     * 1.4.0: run the ENGINE's Psiphon (core 2.1.0, `--psiphon`) chained behind this
+     * engine's exit. Transient, set only on a chained stage-1 copy; never persisted.
+     */
+    val enginePsiphon: Boolean = false,
+    val bindOverride: Int = 0,
+
 ) {
+    /** The local SOCKS5 port this profile's engine will listen on. */
+    val bindPort: Int
+        get() = if (bindOverride > 0) bindOverride else PortLease.socks
+
     /** True when Tor is asked to reach the network through bridges of any kind. */
     val hasCustomBridges: Boolean
         get() = torBridgeLines.isNotBlank() && sanitizedBridges().isNotEmpty()
@@ -405,9 +516,39 @@ data class ConnectionProfile(
         .distinct()
         .take(MAX_BRIDGE_LINES)
 
+    /**
+     * Whether [text] is plausibly base64 - the only check worth making on a
+     * pasted ECHConfigList (issue #44).
+     *
+     * Not a decode: the app has no idea what a valid ECHConfigList looks like and
+     * has no business deciding. This catches the paste that is obviously not one -
+     * a URL, a domain name, a sentence - so it can fall back to `auto` rather than
+     * handing the engine something it will silently drop.
+     */
+    private fun looksLikeBase64(text: String): Boolean =
+        text.length >= 8 && text.all { it.isLetterOrDigit() || it == '+' || it == '/' || it == '=' }
+
+    /** The Psiphon exit country as the engine accepts it (two letters), or null for automatic. */
+    fun sanitizedPsiphonRegion(): String? = exitRegion.trim().uppercase()
+        .takeIf { it.length == 2 && it.all { c -> c in 'A'..'Z' } }
+
     /** Command-line arguments passed to the `aether` engine binary. */
     fun toArgs(): List<String> {
         val args = mutableListOf<String>()
+
+        // ---- Local listener (issues #27, #52) ----------------------------
+        //
+        // Emitted ALWAYS, and first, even when it names the engine's own default.
+        // The engine binds 127.0.0.1:1819 unless told otherwise, and that fixed
+        // number is what made a second instance in an Android Private Space fail
+        // with "Address already in use (os error 98)" before any tunnel was
+        // attempted - the two profiles share the network namespace. [PortLease]
+        // picks the preferred port when it is free and the next free one when it
+        // is not, so this is 1819 on a normal install and something else only when
+        // 1819 is genuinely taken. Passing it unconditionally also means the log
+        // states the port rather than leaving it implied by a default.
+        args += "--bind"
+        args += "${TunnelConfig.SOCKS_HOST}:${bindPort}"
 
         // ---- Tor (engine core 2.0.0) -------------------------------------
         //
@@ -421,13 +562,13 @@ data class ConnectionProfile(
             TorMode.CHAIN -> {
                 args += "--tor"
                 args += "--tor-bind"
-                args += "127.0.0.1:${TunnelConfig.TOR_SOCKS_PORT}"
+                args += "${TunnelConfig.SOCKS_HOST}:${PortLease.torSocks}"
             }
             TorMode.ONLY -> args += "--tor-only"
             TorMode.REVERSE -> {
                 args += "--tor-reverse"
                 args += "--tor-bind"
-                args += "127.0.0.1:${TunnelConfig.TOR_SOCKS_PORT}"
+                args += "${TunnelConfig.SOCKS_HOST}:${PortLease.torSocks}"
             }
         }
         if (backend.usesTor) {
@@ -447,6 +588,21 @@ data class ConnectionProfile(
                 }
             }
         }
+        // ---- Psiphon (engine core 2.1.0, app 1.4.0) ------------------------
+        //
+        // Psiphon lives in the engine now. `--psiphon` chains it behind this
+        // engine's own listener (WARP, or Tor with `--tor-only` via the app's
+        // tor-only-psiphon-chain engine patch). Emitted before the tor-only early
+        // return below, because `Tor -> Psiphon` needs it too.
+        if (enginePsiphon) {
+            args += "--psiphon"
+            args += "--psiphon-bind"
+            args += "${TunnelConfig.SOCKS_HOST}:${PortLease.psiphon}"
+            sanitizedPsiphonRegion()?.let {
+                args += "--psiphon-region"
+                args += it
+            }
+        }
         if (!backend.usesWarp) {
             // Plain Tor: the resolvers still apply (they are what the engine's own
             // SOCKS front hands out), nothing else here does.
@@ -458,10 +614,10 @@ data class ConnectionProfile(
         }
 
         when (effectiveProtocol) {
-            // AUTO no longer reaches the engine: Smart Auto (core/SmartAuto.kt)
-            // fingerprints the network's DPI and resolves AUTO to a concrete,
-            // tuned protocol BEFORE launch. Kept only for exhaustiveness.
-            Protocol.AUTO -> { /* resolved by SmartAuto before launch */ }
+            // AUTO never reaches the engine: Smart (core/SmartAuto.kt), and the
+            // race in core/SmartPlusPlan.kt where the backend allows it, resolve it
+            // to a concrete tuned protocol BEFORE launch. Kept for exhaustiveness.
+            Protocol.AUTO -> { /* resolved before launch */ }
             Protocol.MASQUE -> args += "--masque"
             Protocol.WIREGUARD -> args += "--wg"
             Protocol.GOOL -> args += "--gool"
@@ -500,7 +656,14 @@ data class ConnectionProfile(
         }
 
         if (fragment) args += "--fragment"
-        if (ech) { args += "--ech"; args += "auto" }
+        if (ech) {
+            args += "--ech"
+            // A pasted config wins over `auto`; see [echConfig]. Trimmed because a
+            // clipboard paste routinely carries a newline, and the engine would
+            // reject the value for it.
+            val pasted = echConfig.trim()
+            args += if (pasted.isNotEmpty() && looksLikeBase64(pasted)) pasted else "auto"
+        }
         if (keepalive > 0) { args += "--keepalive"; args += keepalive.toString() }
 
         // ---- engine v1.5.0 ----
@@ -525,9 +688,18 @@ data class ConnectionProfile(
             args += "--route-block"
             args += it.joinToString(",")
         }
-        sanitizedRules(routeDirect).takeIf { it.isNotEmpty() }?.let {
-            args += "--route-direct"
-            args += it.joinToString(",")
+        // 1.4.0-r5 ZERO-LEAK SHARING: while LAN sharing is on, the engine gets NO
+        // direct (bypass) rules. The engine applies them to every SOCKS client,
+        // the share bridge included, so a shared device asking for a "direct"
+        // destination went out of the phone's own uplink with the user's real
+        // IP. Suspending them for the session is the only fully provable fix;
+        // the Share card tells the user when this is happening. See
+        // core/ShareLeakGuard.kt, point 1.
+        if (!lanShare) {
+            sanitizedRules(routeDirect).takeIf { it.isNotEmpty() }?.let {
+                args += "--route-direct"
+                args += it.joinToString(",")
+            }
         }
 
         // ---- 1.2.4 engine tuning ----
@@ -591,9 +763,21 @@ data class ConnectionProfile(
                     accessClientSecret.trim().takeIf { it.isNotEmpty() }
                         ?.let { put("AETHER_ACCESS_CLIENT_SECRET", it) }
                 }
-                TeamAuth.EMAIL ->
-                    accessEmail.trim().takeIf { it.isNotEmpty() }
-                        ?.let { put("AETHER_ACCESS_EMAIL", it) }
+                TeamAuth.EMAIL -> {
+                    // 1.4.0-r9: signed in beforehand -> hand over the token and
+                    // NOT the address. `zerotrust::sign_in` would prefer the token
+                    // anyway, but leaving the address out makes it impossible for
+                    // this connect to fall into the in-connect code prompt: with a
+                    // token the engine either enrols or fails with a named reason.
+                    // Not signed in -> the address, and the prompt, as before.
+                    val signedIn = accessSignInToken.trim()
+                    if (signedIn.isNotEmpty()) {
+                        put("AETHER_ACCESS_TOKEN", signedIn)
+                    } else {
+                        accessEmail.trim().takeIf { it.isNotEmpty() }
+                            ?.let { put("AETHER_ACCESS_EMAIL", it) }
+                    }
+                }
                 TeamAuth.TOKEN ->
                     accessToken.trim().takeIf { it.isNotEmpty() }
                         ?.let { put("AETHER_ACCESS_TOKEN", it) }
@@ -684,6 +868,13 @@ data class ConnectionProfile(
         // it is handed over through the environment and NEVER as the `--upstream`
         // CLI argument: any local app can read /proc/<pid>/cmdline of a process
         // it can see, but not that process's environment block.
+        // 1.4.0: in `Tor -> Psiphon` the engine's Psiphon starts dialling through
+        // Tor before Tor has finished bootstrapping, so its own 180 s ready budget
+        // must cover the bootstrap as well.
+        if (enginePsiphon && backend.torMode == TorMode.ONLY) {
+            put("AETHER_PSIPHON_READY_SECS", PSIPHON_OVER_TOR_READY_SECS)
+        }
+
         sanitizedUpstream()?.let { put("AETHER_UPSTREAM", it) }
     }
 
@@ -705,6 +896,13 @@ data class ConnectionProfile(
      * `private`) and rejects entries containing a comma, whitespace or a shell
      * metacharacter, which would otherwise split into extra arguments.
      */
+    /**
+     * 1.4.0-r5: true when LAN sharing is on AND the user has direct rules, i.e.
+     * those rules are suspended for this session to keep the real IP hidden.
+     */
+    val shareSuspendsDirectRules: Boolean
+        get() = lanShare && (sanitizedRules(routeDirect).isNotEmpty() || bypassIran)
+
     fun sanitizedRules(raw: String): List<String> = raw
         .split(',', '\n')
         .map { it.trim() }
@@ -751,6 +949,23 @@ data class ConnectionProfile(
         const val DEFAULT_MTU = 1280
         /** Presets offered in the UI. */
         val MTU_PRESETS = listOf(1280, 1380, 1420, 1500, 8500)
+
+        /**
+         * Bounds for the free MTU entry added in 1.3.1 (issue #33).
+         *
+         * 1280 is the floor because it is IPv6's minimum link MTU (RFC 8200 §5):
+         * below it the TUN cannot carry v6 at all, and this app routes `::/0`
+         * unconditionally in its chained and lockdown modes. 9000 is the ceiling
+         * because it is the practical jumbo-frame limit and the existing 8500
+         * preset has to remain reachable by hand.
+         *
+         * A value outside this range is not committed to the profile at all - see
+         * the field in SettingsScreen. The engine would otherwise be handed a TUN
+         * it cannot build, which surfaces as a connect that succeeds and carries
+         * nothing.
+         */
+        const val MTU_MIN = 1280
+        const val MTU_MAX = 9000
         /** Keepalive presets offered in the UI (0 = engine default). */
         val KEEPALIVE_PRESETS = listOf(0, 10, 25, 45)
 
@@ -758,14 +973,27 @@ data class ConnectionProfile(
         //
         // The WireGuard probe measures one data-plane round trip, so the budget
         // is an RTT. The MASQUE probe is a whole QUIC/TLS handshake and costs
-        // several round trips, hence the separate, larger number. Both are set
-        // above the good edges observed on Iranian mobile (100-150ms) with
-        // enough headroom that a healthy endpoint is never thrown away, and well
-        // below the 470ms+ that made the tunnel feel half-speed.
-        private const val DIRECT_RTT_BUDGET_MS = "320"
-        private const val DIRECT_HANDSHAKE_BUDGET_MS = "1400"
-        private const val CHAINED_RTT_BUDGET_MS = "180"
-        private const val CHAINED_HANDSHAKE_BUDGET_MS = "900"
+        // several round trips, hence the separate, larger number.
+        //
+        // 1.3.1 RECALIBRATION. These were 320 / 1400 / 180 / 900, chosen "above
+        // the good edges observed on Iranian mobile (100-150ms)". The 1.3.0 field
+        // logs contain no such edges: accepted scan candidates run 727ms-1.8s,
+        // a cached WireGuard endpoint measured 1.272s and a cached MASQUE gateway
+        // 2.778s. Against the old numbers every cached endpoint on those networks
+        // was rejected, so the option could only ever cost a full rescan - see the
+        // long note on [fastEndpointOnly].
+        //
+        // The numbers now sit above what those logs actually show, so the option
+        // does what it was meant to do - reject an endpoint that has become
+        // genuinely bad - instead of rejecting every endpoint that exists. They
+        // are still budgets, not timeouts: over them the engine scans, and with
+        // the 1.3.1 engine patch it falls back to the cached peer if that scan
+        // finds nothing.
+        private const val DIRECT_RTT_BUDGET_MS = "2000"
+        private const val DIRECT_HANDSHAKE_BUDGET_MS = "5000"
+        private const val CHAINED_RTT_BUDGET_MS = "1200"
+        private const val CHAINED_HANDSHAKE_BUDGET_MS = "3500"
+        private const val PSIPHON_OVER_TOR_READY_SECS = "900"
 
         /** Hard caps so a pasted blob can't build a gigantic argv. */
         const val MAX_DNS_SERVERS = 8

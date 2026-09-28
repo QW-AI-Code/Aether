@@ -6,20 +6,17 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
-import androidx.compose.ui.unit.LayoutDirection
 
 /**
  * ROOT-CAUSE FIX for the "digits get shuffled while typing" bug in every
@@ -44,8 +41,26 @@ import androidx.compose.ui.unit.LayoutDirection
  *    digits, dots and colons as direction-NEUTRAL, so inside an RTL layout
  *    a value like `162.159.192.1:443` gets visually reordered around the
  *    RTL base direction while typing. ip:port / CIDR / URLs are inherently
- *    LTR, so this field pins BOTH the layout direction and the text
- *    direction to LTR.
+ *    LTR, so this field pins the TEXT direction and the alignment of the
+ *    value to LTR.
+ *
+ *    It does NOT pin the LAYOUT direction any more. Until 1.3.1-r2 the whole
+ *    field was wrapped in `CompositionLocalProvider(LocalLayoutDirection
+ *    provides Ltr)`, and that took the decorations with it: `label`,
+ *    `placeholder` and `supportingText` are Persian PROSE, and inside an LTR
+ *    paragraph the trailing full stop of a Persian sentence is a neutral
+ *    character that resolves to the paragraph direction — so it was rendered
+ *    at the RIGHT-hand end of the text and the whole block sat left-aligned
+ *    among right-aligned neighbours. That was reported on the MTU helper text
+ *    ("هر مقداری بین ۱۲۸۰ و ۹۰۰۰. … کمترش کنید.") and applied to every
+ *    technical field in the app.
+ *
+ *    The value itself is unaffected by that change: what governs the BiDi
+ *    reordering of the field's CONTENT is the paragraph direction of the text,
+ *    which is [TextDirection.Ltr] from the text style below, not the layout
+ *    direction of the box around it. [TextAlign.Left] keeps it visually where
+ *    it has always been — `TextAlign.Start` would flip to the right edge under
+ *    an RTL layout.
  *
  * Additionally, every character is normalized on input: Persian (۰-۹) and
  * Arabic-Indic (٠-٩) digits become ASCII 0-9, Arabic separators become '.'
@@ -92,30 +107,30 @@ fun LtrOutlinedTextField(
         fieldValue = TextFieldValue(value, TextRange(value.length))
     }
 
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-        OutlinedTextField(
-            value = fieldValue,
-            onValueChange = { raw ->
-                val normalized = normalizeTechnicalValue(raw)
-                fieldValue = normalized
-                if (normalized.text != value) onValueChange(normalized.text)
-            },
-            modifier = modifier,
-            enabled = enabled,
-            singleLine = singleLine,
-            label = label,
-            placeholder = placeholder,
-            supportingText = supportingText,
-            isError = isError,
-            interactionSource = interactionSource,
-            visualTransformation = visualTransformation,
-            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-            textStyle = LocalTextStyle.current.copy(
-                textDirection = TextDirection.Ltr,
-                textAlign = TextAlign.Start,
-            ),
-        )
-    }
+    OutlinedTextField(
+        value = fieldValue,
+        onValueChange = { raw ->
+            val normalized = normalizeTechnicalValue(raw)
+            fieldValue = normalized
+            if (normalized.text != value) onValueChange(normalized.text)
+        },
+        modifier = modifier,
+        enabled = enabled,
+        singleLine = singleLine,
+        label = label,
+        placeholder = placeholder,
+        supportingText = supportingText,
+        isError = isError,
+        interactionSource = interactionSource,
+        visualTransformation = visualTransformation,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        textStyle = LocalTextStyle.current.copy(
+            textDirection = TextDirection.Ltr,
+            // Left, not Start: the box now follows the app's layout direction, so
+            // Start would put an ip:port at the right edge in Persian.
+            textAlign = TextAlign.Left,
+        ),
+    )
 }
 
 /** Maps localized digits/separators to their ASCII equivalents. */

@@ -9,7 +9,13 @@ plugins {
 }
 
 // Human-friendly ABI -> versionCode offset so each split APK gets a unique code.
-val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
+//
+// 1.3.1, issue #8: x86_64 added. Chromebooks and Android emulators are x86_64,
+// and with no such split the APK either refused to install or ran the engine
+// through ARM translation. Offset 4, appended rather than inserted, so the codes
+// already published for the three existing ABIs do not move - a versionCode that
+// goes BACKWARDS for an installed user is an update that can never be offered.
+val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3, "x86_64" to 4)
 
 // ---------------------------------------------------------------------------
 // Release signing (see docs/SIGNING.md).
@@ -124,12 +130,14 @@ android {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
-        versionName = "1.3.0"
+        versionCode = 16
+        versionName = "1.4.0"
 
         ndk {
-            // We ship arm64 (primary) and arm builds.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // arm64 (primary), arm, and x86_64 for Chromebooks and emulators
+            // (1.3.1, issue #8). The Rust engine is cross-compiled for the
+            // matching triplet by scripts/build-natives.sh.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
 
         // 1.2.2: the in-app updater (APK download + system installer handoff)
@@ -152,8 +160,8 @@ android {
         // ------------------------------------------------------------------
         // 1.2.8-r5 BUILD IDENTITY.
         //
-        // 1.3.0 ships as versionName "1.3.0" / versionCode 14, and PATCHLEVEL is
-        // "1.3.0" with it. The field stays, because it is what identifies a build
+        // 1.4.0 ships as versionName "1.4.0" / versionCode 16, and PATCHLEVEL is
+        // "1.4.0" with it. The field stays, because it is what identifies a build
         // beyond its version name: r2,
         // r3 and r4 were all "1.2.8 (12)", the engine banner printed only the
         // upstream core version (1.8.0) which is identical in all of them, and
@@ -288,7 +296,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a")
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
             isUniversalApk = true
         }
     }
@@ -361,7 +369,6 @@ androidComponents {
 }
 
 dependencies {
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
 

@@ -2,6 +2,7 @@ package studio.cluvex.aether.ui.components
 
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -57,6 +58,7 @@ import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -71,6 +73,7 @@ import studio.cluvex.aether.R
 import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.IpEndpoint
+import studio.cluvex.aether.model.TransportBackend
 import studio.cluvex.aether.core.NetProbe
 import studio.cluvex.aether.core.PingMonitor
 import studio.cluvex.aether.core.ShareBridge
@@ -99,8 +102,8 @@ import studio.cluvex.aether.ui.theme.CardTextPrimary
  *   3. server IP pill     (label + country flag + address)
  *   4. speed strip        (live down/up rate and session totals)
  *   5. protocol slide     (full width)
- *   6. endpoint slide     (full width)
- *   7. latency slide      (full width, with the animated ping-strength meter)
+ *   6. latency slide      (full width, with the animated ping-strength meter)
+ *      (the endpoint slide that sat between them was removed in 1.4.0-r4)
  *
  * Nothing floats outside the block: every sub-section is a child container of
  * the same card, drawn from the same palette.
@@ -146,6 +149,15 @@ fun ConnectionCard(
     ipInfo: IpEndpoint?,
     ipLoading: Boolean,
     error: Boolean,
+    /**
+     * The mode the session is running in (1.3.1).
+     *
+     * Needed because the first meta slide used to show the engine's transport on
+     * its own, which is the wrong answer on every chained mode - see
+     * [TransportBackend.pipelineLabel]. The card knows the transport already
+     * (EngineMeta); what it was missing was which pipeline that transport sits in.
+     */
+    backend: TransportBackend,
     modifier: Modifier = Modifier,
 ) {
     val accent = when {
@@ -189,7 +201,7 @@ fun ConnectionCard(
             TimerBlock(connectedSince = connectedSince, connected = connected)
             ServerIpPill(connected = connected, ipInfo = ipInfo, ipLoading = ipLoading)
             SpeedStrip(connectedSince = connectedSince, connected = connected)
-            MetaSlides(connected = connected)
+            MetaSlides(connected = connected, backend = backend)
         }
     }
 }
@@ -198,33 +210,48 @@ fun ConnectionCard(
 
 @Composable
 private fun StatusBlock(title: String, caption: String, accent: Color) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         AnimatedContent(
             targetState = title,
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            transitionSpec = { (fadeIn() togetherWith fadeOut()).using(SizeTransform(clip = false)) },
+            modifier = Modifier.fillMaxWidth(),
             label = "cardStatus",
         ) { value ->
-            Text(
+            // r2: ONE line, fixed height. "Verifying connection health..." used
+            // to wrap to two lines here while connecting, which made the whole
+            // home screen shrink (see FitToHeight / FitLineText).
+            FitLineText(
                 text = value,
-                fontSize = 27.sp,
-                lineHeight = 31.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = (-0.3).sp,
+                style = TextStyle(
+                    fontSize = 27.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.3).sp,
+                    textAlign = TextAlign.Center,
+                ),
+                minLineHeight = 31.sp,
                 color = accent,
-                textAlign = TextAlign.Center,
+                minFontSize = 14.sp,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
         Spacer(Modifier.height(4.dp))
         AnimatedContent(
             targetState = caption,
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
+            transitionSpec = { (fadeIn() togetherWith fadeOut()).using(SizeTransform(clip = false)) },
+            modifier = Modifier.fillMaxWidth(),
             label = "cardCaption",
         ) { value ->
-            Text(
+            // r2: an error message can be arbitrarily long; it shrinks and then
+            // ellipsizes on one line instead of growing the card.
+            FitLineText(
                 text = value,
-                fontSize = 13.sp,
+                style = TextStyle(fontSize = 13.sp, textAlign = TextAlign.Center),
+                // 24 sp = the bodyLarge line this caption always inherited, so the
+                // card keeps exactly its 1.4.0 height.
+                minLineHeight = 24.sp,
                 color = CardTextMuted,
-                textAlign = TextAlign.Center,
+                minFontSize = 9.sp,
+                modifier = Modifier.fillMaxWidth(),
             )
         }
     }
@@ -293,9 +320,18 @@ private fun ServerIpPill(connected: Boolean, ipInfo: IpEndpoint?, ipLoading: Boo
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text(text = label, fontSize = 12.sp, color = CardTextMuted)
+        Text(text = label, fontSize = 12.sp, lineHeight = 24.sp, maxLines = 1, color = CardTextMuted)
         if (ipInfo != null) {
-            Text(text = flag, fontSize = 15.sp)
+            // r2: pinned to the pill's 24 sp line (the label's inherited bodyLarge
+            // line, which always set the pill height), so the pill does not
+            // grow a few pixels (and resize the screen) when the flag appears.
+            Text(
+                text = flag,
+                fontSize = 15.sp,
+                lineHeight = 24.sp,
+                maxLines = 1,
+                modifier = Modifier.height(24.dp),
+            )
         }
         AnimatedContent(
             targetState = value,
@@ -309,6 +345,10 @@ private fun ServerIpPill(connected: Boolean, ipInfo: IpEndpoint?, ipLoading: Boo
                 fontFamily = FontFamily.Monospace,
                 fontWeight = FontWeight.SemiBold,
                 color = CardTextPrimary,
+                lineHeight = 24.sp,
+                maxLines = 1,
+                softWrap = false,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -405,7 +445,7 @@ private fun SpeedCell(
  * [connected], exactly as the old three-column strip had it.
  */
 @Composable
-private fun MetaSlides(connected: Boolean) {
+private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
     val meta by EngineMeta.state.collectAsState()
     val ping by PingMonitor.state.collectAsState()
 
@@ -431,8 +471,14 @@ private fun MetaSlides(connected: Boolean) {
     }
 
     val dash = "\u2014"
-    val protocol = if (connected) meta.protocol ?: dash else dash
-    val endpoint = if (connected) meta.endpoint ?: "\u2026" else dash
+    // 1.3.1: the whole path, with the engine's transport in brackets on the hop it
+    // belongs to - "Aether(WireGuard) → Tor". Before this the row showed the bare
+    // transport, so a chained session reported "WireGuard" with no hint that Tor
+    // was in the path, and a --tor-only session reported the WARP protocol
+    // ("Auto") for a WARP tunnel it never builds. When not connected there is no
+    // session to describe, so the row stays a dash rather than naming a pipeline
+    // that is not running.
+    val pipeline = if (connected) backend.pipelineLabel(meta.protocol) else dash
     val latency = when {
         !connected -> dash
         lastMs >= 0L -> "$lastMs ms"
@@ -444,14 +490,13 @@ private fun MetaSlides(connected: Boolean) {
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        MetaSlide(label = stringResource(R.string.meta_protocol), value = protocol)
         MetaSlide(
-            label = stringResource(R.string.meta_endpoint),
-            value = endpoint,
-            // An endpoint is up to 21 characters for IPv4:port and longer for
-            // IPv6, so it gets two lines rather than an ellipsis.
-            valueMaxLines = 2,
+            label = stringResource(R.string.meta_pipeline),
+            value = pipeline,
         )
+        // r4: the Endpoint slide is gone. The engine's gateway address told the
+        // user nothing they could act on (it is picked and rotated by the scan),
+        // and it took a full row of the card - the space goes back to the layout.
         MetaSlide(
             label = stringResource(R.string.meta_latency),
             value = latency,
@@ -468,7 +513,6 @@ private fun MetaSlides(connected: Boolean) {
 private fun MetaSlide(
     label: String,
     value: String,
-    valueMaxLines: Int = 1,
     below: (@Composable () -> Unit)? = null,
 ) {
     Column(
@@ -498,19 +542,26 @@ private fun MetaSlide(
                 label = "metaValue",
                 modifier = Modifier.weight(1f),
             ) { shown ->
-                Text(
+                // r2: ONE line at a fixed height. A long pipeline or an IPv6
+                // endpoint now shrinks its font instead of wrapping to a second
+                // line, because a second line resized the whole home screen.
+                FitLineText(
                     text = shown,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    fontFamily = FontFamily.Monospace,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        fontFamily = FontFamily.Monospace,
+                        textAlign = TextAlign.End,
+                        // BiDi: a protocol name or an ip:port is LTR technical
+                        // text even in the Persian UI.
+                        textDirection = TextDirection.Ltr,
+                    ),
+                    // 16 sp = bodySmall's line, the height this row always had.
+                    minLineHeight = 16.sp,
                     color = CardTextPrimary,
-                    maxLines = valueMaxLines,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = TextAlign.End,
+                    minFontSize = 9.sp,
+                    contentAlignment = Alignment.CenterEnd,
                     modifier = Modifier.fillMaxWidth(),
-                    // BiDi: a protocol name or an ip:port is LTR technical text
-                    // even in the Persian UI.
-                    style = MaterialTheme.typography.bodySmall.copy(textDirection = TextDirection.Ltr),
                 )
             }
         }

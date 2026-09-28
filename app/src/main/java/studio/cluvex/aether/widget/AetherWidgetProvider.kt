@@ -37,13 +37,19 @@ class AetherWidgetProvider : AppWidgetProvider() {
     companion object {
         const val ACTION_TOGGLE = "studio.cluvex.aether.WIDGET_TOGGLE"
 
-        /** Repaints every placed widget; called on each connection-state change. */
+        /**
+         * Repaints every placed widget; called on each connection-state change.
+         *
+         * 1.3.1: also RECORDS the state, so the next repaint that lands in a
+         * cold process has something truthful to paint. See [WidgetStateCache].
+         */
         fun updateAllWidgets(context: Context) {
+            val state = AetherController.state.value
+            WidgetStateCache.remember(context, state)
             val manager = AppWidgetManager.getInstance(context) ?: return
             val component = ComponentName(context, AetherWidgetProvider::class.java)
             val ids = manager.getAppWidgetIds(component)
             if (ids.isEmpty()) return
-            val state = AetherController.state.value
             ids.forEach { id -> paint(context, manager, id, state) }
         }
 
@@ -77,6 +83,12 @@ class AetherWidgetProvider : AppWidgetProvider() {
             }
             views.setTextViewText(R.id.widget_status, text)
             views.setTextColor(R.id.widget_status, color)
+            // ISSUE #15: "show whether it is connected or not by colour". The
+            // status text alone is a 10sp string on a 1x1 widget; tinting the
+            // power icon with the same colour makes the state readable without
+            // reading anything. setColorFilter(int) is on ImageView, so it is
+            // reachable over RemoteViews' reflection call.
+            views.setInt(R.id.widget_toggle, "setColorFilter", color)
 
             // Power button toggles the tunnel.
             val toggle = PendingIntent.getBroadcast(
@@ -105,7 +117,10 @@ class AetherWidgetProvider : AppWidgetProvider() {
         appWidgetManager: AppWidgetManager,
         appWidgetIds: IntArray,
     ) {
-        val state = AetherController.state.value
+        // NOT AetherController.state.value directly: this callback is routinely
+        // delivered into a process that was forked to handle it, where that flow
+        // still holds its initialiser. See [WidgetStateCache].
+        val state = WidgetStateCache.restore(context, AetherController.state.value)
         appWidgetIds.forEach { paint(context, appWidgetManager, it, state) }
     }
 
@@ -113,7 +128,7 @@ class AetherWidgetProvider : AppWidgetProvider() {
         super.onReceive(context, intent)
         if (intent.action != ACTION_TOGGLE) return
 
-        val state = AetherController.state.value
+        val state = WidgetStateCache.restore(context, AetherController.state.value)
         if (state.isConnected || state.isBusy) {
             AetherController.disconnect(context)
             return

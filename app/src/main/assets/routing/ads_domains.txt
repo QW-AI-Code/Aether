@@ -1,0 +1,107 @@
+# Ad and tracker domains, used by "Block ads and trackers" (1.4.0).
+# Seed copy bundled with the APK. Suffix rules (a line covers every subdomain).
+# The app replaces it with the full HaGeZi "Light" list, downloaded THROUGH THE
+# TUNNEL on the first connection that uses ad blocking and refreshed weekly
+# (core/SmartLists.kt). Light is chosen on purpose: it blocks ads, trackers and
+# telemetry without breaking sign-ins, payments or app stores.
+# --- Google ad serving
+doubleclick.net
+googlesyndication.com
+googleadservices.com
+googletagservices.com
+adservice.google.com
+pagead2.googlesyndication.com
+2mdn.net
+admob.com
+adsense.com
+# --- Meta / Microsoft / Amazon / others (ad serving only)
+an.facebook.com
+ads.linkedin.com
+ads.twitter.com
+static.ads-twitter.com
+ads-api.twitter.com
+bat.bing.com
+ads.yahoo.com
+advertising.com
+amazon-adsystem.com
+aax.amazon-adsystem.com
+adnxs.com
+adsrvr.org
+rubiconproject.com
+pubmatic.com
+openx.net
+criteo.com
+criteo.net
+casalemedia.com
+taboola.com
+outbrain.com
+revcontent.com
+mgid.com
+media.net
+smartadserver.com
+yieldmo.com
+teads.tv
+sharethrough.com
+triplelift.com
+33across.com
+indexww.com
+contextweb.com
+lijit.com
+sovrn.com
+spotxchange.com
+springserve.com
+bidswitch.net
+adform.net
+adition.com
+zemanta.com
+propellerads.com
+popads.net
+popcash.net
+adcash.com
+exoclick.com
+juicyads.com
+trafficjunky.net
+hilltopads.net
+adsterra.com
+# --- mobile ad SDKs
+applovin.com
+applvn.com
+unityads.unity3d.com
+ads.mopub.com
+inmobi.com
+chartboost.com
+vungle.com
+ironsrc.com
+supersonicads.com
+adcolony.com
+startappservice.com
+tapjoy.com
+fyber.com
+mintegral.com
+mintegral.net
+rayjump.com
+pangle.io
+pangleglobal.com
+# --- trackers / analytics beacons
+scorecardresearch.com
+quantserve.com
+quantcount.com
+hotjar.com
+mouseflow.com
+crazyegg.com
+luckyorange.com
+fullstory.com
+mixpanel.com
+amplitude.com
+kochava.com
+moatads.com
+doubleverify.com
+adsafeprotected.com
+chartbeat.com
+# --- Iranian ad networks
+yektanet.com
+tapsell.ir
+adivery.com
+mediaad.org
+sabavision.com
+anetwork.ir

@@ -47,6 +47,7 @@ class ProfileStore(private val context: Context) {
         val keepalive = intPreferencesKey("keepalive")
         val fragment = booleanPreferencesKey("fragment")
         val ech = booleanPreferencesKey("ech")
+        val echConfig = stringPreferencesKey("echConfig")
         val mtu = intPreferencesKey("mtu")
         val proxy = booleanPreferencesKey("proxy")
         val split = stringPreferencesKey("split")
@@ -60,6 +61,9 @@ class ProfileStore(private val context: Context) {
         val gateway = booleanPreferencesKey("gateway")
         val routeBlock = stringPreferencesKey("routeBlock")
         val routeDirect = stringPreferencesKey("routeDirect")
+        // Added in 1.4.0 (smart routing)
+        val bypassIran = booleanPreferencesKey("bypassIran")
+        val blockAds = booleanPreferencesKey("blockAds")
         // Added in 1.2.4 (feature parity)
         val killSwitch = booleanPreferencesKey("killSwitch")
         val strictKillSwitch = booleanPreferencesKey("strictKillSwitch")
@@ -126,7 +130,13 @@ class ProfileStore(private val context: Context) {
             keepalive = prefs[Keys.keepalive] ?: 0,
             fragment = prefs[Keys.fragment] ?: false,
             ech = prefs[Keys.ech] ?: false,
-            mtu = prefs[Keys.mtu] ?: d.mtu,
+            echConfig = prefs[Keys.echConfig] ?: "",
+            // r8: clamped on the way in. The field only ever commits 1280..9000,
+            // but a value stored by an older build or edited outside the UI would
+            // otherwise reach the tunnel, and anything under 1280 breaks the ::/0
+            // route this app always installs (IPv6's minimum link MTU).
+            mtu = (prefs[Keys.mtu] ?: d.mtu)
+                .coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX),
             proxyMode = prefs[Keys.proxy] ?: false,
             splitMode = prefs[Keys.split]
                 ?.let { runCatching { SplitMode.valueOf(it) }.getOrNull() } ?: SplitMode.OFF,
@@ -143,6 +153,8 @@ class ProfileStore(private val context: Context) {
             gateway = prefs[Keys.gateway] ?: false,
             routeBlock = prefs[Keys.routeBlock] ?: "",
             routeDirect = prefs[Keys.routeDirect] ?: "",
+            bypassIran = prefs[Keys.bypassIran] ?: false,
+            blockAds = prefs[Keys.blockAds] ?: false,
             // AUDIT F-2: default ON. Only applies when the key was never written,
             // so an explicit user "off" (which writes false) survives the update.
             killSwitch = prefs[Keys.killSwitch] ?: true,
@@ -167,7 +179,13 @@ class ProfileStore(private val context: Context) {
             autoReprovision = prefs[Keys.autoReprovision] ?: true,
             // Defaults ON: reusing a slow cached endpoint is what halved
             // throughput on chained sessions (see ConnectionProfile).
-            fastEndpointOnly = prefs[Keys.fastEndpointOnly] ?: true,
+            // 1.3.1: was `?: true`. The default had to change in BOTH places -
+            // this fallback is what a fresh install reads, and leaving it true
+            // here would have kept the old behaviour for every new user while the
+            // model said otherwise. A user's explicit choice is written to disk
+            // and still wins; the new default only applies where the key was never
+            // written. See ConnectionProfile.fastEndpointOnly for why.
+            fastEndpointOnly = prefs[Keys.fastEndpointOnly] ?: false,
         )
     }
 
@@ -193,6 +211,7 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.keepalive] = profile.keepalive
             prefs[Keys.fragment] = profile.fragment
             prefs[Keys.ech] = profile.ech
+            prefs[Keys.echConfig] = profile.echConfig
             prefs[Keys.mtu] = profile.mtu
             prefs[Keys.proxy] = profile.proxyMode
             prefs[Keys.split] = profile.splitMode.name
@@ -205,6 +224,8 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.gateway] = profile.gateway
             prefs[Keys.routeBlock] = profile.routeBlock
             prefs[Keys.routeDirect] = profile.routeDirect
+            prefs[Keys.bypassIran] = profile.bypassIran
+            prefs[Keys.blockAds] = profile.blockAds
             prefs[Keys.killSwitch] = profile.killSwitch
             prefs[Keys.strictKillSwitch] = profile.strictKillSwitch
             prefs[Keys.ipv6Leak] = profile.ipv6LeakProtection

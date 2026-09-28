@@ -64,3 +64,14 @@ app/src/main/java/studio/cluvex/aether/ui/AdvancedPanel.kt
 # --- superseded by the bottom-sheet choice row (removed in 1.2.7): a
 #     DropdownMenu cannot present 56 exit countries usably on a phone. ---
 app/src/main/java/studio/cluvex/aether/ui/components/DropdownSelector.kt
+
+# --- the app's own Psiphon engine (removed in 1.4.0): core 2.1.0 ships Psiphon
+#     INSIDE the engine (psiphon.rs + the psiphon-tunnel-core console client,
+#     packaged as libpsiphon.so), so the AAR and the watchdog that drove it
+#     would only conflict with it. The embedded server list is NOT removed:
+#     the engine's Psiphon is started with it (-serverList),
+#     because without it a failed remote-list download leaves Psiphon with no
+#     server at all. ---
+app/libs/psiphontunnel-2.0.39.aar
+app/libs/PROVENANCE.md
+app/src/main/java/studio/cluvex/aether/transport/PsiphonHealth.kt

@@ -85,3 +85,9 @@
   extra slides without pushing the block off the fold.
 - `res/values*/strings.xml`: `meta_ping_strength` and `ping_quality_*` in English
   and Persian.
+
+## 1.4.0
+- Engine rebased onto core 2.1.0. New patch in `native/aether/aether/src/lib.rs`:
+  `tor-only-psiphon-chain` (lets `--tor-only` carry the engine's Psiphon).
+- The Psiphon AAR was removed; Psiphon is the engine's (psiphon-tunnel-core
+  console client, built from source by `native/aether/psiphon-build.sh`).

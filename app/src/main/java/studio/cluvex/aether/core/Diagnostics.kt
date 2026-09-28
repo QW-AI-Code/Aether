@@ -105,7 +105,7 @@ object Diagnostics {
 
     fun resetChecks(
         host: String = TunnelConfig.SOCKS_HOST,
-        port: Int = TunnelConfig.SOCKS_PORT,
+        port: Int = PortLease.socks,
     ) {
         DiagnosticsLog.setChecks(
             listOf(
@@ -121,7 +121,7 @@ object Diagnostics {
     /** Runs all checks (steps 3+4 concurrently). Safe to call from any coroutine. */
     suspend fun run(
         host: String = TunnelConfig.SOCKS_HOST,
-        port: Int = TunnelConfig.SOCKS_PORT,
+        port: Int = PortLease.socks,
         graceMs: Long = OUTBOUND_GRACE_MS,
     ): Boolean = withContext(Dispatchers.IO) {
         resetChecks(host, port)
@@ -258,7 +258,7 @@ object Diagnostics {
      */
     suspend fun runProxyStage(
         host: String = TunnelConfig.SOCKS_HOST,
-        port: Int = TunnelConfig.SOCKS_PORT,
+        port: Int = PortLease.socks,
         graceMs: Long = OUTBOUND_GRACE_MS,
         handshakeGraceMs: Long = 0L,
         alive: () -> Boolean = { true },

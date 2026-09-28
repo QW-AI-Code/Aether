@@ -249,7 +249,7 @@ object AiSession {
     }
 
     fun setModel(id: String) {
-        scope.launch { store?.saveModel(id) }
+        scope.launch { store?.saveModel(id, byUser = true) }
     }
 
     fun setAutoOptimize(enabled: Boolean) {
@@ -325,8 +325,17 @@ object AiSession {
                     // stops doing it.
                     _models.value = AiModelPolicy.filter(result.value)
                     store?.saveDiscovered(_models.value.map { it.id })
-                    if (current.model.isBlank() || _models.value.none { it.id == current.model }) {
-                        AiModelPolicy.pickDefault(_models.value)?.let { store?.saveModel(it) }
+                    // 1.4.0-r5: the app's own pick (not a deliberate user choice)
+                    // always follows the default policy - Gemini 3.1 Flash-Lite
+                    // first, for its higher free daily allowance. A model the USER
+                    // chose is kept for as long as the key can still use it.
+                    val chosenStillOffered = _models.value.any { it.id == current.model }
+                    if (current.model.isBlank() || !chosenStillOffered || !current.modelUserPicked) {
+                        AiModelPolicy.pickDefault(_models.value)?.let {
+                            if (it != current.model || current.modelUserPicked) {
+                                store?.saveModel(it, byUser = false)
+                            }
+                        }
                     }
                     _probe.value = AiProbe.Ok(
                         modelCount = _models.value.size,
@@ -455,15 +464,51 @@ object AiSession {
                 .filterNot { it.failed }
                 .map { GeminiTurn(fromUser = it.fromUser, text = it.text) }
                 .takeLast(MAX_HISTORY_TURNS)
-            var result = GeminiClient.generate(
+            // r4: one system instruction for every round of this answer, built
+            // once - the settings snapshot, the defaults and the live connection
+            // status the model reasons over must be identical in the first answer
+            // and in its self-correction.
+            // 1.4.0-r5 LOG ACCESS FIX. The chat never received the log at all:
+            // only the connect-time analyser did. So with "Analyse the log on
+            // every connect" ON, the assistant still told users it had no access
+            // and asked them to paste the log by hand. The switch now also means
+            // "the assistant may read the log": when it is on, a fresh redacted
+            // digest (same AiRedaction rules as the analyser - no addresses, no
+            // identifiers, the user's own key removed) travels with every chat
+            // request. When it is off, nothing is sent and the prompt tells the
+            // model exactly how the user can turn access on.
+            val logDigest: String? = if (current.autoOptimize) {
+                runCatching {
+                    AiRedaction.digest(
+                        fullLog = DiagnosticsLog.exportText(),
+                        ownApiKey = current.apiKey,
+                        maxLines = CHAT_LOG_LINES,
+                    )
+                }.getOrElse { t ->
+                    DiagnosticsLog.w("ai", "chat: could not build the redacted log digest: $t")
+                    ""
+                }
+            } else {
+                null
+            }
+            val system = AiPrompts.chat(
+                persian = persian,
+                profileSnapshot = AiPatch.snapshot(profile),
+                model = current.effectiveModel,
+                connectionStatus = statusForPrompt(state),
+                logAccess = current.autoOptimize,
+                logDigest = logDigest,
+            )
+            suspend fun ask(turns: List<GeminiTurn>, budget: Int) = GeminiClient.generate(
                 apiKey = current.apiKey,
                 socksPort = AiAvailability.socksPort(profile.backend),
                 model = current.effectiveModel,
-                system = AiPrompts.chat(persian, AiPatch.snapshot(profile), current.effectiveModel),
-                history = history,
-                temperature = 0.6,
-                maxOutputTokens = CHAT_TOKENS,
+                system = system,
+                history = turns,
+                temperature = CHAT_TEMPERATURE,
+                maxOutputTokens = budget,
             )
+            var result = ask(history, CHAT_TOKENS)
             // A cut-off answer is worth exactly one more try with room to finish.
             // This is the visible half of the truncation bug: the model had used
             // its whole budget and the bubble showed a sentence that stopped
@@ -471,32 +516,55 @@ object AiSession {
             // a VPN setting is worse than a slightly slower complete one.
             if (result is AiResult.Err && result.kind == AiErrorKind.TRUNCATED) {
                 DiagnosticsLog.i("ai", "chat answer was truncated; retrying with a larger budget")
-                result = GeminiClient.generate(
-                    apiKey = current.apiKey,
-                    socksPort = AiAvailability.socksPort(profile.backend),
-                    model = current.effectiveModel,
-                    system = AiPrompts.chat(
-                        persian,
-                        AiPatch.snapshot(profile),
-                        current.effectiveModel,
-                    ),
-                    history = history,
-                    temperature = 0.6,
-                    maxOutputTokens = CHAT_TOKENS_RETRY,
-                )
+                result = ask(history, CHAT_TOKENS_RETRY)
             }
             when (val outcome = result) {
                 is AiResult.Ok -> {
-                    val (visible, proposed) = AiPrompts.splitChatReply(outcome.value)
+                    var raw = outcome.value
+                    var (visible, proposed) = AiPrompts.splitChatReply(raw)
                     // Validate against the allow-list BEFORE the bubble is drawn,
                     // so a change the app would refuse never appears as a button.
-                    val usable = AiPatch.apply(profile, proposed).applied
+                    var patch = AiPatch.apply(profile, proposed)
+
+                    // r4: VERIFY, then let the model correct itself - once.
+                    //
+                    // Dropping a redundant change from the buttons was never
+                    // enough: the TEXT above them still said "set MTU to 1280" to a
+                    // user on 1280. So when anything in the proposal fails
+                    // verification (already set, invalid value, not writable), the
+                    // model gets the verified facts and rewrites the whole answer
+                    // before the user sees any of it. The revised answer goes
+                    // through the same filter; there is no second round.
+                    val feedback = AiPatch.verificationFeedback(profile, patch)
+                    if (feedback != null) {
+                        DiagnosticsLog.i(
+                            "ai",
+                            "chat: ${patch.rejected.size} proposal(s) failed verification; " +
+                                "asking the model to revise",
+                        )
+                        val revised = ask(
+                            history + GeminiTurn(fromUser = false, text = raw) +
+                                GeminiTurn(fromUser = true, text = AiPrompts.chatRevision(feedback)),
+                            CHAT_TOKENS_RETRY,
+                        )
+                        if (revised is AiResult.Ok) {
+                            val split = AiPrompts.splitChatReply(revised.value)
+                            if (split.first.isNotBlank()) {
+                                raw = revised.value
+                                visible = split.first
+                                proposed = split.second
+                                patch = AiPatch.apply(profile, proposed)
+                            }
+                        } else {
+                            DiagnosticsLog.w("ai", "chat: revision round failed; showing the verified original")
+                        }
+                    }
                     appendMessage(
                         AiMessage(
                             id = nextId(),
                             fromUser = false,
-                            text = visible.ifBlank { outcome.value.trim() },
-                            changes = usable,
+                            text = visible.ifBlank { raw.trim() },
+                            changes = patch.applied,
                         ),
                     )
                 }
@@ -729,6 +797,9 @@ object AiSession {
             when (result) {
                 is AiResult.Ok -> {
                     var parsed = AiPrompts.parseAdvice(result.value)
+                    // The exact JSON the parsed advice came from, so a revision
+                    // round shows the model its OWN previous answer.
+                    var parsedFrom = result.value
                     if (parsed == null) {
                         // Answered, in JSON mode, and still not the contract. Worth
                         // exactly one stricter re-ask before telling the user the
@@ -737,6 +808,7 @@ object AiSession {
                         DiagnosticsLog.w("ai", "advisor answer did not match the contract; re-asking")
                         val second = requestAdvice(ADVICE_TOKENS_RETRY, strict = true)
                         parsed = (second as? AiResult.Ok)?.let { AiPrompts.parseAdvice(it.value) }
+                        if (second is AiResult.Ok) parsedFrom = second.value
                     }
                     if (parsed == null) {
                         _advice.value = AiAdviceState.Failed(
@@ -746,7 +818,37 @@ object AiSession {
                         DiagnosticsLog.w("ai", "advisor answer could not be parsed as JSON")
                         return@launch
                     }
-                    val validated = AiPatch.apply(profile, parsed.changes)
+                    var validated = AiPatch.apply(profile, parsed.changes)
+                    // r4: same verify-and-revise round as the chat. A proposal that
+                    // repeats the user's current value (or names an invalid one) is
+                    // handed back with the real values, once, and the corrected
+                    // answer replaces the first if it parses.
+                    val feedback = AiPatch.verificationFeedback(profile, validated)
+                    if (feedback != null) {
+                        DiagnosticsLog.i(
+                            "ai",
+                            "advisor: ${validated.rejected.size} proposal(s) failed verification; re-asking",
+                        )
+                        val revised = GeminiClient.generate(
+                            apiKey = current.apiKey,
+                            socksPort = AiAvailability.socksPort(profile.backend),
+                            model = current.effectiveModel,
+                            system = AiPrompts.advisor(persian, AiPatch.snapshot(profile), strict = true),
+                            history = listOf(
+                                GeminiTurn(true, AiPrompts.advisorRequest(digest)),
+                                GeminiTurn(false, parsedFrom),
+                                GeminiTurn(true, AiPrompts.advisorRevision(feedback)),
+                            ),
+                            temperature = 0.1,
+                            maxOutputTokens = ADVICE_TOKENS_RETRY,
+                            jsonOutput = true,
+                        )
+                        val reparsed = (revised as? AiResult.Ok)?.let { AiPrompts.parseAdvice(it.value) }
+                        if (reparsed != null) {
+                            parsed = reparsed
+                            validated = AiPatch.apply(profile, reparsed.changes)
+                        }
+                    }
                     val advice = parsed.copy(changes = validated.applied)
                     if (validated.rejected.isNotEmpty()) {
                         DiagnosticsLog.i(
@@ -786,6 +888,20 @@ object AiSession {
         _advice.value = AiAdviceState.Idle
     }
 
+    /**
+     * r4: the live connection status in words the model can use ("connected",
+     * "reconnecting, attempt 2 of 5"). Addresses are deliberately left out.
+     */
+    private fun statusForPrompt(state: ConnectionState): String = when (state) {
+        is ConnectionState.Connected -> "connected"
+        is ConnectionState.Reconnecting -> "reconnecting (attempt ${state.attempt} of ${state.maxAttempts})"
+        ConnectionState.Verifying -> "tunnel up, end-to-end self-test still running"
+        ConnectionState.Connecting, ConnectionState.Launching -> "connecting"
+        ConnectionState.Disconnecting -> "disconnecting"
+        ConnectionState.Idle -> "disconnected"
+        is ConnectionState.Error -> "error"
+    }
+
     // ---- plumbing --------------------------------------------------------
 
     /**
@@ -822,6 +938,21 @@ object AiSession {
     private const val MAX_HISTORY_TURNS = 20
 
     /** Output budget for a chat answer, and for the one retry after a cut-off. */
+    /**
+     * r4: 0.6 -> 0.35. The chat's job is precise, repeatable advice about a VPN's
+     * settings; at 0.6 the same question could come back with a different
+     * recommendation on a retry, which reads as the assistant not knowing.
+     */
+    private const val CHAT_TEMPERATURE = 0.35
+
+    /**
+     * 1.4.0-r5: log lines handed to the chat when log access is on. Smaller than
+     * the analyser's 220 because it rides along with EVERY question (and the
+     * conversation history); the digest is also capped by characters in
+     * [AiRedaction.digest].
+     */
+    private const val CHAT_LOG_LINES = 160
+
     private const val CHAT_TOKENS = 2048
     private const val CHAT_TOKENS_RETRY = 4096
 

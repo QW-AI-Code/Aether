@@ -236,6 +236,10 @@ fun AiSettingsPage(
                         // list - see AiModelPolicy.displayNumber for why that
                         // distinction matters.
                         label = { modelRowLabel(it) },
+                        // 1.4.0-r5: each model says what it trades - the default
+                        // (3.1 Flash-Lite) has the highest free daily limit; the
+                        // newer Flash models are faster but run out sooner.
+                        optionDescription = { modelDescription(it) },
                         onSelect = { AiSession.setModel(it) },
                         summary = stringResource(R.string.ai_models_count, models.size),
                         aiTopic = AiTopic.AI_MODEL,
@@ -447,7 +451,7 @@ fun AiAdvisorPage(
                         }
                         if (current.advice.dpi.isNotBlank()) {
                             Spacer(Modifier.height(8.dp))
-                            Text(
+                            AiRichText(
                                 text = current.advice.dpi,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = OnDark,
@@ -455,7 +459,7 @@ fun AiAdvisorPage(
                         }
                         if (current.advice.summary.isNotBlank()) {
                             Spacer(Modifier.height(10.dp))
-                            Text(
+                            AiRichText(
                                 text = current.advice.summary,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = OnDarkMuted,
@@ -556,6 +560,15 @@ private fun probeSummary(probe: AiProbe, discovering: Boolean): String = when {
 private fun modelRowLabel(id: String): String {
     val number = AiModelPolicy.displayNumber(id)
     return if (number > 0) "$number. $id" else id
+}
+
+/** 1.4.0-r5: the one-line guidance shown under each model in the picker. */
+@Composable
+private fun modelDescription(id: String): String? = when (AiModelPolicy.tier(id)) {
+    AiModelPolicy.Tier.RECOMMENDED_DEFAULT -> stringResource(R.string.ai_model_desc_default)
+    AiModelPolicy.Tier.FAST_LOW_QUOTA -> stringResource(R.string.ai_model_desc_fast)
+    AiModelPolicy.Tier.HIGH_QUOTA_ALT -> stringResource(R.string.ai_model_desc_alt)
+    null -> null
 }
 
 /** Maps the model's confidence word onto a localised label, or null if absent. */

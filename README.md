@@ -14,170 +14,197 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.3.0-8B5CF6?style=flat-square">
-  <img alt="engine core" src="https://img.shields.io/badge/engine%20core-2.0.0-22D3EE?style=flat-square">
+  <img alt="version" src="https://img.shields.io/badge/version-1.4.0-8B5CF6?style=flat-square">
+  <img alt="engine core" src="https://img.shields.io/badge/engine%20core-2.1.0-22D3EE?style=flat-square">
   <img alt="min Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-AGPL--3.0-F59E0B?style=flat-square">
 </p>
 
 ---
 
-## What's new in v1.3.0
+## What's new in v1.4.0
 
-### Tor, in four shapes
+A maintenance release built entirely from the 1.3.0 field reports, plus one new
+automatic mode. Full detail in [`CHANGELOG.md`](CHANGELOG.md), file-by-file in
+[`PATCH_NOTES_1.4.0.md`](PATCH_NOTES_1.4.0.md).
 
-The engine's own Tor implementation is now reachable from the app, as four modes
-you pick in **Settings → Connection → Network backend**:
+### The VPN share pages, redesigned (Persian and English)
 
-| Mode | Path | Your exit is | Use it when |
+The pages a shared device sees, `http://aether.check/` and the setup page at
+`http://<phone>:10811/`, were a wall of mixed English and Persian that fell apart
+on a phone. They are rebuilt:
+
+- **One dark navy layout** that reads well on a phone, a laptop and a TV browser.
+- **A language switch at the top:** فارسی (default) or English. The choice is
+  remembered in that browser.
+- **Persian is right-to-left throughout**, in Vazirmatn / Vazir when the device has
+  it and in the system's own Persian font when it does not. Every English word,
+  address, port and file name inside a Persian sentence stays left-to-right as a
+  block, so nothing gets scrambled.
+- **Plain, step-by-step Persian:** copy buttons for the PAC / HTTP / SOCKS5
+  addresses, setup steps for Windows, macOS, Android, iPhone, Firefox and TVs, and
+  a guide for **both share modes, home Wi-Fi and phone hotspot**, with the mode the
+  phone is in opened and marked.
+- The live WebRTC test and the one-click WebRTC locks work exactly as before, now
+  explained in both languages.
+- The pages load nothing from the internet and never show the share password.
+
+### 🔒 Security audit 1.4.0: **92 / 100**
+
+A fresh 0-100 audit of the whole app, with the LAN share scored as its own area
+for the first time. Full report:
+[`docs/SECURITY_AUDIT_1.4.0.md`](docs/SECURITY_AUDIT_1.4.0.md).
+Version **1.4.0** (version code 16), engine **2.1.0**. **Signing is unchanged**, so
+1.4.0 installs straight over 1.3.0, no uninstall.
+
+| # | Area | Weight | Score | Weighted |
+| --- | --- | ---: | ---: | ---: |
+| 1 | Secrets & key management | 14 | 95 | 13.30 |
+| 2 | Cryptography, TLS & MitM resistance | 13 | 95 | 12.35 |
+| 3 | Data-leak risk (DNS, IPv6, tunnel bypass) | 17 | 93 | 15.81 |
+| 4 | LAN sharing surface (proxy, pages, WebRTC) | 10 | 86 | 8.60 |
+| 5 | Local storage at rest | 12 | 94 | 11.28 |
+| 6 | Permissions & OS configuration | 7 | 98 | 6.86 |
+| 7 | Logging & diagnostics | 7 | 96 | 6.72 |
+| 8 | Code quality & network configuration | 8 | 84 | 6.72 |
+| 9 | On-device exposure (screen, clipboard) | 6 | 92 | 5.52 |
+| 10 | Supply chain & build integrity | 6 | 80 | 4.80 |
+| | **Total** | **100** | | **91.96 ≈ 92** |
+
+| ID | Severity | Finding | Status |
 | --- | --- | --- | --- |
-| **Tor** | Tor alone | a Tor exit node | you want Tor and nothing else in the way |
-| **Aether → Tor** | Aether tunnel, then Tor **inside** it | a Tor exit node | **your network blocks Tor** |
-| **Tor → Psiphon** | Tor, then Psiphon dialled through it | a Psiphon address, reached from Tor | a site blocks Tor exit nodes |
-| **Tor → Aether** | Tor, then the Aether tunnel **inside** it | a WARP address, reached from Tor | **your network blocks WARP** but not Tor |
+| SA-1 | Medium | LAN sharing has no password by default, so any device on the same Wi-Fi or hotspot subnet can use the tunnel | Open by product decision; the setup page now says so and tells the user when to turn it on |
+| SA-2 | Low | Share pages had no Content-Security-Policy or referrer policy, the phone address was not HTML-escaped, and the WebRTC result was written with raw candidate data | **Fixed in 1.4.0** |
+| SA-3 | Low | Share credentials travel in clear on the LAN (HTTP Basic / SOCKS5 RFC 1929), inherent to both protocols | Accepted, same-subnet only |
+| SA-4 | Low | On a hotspot, guest WebRTC goes through Android's tethering NAT, which an unrooted app cannot filter | Mitigated (live test + one-click locks), accepted |
+| SA-5 | Low | R8 / minification is off for release builds | Open (deliberate, unchanged) |
+| SA-6 | Low | CI actions are pinned by tag; `dtolnay/rust-toolchain@stable` follows a moving branch | Open |
+| SA-7 | Info | No certificate pinning; trust is system CAs only (user CAs refused) | Accepted |
+| SA-8 | Info | App signing is out of scope: 1.4.0 keeps the exact signing identity of 1.3.0 so it installs over the current app without an uninstall | Not scored |
 
-The two chains are mirror images, and which one you want depends on *what your
-network blocks*: `Aether → Tor` hides Tor from the network, `Tor → Aether` hides
-WARP from it. In the reverse chain the operator cannot tell that a VPN tunnel
-exists at all — it sees Tor, or a bridge that does not look like Tor either — and
-because your traffic travels inside the WARP tunnel there, that mode carries normal
-UDP. It is fixed to MASQUE over HTTP/2: Tor carries TCP only, WARP's WireGuard
-endpoints answer on UDP alone, and the engine refuses WireGuard and WARP×2 there.
-The app disables the protocol selector in that mode and says why, rather than
-accepting a choice it would have to override behind your back.
+<details>
+<summary>🇮🇷 همین ممیزی به فارسی</summary>
 
-**`Aether → Tor` is the one that matters on a censored network.** Tor's entry
-guards are dialled *through* the Aether tunnel, so the network you are on never
-sees a Tor connection at all — it sees Aether's obfuscated transport, the same
-thing it already fails to block. The bootstrap also runs at tunnel speed instead
-of fighting the censor.
+<div dir="rtl" align="right">
 
-Plain **Tor** has to reach the Tor network by itself, so it brings bridges with
-it: the engine tries directly for a moment, then fetches bridges from bridgedb for
-the country it appears to be in and runs them through the obfs4/webtunnel
-transport shipped inside the APK. No CAPTCHA, nothing to paste in. You *can* paste
-in your own bridge lines if you have ones that are known to work — a line naming a
-transport this app does not ship is ignored rather than handed to the engine.
+<h3 dir="rtl" align="right">‏🔒 ممیزی امنیتی <span dir="ltr">1.4.0</span>: <strong>۹۲ از ۱۰۰</strong></h3>
 
-**Tor carries TCP only**, everywhere and in every app, so the app puts a small
-SOCKS front of its own in front of it: DNS is resolved over TCP *inside* Tor,
-hostnames are passed to Tor unresolved (so `.onion` works and nothing is looked up
-on your device), and the remaining UDP is dropped. QUIC is dropped with it and apps
-fall back to TCP; a dropped packet goes nowhere, least of all around Tor.
+<p dir="rtl" align="right">‏یه ممیزی تازهٔ صفر تا صد از کل برنامه گرفته شد و این بار بخش اشتراک روی شبکهٔ محلی هم جدا امتیاز گرفت. گزارش کامل: <span dir="ltr"><a href="docs/SECURITY_AUDIT_1.4.0.md">docs/SECURITY_AUDIT_1.4.0.md</a></span>. نسخهٔ برنامه <span dir="ltr">1.4.0</span>، کد نسخه <span dir="ltr">16</span> و هستهٔ <span dir="ltr">2.1.0</span>. <strong>امضا دست نخورده</strong>، پس مستقیم روی ۱.۳.۰ نصب می‌شه و لازم نیست حذفش کنی.</p>
 
-Expect it to be slower, and expect the first connect to take a while — Tor
-downloads a directory consensus before it can build a circuit. While it does, the
-notification shows how far the bootstrap has got.
+<table dir="rtl" align="right">
+<thead><tr><th align="right">#</th><th align="right">حوزه</th><th align="right">وزن</th><th align="right">امتیاز</th><th align="right">امتیاز وزنی</th></tr></thead>
+<tbody>
+<tr><td align="right">۱</td><td align="right">اسرار و مدیریت کلید</td><td align="right">۱۴</td><td align="right">۹۵</td><td align="right">۱۳٫۳۰</td></tr>
+<tr><td align="right">۲</td><td align="right">رمزنگاری، <span dir="ltr">TLS</span> و مقاومت در برابر <span dir="ltr">MitM</span></td><td align="right">۱۳</td><td align="right">۹۵</td><td align="right">۱۲٫۳۵</td></tr>
+<tr><td align="right">۳</td><td align="right">خطر نشت داده (<span dir="ltr">DNS</span>، <span dir="ltr">IPv6</span>، دور زدن تونل)</td><td align="right">۱۷</td><td align="right">۹۳</td><td align="right">۱۵٫۸۱</td></tr>
+<tr><td align="right">۴</td><td align="right">سطح اشتراک روی شبکهٔ محلی (پراکسی، صفحه‌ها، <span dir="ltr">WebRTC</span>)</td><td align="right">۱۰</td><td align="right">۸۶</td><td align="right">۸٫۶۰</td></tr>
+<tr><td align="right">۵</td><td align="right">ذخیره‌سازی محلی</td><td align="right">۱۲</td><td align="right">۹۴</td><td align="right">۱۱٫۲۸</td></tr>
+<tr><td align="right">۶</td><td align="right">مجوزها و پیکربندی سیستم</td><td align="right">۷</td><td align="right">۹۸</td><td align="right">۶٫۸۶</td></tr>
+<tr><td align="right">۷</td><td align="right">لاگ و عیب‌یابی</td><td align="right">۷</td><td align="right">۹۶</td><td align="right">۶٫۷۲</td></tr>
+<tr><td align="right">۸</td><td align="right">کیفیت کد و پیکربندی شبکه</td><td align="right">۸</td><td align="right">۸۴</td><td align="right">۶٫۷۲</td></tr>
+<tr><td align="right">۹</td><td align="right">افشا روی خود گوشی (صفحه، کلیپ‌بورد)</td><td align="right">۶</td><td align="right">۹۲</td><td align="right">۵٫۵۲</td></tr>
+<tr><td align="right">۱۰</td><td align="right">زنجیرهٔ تأمین و سلامت بیلد</td><td align="right">۶</td><td align="right">۸۰</td><td align="right">۴٫۸۰</td></tr>
+<tr><td align="right"></td><td align="right"><strong>جمع</strong></td><td align="right"><strong>۱۰۰</strong></td><td align="right"></td><td align="right"><strong><span dir="ltr">۹۱٫۹۶</span> ≈ ۹۲</strong></td></tr>
+</tbody>
+</table>
 
-### A fifth protocol: MASQUE×2
+<p dir="rtl" align="right">&nbsp;</p>
 
-**MASQUE×2** (`--mim`) is MASQUE inside MASQUE — two MASQUE hops, for an exit
-address in a different range than one hop gives. It is to MASQUE what WARP×2
-(gool) is to WireGuard, and it sits beside the other four in the protocol
-selector.
+<table dir="rtl" align="right">
+<thead><tr><th align="right">شناسه</th><th align="right">شدت</th><th align="right">یافته</th><th align="right">وضعیت</th></tr></thead>
+<tbody>
+<tr><td align="right"><span dir="ltr">SA-1</span></td><td align="right">متوسط</td><td align="right">اشتراک روی شبکهٔ محلی به‌طور پیش‌فرض رمز نداره؛ هر دستگاهی که تو همون وای‌فای یا هات‌اسپات باشه می‌تونه از تونل استفاده کنه</td><td align="right">باز، طبق تصمیم محصول؛ صفحهٔ راه‌اندازی حالا اینو صریح می‌گه و می‌گه کِی روشنش کنی</td></tr>
+<tr><td align="right"><span dir="ltr">SA-2</span></td><td align="right">کم</td><td align="right">صفحه‌های اشتراک <span dir="ltr">Content-Security-Policy</span> و سیاست <span dir="ltr">Referrer</span> نداشتن، آدرس گوشی escape نمی‌شد و نتیجهٔ <span dir="ltr">WebRTC</span> با دادهٔ خام نوشته می‌شد</td><td align="right"><strong>در <span dir="ltr">1.4.0</span> رفع شد</strong></td></tr>
+<tr><td align="right"><span dir="ltr">SA-3</span></td><td align="right">کم</td><td align="right">نام کاربری و رمز اشتراک روی شبکهٔ محلی بی‌رمز جابه‌جا می‌شه (<span dir="ltr">HTTP Basic</span> و <span dir="ltr">SOCKS5 RFC 1929</span>)؛ ذات خود این پروتکل‌هاست</td><td align="right">پذیرفته‌شده، فقط داخل همون زیرشبکه</td></tr>
+<tr><td align="right"><span dir="ltr">SA-4</span></td><td align="right">کم</td><td align="right">تو حالت هات‌اسپات، <span dir="ltr">WebRTC</span> دستگاه مهمان از <span dir="ltr">NAT</span> خود اندروید رد می‌شه و برنامه بدون روت نمی‌تونه فیلترش کنه</td><td align="right">کاهش‌یافته (تست زنده و قفل یک‌کلیکی)، پذیرفته‌شده</td></tr>
+<tr><td align="right"><span dir="ltr">SA-5</span></td><td align="right">کم</td><td align="right"><span dir="ltr">R8</span> و کوچک‌سازی کد تو بیلد نهایی خاموشه</td><td align="right">باز (عمدی، بدون تغییر)</td></tr>
+<tr><td align="right"><span dir="ltr">SA-6</span></td><td align="right">کم</td><td align="right">اکشن‌های <span dir="ltr">CI</span> با تگ پین شدن و <span dir="ltr">dtolnay/rust-toolchain@stable</span> یه شاخهٔ متحرکه</td><td align="right">باز</td></tr>
+<tr><td align="right"><span dir="ltr">SA-7</span></td><td align="right">اطلاعاتی</td><td align="right">پین گواهی نداره؛ فقط <span dir="ltr">CA</span>های سیستم قبوله (<span dir="ltr">CA</span> کاربر رد می‌شه)</td><td align="right">پذیرفته‌شده</td></tr>
+<tr><td align="right"><span dir="ltr">SA-8</span></td><td align="right">اطلاعاتی</td><td align="right">امضای برنامه خارج از دامنهٔ ممیزیه: <span dir="ltr">1.4.0</span> دقیقاً همون امضای ۱.۳.۰ رو نگه می‌داره تا بدون حذف، روی نسخهٔ فعلی نصب بشه</td><td align="right">امتیازدهی نشده</td></tr>
+</tbody>
+</table>
 
-### Engine (core) upgraded to v2.0.0
+</div>
 
-Previous: v1.9.0. Everything 1.2.8 fixed about download speed and connect
-behaviour is unchanged — those numbers were re-checked file by file, and
-upstream's own re-tuning of the same buffers was deliberately not taken.
+</details>
 
-### The AI assistant knows what it is looking at
+### Smart got faster, in the same button
 
-The assistant is now told which mode the tunnel is actually in — it could
-previously only see the settings it may *write*, so it did not know whether
-Psiphon or Tor was in the path, and "switch to WARP×2 for speed" is wrong advice in
-a mode where no WARP tunnel exists. The bridge settings are deliberately
-**read-only** for it: a model that switches bridges off, while the user is reading
-about something else, takes away the only thing keeping that user connected.
+**Smart** used to try one strategy at a time until one worked. It still does that on
+the chained backends — but on plain **Aether** it now does two more things:
 
-New AI explanations sit next to every Tor setting, in both languages.
+- **It tries two routes at the same time** and keeps whichever one actually carries
+  traffic. Trying them one after another means a bad first guess costs a full
+  minute; raced, it costs nothing, because the other route is already running.
+- **It remembers what worked on this network.** Next time you connect on the same
+  Wi-Fi or the same SIM, that route is tried first, on its own — so the second
+  connect is usually a few seconds and no second engine is started at all.
 
-### 🔒 Security audit 1.3.0 — **88 / 100** audited, **93 / 100** shipped
+Worst case falls from about five and a half minutes to about three, and when nothing
+on the network works you find out in one minute instead of five.
 
-A full mobile-app security audit was run over the shipped tree: the Kotlin app
-(87 files, ≈28 200 lines), the Gradle and resource configuration, the manifest,
-the vendored Rust engine and its lockfile, the prebuilt Psiphon library and the
-release workflow. Full report:
-[`docs/SECURITY_AUDIT_1.3.0.md`](docs/SECURITY_AUDIT_1.3.0.md).
+**Nothing to switch on.** Keep the protocol on **Smart**. The row under the selector
+tells you which of the two this profile gets: the race needs the plain Aether
+backend with automatic endpoint selection, so `Aether → Psiphon`, `Aether → Tor`, a
+hand-pinned endpoint or Zero Trust with the e-mail code get the one-at-a-time
+ladder, exactly as before.
 
-| # | Area | Weight | Audited | After the fixes |
-| --- | --- | --- | --- | --- |
-| 1 | Secrets & key management | 15 | 95 | 95 |
-| 2 | Cryptography, TLS & MitM resistance | 14 | 92 | 95 |
-| 3 | Data-leak risk (DNS, IPv6, tunnel bypass) | 20 | 88 | 95 |
-| 4 | Local storage at rest | 13 | 94 | 94 |
-| 5 | Permissions & OS configuration | 8 | 98 | 98 |
-| 6 | Logging & diagnostics | 8 | 96 | 96 |
-| 7 | Code quality & network configuration | 10 | 78 | 84 |
-| 8 | On-device exposure (screen, clipboard) | 6 | 65 | 92 |
-| 9 | Supply chain & build integrity | 6 | 72 | 84 |
-| | **Weighted total** | **100** | **88** | **93** |
+| | What it does |
+| --- | --- |
+| **Smart** | Measures your network, then races two routes on plain Aether (remembering what worked here) or tries them one at a time on a chained backend |
+| **A protocol by hand** (WireGuard, MASQUE, WARP×2, MASQUE×2) | Exactly what you chose, nothing else |
 
-**Verified as correct.** No API key, token or private key is hardcoded anywhere in
-the app, and the user's own Gemini key and the LAN sharing password are sealed with
-AES-256-GCM under a non-exportable Android Keystore key. No weak or obsolete
-crypto (no MD5, SHA-1, DES, RC4 or ECB). **No custom `TrustManager`, no permissive
-hostname verifier and no MitM path was found**; each hand-rolled TLS socket
-verifies the certificate against the host name, and the app trusts **system CAs
-only**, so a root certificate installed through Settings — how an interception
-proxy works — cannot decrypt the app's own traffic. Hostnames are never resolved on
-the device: in Tor modes DNS is answered over TCP *inside* Tor and non-DNS UDP is
-dropped rather than leaked, and `::/0` is routed unconditionally in chained modes,
-so there is no DNS or IPv6 leak path. The diagnostics log and the engine's identity
-file (which holds the WireGuard private key) are encrypted at rest, and the log
-mirror is switched off rather than falling back to plaintext if the keystore
-refuses a key. Cleartext HTTP is denied app-wide, backups and device transfer are
-denied twice over, five permissions are requested with no `QUERY_ALL_PACKAGES` and
-no exported provider, every `PendingIntent` is immutable, there is no WebView, and
-the app contains **no analytics, no crash-reporting SDK and no tracking library of
-any kind**. Three `Log` calls exist in the whole app, one of them debug-only.
+**What it costs.** While it is searching on plain Aether, two engines run instead of
+one, so that part of the connect uses more battery and more data. Once connected,
+nothing is different.
 
-**Seven of the ten findings were fixed before this release went out**, which is
-what the second score column measures. The kill switch is **on by default** now,
-and its lockdown interface routes `::/0` unconditionally — a blackhole has no
-connectivity to break, so gating it on the IPv6 switch only ever left a v6 path
-open in the window the kill switch exists for. `FLAG_SECURE` covers the surfaces
-that show secrets (API key, LAN password, Access token, the open diagnostics log,
-the crash report): no screenshot, no screen recording, no recents thumbnail. The
-clipboard copies of those secrets are flagged sensitive, so Android 13+ keeps them
-out of the paste preview. Both cleartext geolocation fallbacks are gone — the exit
-IP now only ever comes from a TLS connection with the certificate checked. CI
-gained a `cargo audit` step and Dependabot watches the Gradle dependency set in one
-grouped pull request a month; the Psiphon binary has a provenance record.
+**What it cannot do.** Open a network that is closed. Where the block is
+Cloudflare's WARP registration being unreachable, racing only tells you faster.
 
-**Still open, deliberately.** R8 is off: a reflection break in Compose or in the
-Psiphon library shows up on a device, not in a unit test, and a broken release is
-worse for the people who need this app than an unminified one. CI actions are still
-pinned by tag rather than commit SHA. Both are documented in the report.
+### Fixed in 1.4.0
 
-**Read the fixes as source-level.** They were reviewed and built, and the unit
-suite (67 tests) passes, but no one has yet confirmed on a phone that the recents
-thumbnail is blank.
+- **The app no longer takes about ten seconds to open.** It was decrypting the
+  whole encrypted diagnostics log on the main thread before the first frame, and
+  that log is thousands of separately sealed records, each one a trip into the
+  hardware keystore — then it kept only the newest 800 lines. Restore now runs in
+  the background and only the retained tail is decrypted. This is also what was
+  behind the `ForegroundServiceDidNotStartInTimeException` crashes: a main thread
+  parked in the keystore cannot answer `startForegroundService()` in time.
+- **The widget no longer sticks on "Disconnecting…".** Two causes: the final step
+  of a disconnect never repainted it, and in a cold receiver process it read a
+  connection state that only exists inside the running app. It is also 1×1 now
+  instead of 3×1, resizable, and the power icon takes the colour of the state. The
+  notification's action button says "Disconnect" rather than being labelled with a
+  status.
+- **Private Space works.** Every loopback port was a `const`, so a second instance
+  in another Android profile lost the bind and failed before any tunnel. New
+  `core/PortLease.kt` resolves them per session — preferred port when free, next
+  free one otherwise — and the app now passes `--bind` / `--tor-bind`, which the
+  engine always accepted and the app never used.
+- **A working endpoint is no longer thrown away on every reconnect.**
+  `fastEndpointOnly` defaulted to on with budgets calibrated for 100–150 ms edges;
+  the field logs contain nothing under 727 ms, so the cache was discarded every
+  time and each reconnect paid for a full scan. Default is now off, and the budgets
+  it sends when switched on match real networks.
+- **Zero Trust: the e-mail code is finally asked for.** The engine prints a
+  machine-readable prompt on stdout and waits on stdin; the app had never looked
+  for it. A dialog now appears mid-connect. Enrolment tokens are checked as they
+  are pasted. Still authentication *during* a connect, not before it — the
+  reasoning is in [`docs/ZERO_TRUST.md`](docs/ZERO_TRUST.md).
+- **Android TV**, **x86_64 builds**, **a typed MTU** (1280–9000), **correct
+  operator detection on dual-SIM phones**, **a pasted ECHConfigList**, and a
+  prompt when Android is still allowed to suspend the app.
+- **Two build fixes:** the Tor feature check no longer trips `pipefail` on a good
+  binary, and the project's only `lint` error — present in 1.3.0 as shipped — is
+  gone.
+- **Version:** app <span dir="ltr">1.4.0</span>, version code <span dir="ltr">16</span>,
+  engine core <span dir="ltr">2.1.0</span>. Installs straight over
+  1.3.0 — the signing configuration has not changed.
 
-**Out of scope:** app signing and update compatibility. 1.3.0 keeps the signing
-identity of 1.2.9 on purpose, so it installs over your existing app without an
-uninstall; no signing item is scored above, which is why this number is not
-comparable with the 79 / 100 of the 1.2.9 report.
-
-### Notes
-
-- **The Tor settings that matter most are the two you would not think to look
-  for.** Under **Settings → Tor**, *bridge country* stops the engine from having to
-  ask the network where you are before it can ask bridgedb for bridges — that
-  request is the one most likely to be blocked or answered wrongly on the networks
-  where you need a bridge. And *reachability check* replaces
-  `check.torproject.org`, which some networks block: when they do, a perfectly
-  working Tor circuit fails the engine's proof and the app reports a bootstrap
-  failure for something that was fine.
-- **Bridges apply in three of the four modes.** Wherever Tor faces your network
-  itself — `Tor`, `Tor → Psiphon`, `Tor → Aether` — the bridge settings are live. In
-  `Aether → Tor` they are disabled with the reason on the row: Tor is dialled
-  through the tunnel there, so the network never sees it and a bridge would have
-  nothing to hide from.
-- **Version:** app <span dir="ltr">1.3.0</span>, version code <span dir="ltr">14</span>,
-  engine core <span dir="ltr">2.0.0</span>. Installs straight over 1.2.9 from the
-  same repository — the signing configuration is unchanged.
+> **Verified, not field-tested.** 1.4.0 compiles clean, 88 unit tests pass and
+> `lint` reports no errors, but it has not been run on a handset. The startup fix,
+> the widget fix, the Private Space fix and the Zero Trust handshake are the four
+> claims that need a device to confirm.
 
 ## Previously in v1.2.9
 

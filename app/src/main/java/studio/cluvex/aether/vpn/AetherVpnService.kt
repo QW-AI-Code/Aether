@@ -8,14 +8,19 @@ import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelChildren
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import studio.cluvex.aether.AetherApp
 import studio.cluvex.aether.MainActivity
 import studio.cluvex.aether.R
@@ -25,7 +30,9 @@ import studio.cluvex.aether.core.Diagnostics
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.EngineMeta
 import studio.cluvex.aether.core.AutoCandidate
+import studio.cluvex.aether.core.NetworkIdentity
 import studio.cluvex.aether.core.PingMonitor
+import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.core.PortProbe
 import studio.cluvex.aether.core.TorBootstrap
 import studio.cluvex.aether.core.ProfileCodec
@@ -33,22 +40,32 @@ import studio.cluvex.aether.core.HevTunnel
 import studio.cluvex.aether.core.RoutingEngine
 import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartAuto
+import studio.cluvex.aether.core.SmartPlusMemory
+import studio.cluvex.aether.core.SmartPlusPlan
 import studio.cluvex.aether.core.SocksTunBridge
 import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.core.TeamMembership
+import studio.cluvex.aether.core.TeamSignInHandoff
+import studio.cluvex.aether.data.TeamSignInStore
 import studio.cluvex.aether.data.LanguagePrefs
 import studio.cluvex.aether.data.SecretStore
 import studio.cluvex.aether.data.ShareCredentials
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.Noize
+import studio.cluvex.aether.model.ScanMode
+import studio.cluvex.aether.model.EndpointMode
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.SplitMode
+import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TorMode
 import studio.cluvex.aether.model.TorBridges
 import studio.cluvex.aether.model.TransportBackend
 import studio.cluvex.aether.transport.ExternalTransport
 import studio.cluvex.aether.transport.ExternalTransportFactory
-import studio.cluvex.aether.transport.PsiphonHealth
+import studio.cluvex.aether.transport.PsiphonRegionFallback
+import studio.cluvex.aether.core.PsiphonEngine
+import studio.cluvex.aether.core.PsiphonBootstrap
 import studio.cluvex.aether.transport.TorSocksFront
 import studio.cluvex.aether.widget.AetherWidgetProvider
 import java.io.File
@@ -77,6 +94,20 @@ class AetherVpnService : VpnService() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var tun: ParcelFileDescriptor? = null
     private var engine: AetherProcess? = null
+
+    /**
+     * Engines belonging to a Smart Plus race, for as long as one is alive.
+     *
+     * Separate from [engine] on purpose: [engine] is the SESSION's engine, the one
+     * the supervisor watches and the one teardown stops. A racing engine is a probe
+     * that is always killed inside [runRace]; keeping the two apart means a lane
+     * can never be mistaken for the session, and that teardown of a session cannot
+     * be confused by a probe that no longer exists.
+     *
+     * Synchronised because lanes add and remove from several coroutines.
+     */
+    private val raceEngines: MutableList<AetherProcess> =
+        java.util.Collections.synchronizedList(mutableListOf())
     private var externalTransport: ExternalTransport? = null
     private var tunnelStarted: Boolean = false
     private var runJob: Job? = null
@@ -121,6 +152,7 @@ class AetherVpnService : VpnService() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         live = this
+        studio.cluvex.aether.core.SmartLists.attach(applicationContext) // 1.4.0 smart routing
         // FIRST STATEMENT, EVERY ACTION, NO EXCEPTIONS (1.3.0-r2 crash fix).
         //
         // ROOT CAUSE of "the app just closes" (ForegroundServiceDidNotStartInTime
@@ -198,12 +230,75 @@ class AetherVpnService : VpnService() {
      * enrolment fields never reached the engine in any form.
      */
     private fun hydrateSecrets(profile: ConnectionProfile): ConnectionProfile {
-        if (profile.teamAuth == studio.cluvex.aether.model.TeamAuth.OFF) return profile
+        if (profile.teamAuth == TeamAuth.OFF) return profile
         val secrets = SecretStore(applicationContext)
         return profile.copy(
             accessClientSecret = secrets.read(SecretStore.ACCESS_SECRET),
             accessToken = secrets.read(SecretStore.ACCESS_TOKEN),
+            accessSignInToken = signInTokenFor(profile),
         )
+    }
+
+    /**
+     * 1.4.0-r9 (issue #12): the token from "Sign in" under Settings -> Zero Trust,
+     * or "" when this connect must not use one.
+     *
+     * Read here, by the service, from the sealed store - never from the Intent -
+     * for the same reason as the two secrets above. [TeamSignInHandoff] makes the
+     * decision (the Settings screen asks it the same question, so what the screen
+     * promised is what happens); this only acts on it and says so in the log,
+     * without the token.
+     *
+     * "" is always safe: the e-mail method then does exactly what it did before a
+     * sign-in existed, i.e. the engine mails a code during the connect and
+     * [studio.cluvex.aether.core.LoginCodePrompt] asks for it.
+     */
+    private fun signInTokenFor(profile: ConnectionProfile): String {
+        if (profile.teamAuth != TeamAuth.EMAIL || !profile.hasTeam) return ""
+        val store = TeamSignInStore(applicationContext)
+        val decision = TeamSignInHandoff.decide(
+            record = store.load(),
+            rawTeam = profile.team,
+            rawEmail = profile.accessEmail,
+            isEnrolled = { team -> TeamMembership.isEnrolled(filesDir, team) },
+        )
+        return when (decision) {
+            is TeamSignInHandoff.Decision.Use -> {
+                DiagnosticsLog.i(
+                    ZT_TAG,
+                    "Using the sign-in made in Settings for team ${decision.record.team} " +
+                        "(${decision.record.email}); no code will be asked for during this connect.",
+                )
+                decision.token
+            }
+            TeamSignInHandoff.Decision.NoSignIn -> ""
+            TeamSignInHandoff.Decision.OtherProfile -> {
+                DiagnosticsLog.w(
+                    ZT_TAG,
+                    "The saved Zero Trust sign-in is for another team or address and is not used; " +
+                        "a code will be asked for during the connect.",
+                )
+                ""
+            }
+            TeamSignInHandoff.Decision.AlreadyEnrolled -> {
+                store.clear()
+                DiagnosticsLog.i(
+                    ZT_TAG,
+                    "This device is already enrolled in this team, so the saved sign-in is no " +
+                        "longer needed and was removed.",
+                )
+                ""
+            }
+            TeamSignInHandoff.Decision.Unusable -> {
+                store.clear()
+                DiagnosticsLog.w(
+                    ZT_TAG,
+                    "The saved Zero Trust sign-in has expired and was removed; a code will be " +
+                        "asked for during the connect. Sign in again in Settings to avoid that.",
+                )
+                ""
+            }
+        }
     }
 
     private fun startTunnel(rawProfile: ConnectionProfile) {
@@ -246,6 +341,13 @@ class AetherVpnService : VpnService() {
 
     private suspend fun connectFlow(profile: ConnectionProfile) {
         DiagnosticsLog.clear()
+        // 1.3.1, issues #27 and #52: decide this session's loopback ports BEFORE
+        // anything reads them. The preferred numbers when they are free, which is
+        // every normal install; the next free ones when another Aether instance in
+        // a different Android profile already holds them. After DiagnosticsLog.clear
+        // so the chosen set is recorded in THIS session's log, and before
+        // resetChecks below, which asks for the exposed port.
+        PortLease.acquire()
         // STALE-CIRCLES ROOT-CAUSE FIX: the self-test circles were only
         // reset inside Diagnostics.run(), which starts AFTER the engine has
         // launched AND finished its endpoint scan — so on a reconnect the
@@ -287,8 +389,68 @@ class AetherVpnService : VpnService() {
         }
 
         val resolved: ConnectionProfile =
-            if (profile.protocol == Protocol.AUTO) {
-                connectSmartAuto(profile)
+            if (profile.backend.torMode == TorMode.REVERSE) {
+                // ------------------------------------------------------------------
+                // Tor -> Aether NEVER CONNECTED, in 1.3.0 and 1.3.1. This is the fix.
+                //
+                // The comment above claims the budget and transport for the reverse
+                // chain "are decided in connectAetherStage's plan" - and that plan
+                // does contain exactly the right rung. But connectAetherStage is only
+                // ever called from connectExternal, i.e. the CHAINED Psiphon path,
+                // which this backend is not. With protocol=AUTO the reverse chain
+                // therefore fell into connectSmartAuto below and got the ordinary
+                // four-rung endpoint-scan ladder. The field log shows what that costs:
+                //
+                //   Strategy ladder for OPEN (4 steps)
+                //   Attempt 1/4 -> WIREGUARD ... ranges[188.114.97.0/24, ...]
+                //   [+] tor is ready; the tunnel goes out through 127.0.0.1:1820
+                //   [*] scan mode=turbo candidates=896 ports=[443,500,1701,4500,...]
+                //       concurrency=20 per_probe=6s budget=45s
+                //   [+] dialling out through the socks5 proxy at 127.0.0.1:1820
+                //   [-] scan deadline reached with no gateway
+                //
+                // Tor bootstrapped perfectly every time - 100%, "the way out is
+                // open". What cannot work is the SCAN: 896 candidates across seven
+                // ports, twenty at a time, in 45 seconds, with every probe a fresh
+                // Tor circuit. Tor exit policies do not even permit most of those
+                // ports, and the /24 ranges came from a DPI fingerprint measured on
+                // the DIRECT path, so they say nothing about what a Tor exit can
+                // reach. Three rungs, three bootstraps, no gateway, and the engine's
+                // SOCKS5 port never opened.
+                //
+                // Through Tor there is nothing to scan for: the engine dials one
+                // endpoint out through the SOCKS proxy. So this mode gets ONE
+                // candidate on the only carrier core 2.0.0 accepts here - MASQUE over
+                // HTTP/2, because Tor is TCP-only and WARP's WireGuard endpoints are
+                // UDP-only - with a budget sized for a Tor bootstrap rather than for
+                // an endpoint scan, and with the scan narrowed to the quickest mode
+                // so the engine stops hunting and commits.
+                //
+                // Same rung connectAetherStage already builds; it just has to be
+                // reachable from the unchained path too.
+                AetherController.setState(ConnectionState.Connecting)
+                updateNotification(getString(R.string.state_tor_bootstrap))
+                runLadder(reversePlan(profile), getString(R.string.err_protocol_failed))
+            } else if (profile.protocol == Protocol.AUTO) {
+                // ONE automatic mode, two implementations, chosen by what the
+                // backend allows. The race needs two engine processes with two
+                // identity files and two ports of its own, which only the plain
+                // Aether backend can give it - see SmartPlusPlan.eligible. Every
+                // other backend gets the ladder, which is what it always got.
+                //
+                // 1.3.1-r4: this used to be a second entry in the protocol
+                // selector ("Smart Plus"). It was removed because the split was
+                // invisible where it mattered - the selector offered a mode that
+                // silently behaved like Smart on every chained backend - and
+                // because a hand-picked-protocol path was resolving AUTO_PLUS as
+                // if it were a concrete protocol, which produced an engine command
+                // line with no protocol flag at all and a chained session that
+                // could not connect.
+                if (SmartPlusPlan.eligible(profile)) {
+                    connectSmartPlus(profile)
+                } else {
+                    connectSmartAuto(profile)
+                }
             } else {
                 // An explicitly chosen protocol keeps that protocol; the
                 // engine still selects its own endpoint (see [directPlan]).
@@ -341,10 +503,25 @@ class AetherVpnService : VpnService() {
         updateNotification(getString(R.string.state_connecting))
         cleanupNativeOnly()
 
+        // 1.4.0-r1: the engine's Psiphon needs a CA bundle and its embedded server
+        // list on disk BEFORE stage 1 launches the engine that spawns it. See
+        // PsiphonBootstrap for the field log this answers.
+        withContext(Dispatchers.IO) { PsiphonBootstrap.prepare(this@AetherVpnService) }
+
         val stageProfile: ConnectionProfile = connectAetherStage(profile)
 
-        val transport = ExternalTransportFactory.create(this, profile)
+        val transport = ExternalTransportFactory.create(this, profile) { engine?.isAlive() == true }
         externalTransport = transport
+
+        // 1.4.0 smart routing (#66): in this mode the engine only ever sees
+        // Psiphon's own server connections, so the block/direct rules - the
+        // user's plus the built-in lists, direct ones dropped while sharing - are
+        // applied by the Psiphon front, the one place the destination is visible.
+        // Installed before the front starts; the front clears them on stop.
+        val frontRoutes = withContext(Dispatchers.IO) {
+            studio.cluvex.aether.core.SmartLists.frontRules(profile)
+        }
+        studio.cluvex.aether.transport.PsiphonSocksFront.setRoutes(frontRoutes)
 
         // Never let the new listener race a dying one. The single-hop path used
         // to skip this and Psiphon would silently bind a random port because
@@ -363,7 +540,19 @@ class AetherVpnService : VpnService() {
         // The transport reports the port it ACTUALLY bound. Following it instead
         // of demanding one is what makes a chained session possible at all, and
         // it turns a port clash from a failed connection into a logged warning.
-        val port = transport.start()
+        val port = try {
+            transport.start()
+        } catch (e: PsiphonRegionFallback) {
+            // 1.4.0: the engine's Psiphon treats the exit country as a HARD
+            // filter. Rebuild the chain once with an automatic exit instead of
+            // leaving the user on "Connecting" (same promise as before 1.4.0).
+            DiagnosticsLog.w(TAG, e.message ?: "Psiphon could not serve the chosen exit - retrying automatically.")
+            runCatching { transport.stop() }
+            externalTransport = null
+            cleanupNativeOnly()
+            connectExternal(profile.copy(exitRegion = ""))
+            return
+        }
         if (port != wantedPort) {
             DiagnosticsLog.w(TAG, "${profile.backend.pipelineLabel} exposed SOCKS5 on $port (expected $wantedPort).")
         }
@@ -392,9 +581,16 @@ class AetherVpnService : VpnService() {
         }.getOrDefault(false)
         check(healthy) { getString(R.string.err_selftest) }
 
-        EngineMeta.setProtocol(
-            "${stageProfile.protocol.name} \u2192 ${profile.backend.externalKind?.name ?: ""}",
-        )
+        // 1.3.1-r2 LABEL FIX: the ENGINE's transport only, never the pipeline.
+        //
+        // This used to publish "WIREGUARD \u2192 PSIPHON" - the whole chain - because
+        // before 1.3.1 the info row printed this value raw and had no other way to
+        // say that a second hop existed. Since 1.3.1 the row asks
+        // [TransportBackend.pipelineLabel] for the path and puts THIS value in the
+        // brackets, so the old string produced
+        // "Aether(WIREGUARD \u2192 PSIPHON) \u2192 Psiphon": the arrow and the exit named
+        // twice, once inside the brackets where only the transport belongs.
+        EngineMeta.setProtocol(stageProfile.protocol.name)
         // The latency badge must measure the port the WHOLE pipeline exposes. In a
         // chained session that is the front (stage 2's exit), not the engine's own
         // listener - probing 1819 there measured stage 1 alone and reported a
@@ -450,18 +646,7 @@ class AetherVpnService : VpnService() {
                 )
             }
 
-            if (SystemClock.elapsedRealtime() >= nextPipelineProbe &&
-                PsiphonHealth.isSettling()
-            ) {
-                // A deliberate exit rotation is in flight: nothing can be dialled
-                // through it for a few seconds BY DESIGN. Probing it now measures
-                // the repair, not the fault. See PsiphonHealth.isSettling().
-                if (pipelineDead > 0) pipelineDead = 0
-                val settleFor = (PsiphonHealth.settlingUntil() - System.currentTimeMillis())
-                    .coerceIn(0L, PIPELINE_PROBE_INTERVAL_MS)
-                nextPipelineProbe =
-                    SystemClock.elapsedRealtime() + settleFor + PIPELINE_PROBE_RETRY_MS
-            } else if (SystemClock.elapsedRealtime() >= nextPipelineProbe) {
+            if (SystemClock.elapsedRealtime() >= nextPipelineProbe) {
                 // Sampled on EVERY probe decision so the delta always covers the
                 // interval since the last one, success or failure.
                 val dataPathMoving = dataPathIsMoving()
@@ -605,9 +790,12 @@ class AetherVpnService : VpnService() {
         }.getOrDefault(false)
         check(healthy) { getString(R.string.err_selftest) }
 
-        EngineMeta.setProtocol(
-            if (profile.backend.usesWarp) "${engineProfile.protocol.name} \u2192 TOR" else "TOR",
-        )
+        // Same fix as in the external-chain path above: the transport alone.
+        // `usesWarp` decides whether there is an Aether hop to name at all, and
+        // [TransportBackend.pipelineLabel] already consults it - a `--tor-only`
+        // mode renders as "Tor" / "Tor \u2192 Psiphon" with nothing in brackets, so
+        // the value published here is simply unused there.
+        EngineMeta.setProtocol(engineProfile.protocol.name)
         PingMonitor.setTunnelPort(frontPort)
         PingMonitor.reset()
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$frontPort"))
@@ -653,11 +841,29 @@ class AetherVpnService : VpnService() {
             backend = stageBackend,
             proxyMode = false,
             lanShare = false,
+            // 1.4.0-r5 zero-leak sharing: stage 1 is the engine the finished
+            // chain's share traffic ultimately rides on, so when the session
+            // shares to the LAN it must carry no direct (bypass) rules either.
+            // (lanShare = false above would otherwise let toArgs() pass them.)
+            //
+            // 1.4.0 smart routing (#66 follow-up): in a Psiphon mode stage 1 only
+            // ever carries Psiphon's own server connections - the user's rules are
+            // applied by PsiphonSocksFront (see connectExternal). Handing them to
+            // stage 1 as well could only misfire there: a direct rule covering a
+            // Psiphon server address would send Psiphon out WITHOUT Aether, and a
+            // block rule could cut Psiphon off. So in that mode stage 1 gets none
+            // (the built-in lists are already withheld via enginePsiphon, see
+            // SmartLists.engineRoutesFile). Tor modes keep them: there the engine
+            // does see the device's destinations.
+            routeBlock = if (profile.backend.usesExternal) "" else profile.routeBlock,
+            routeDirect = if (profile.lanShare || profile.backend.usesExternal) "" else profile.routeDirect,
             // A chained session pays this hop's latency on every packet and then
             // again inside Psiphon's own hop, so the cached-endpoint budget is
             // tighter here than for a plain Aether session. See
             // ConnectionProfile.chainedStage.
             chainedStage = true,
+            // 1.4.0: Psiphon runs inside the engine, so stage 1 is started with it.
+            enginePsiphon = profile.backend.usesExternal,
         )
         val plan = when {
             // --tor-only brings up no tunnel, so there is no endpoint to scan, no
@@ -698,6 +904,338 @@ class AetherVpnService : VpnService() {
      */
     private fun torBudget(stage: ConnectionProfile): Long =
         if (stage.torBridges != TorBridges.OFF) TOR_BRIDGE_BUDGET_MS else TOR_BOOTSTRAP_TIMEOUT_MS
+
+    /**
+     * The one and only connect attempt for `Tor -> Aether` (`--tor-reverse`).
+     *
+     * Not a ladder, on purpose. See the long note at the call site in
+     * [connectFlow] for the field log this answers; the short version is that the
+     * endpoint SCAN is what fails in this mode, not Tor, and no number of rungs
+     * fixes a scan that cannot work.
+     *
+     * Three things are pinned here:
+     *
+     *  * **MASQUE over HTTP/2.** The only carrier core 2.0.0 accepts in the reverse
+     *    chain: Tor is TCP-only and WARP's WireGuard endpoints are UDP-only, so
+     *    `--wg` and `--gool` are refused outright. The engine is spawned with
+     *    `--masque` regardless of what the user picked; sending their WireGuard
+     *    choice anyway is what made the log say `Attempt 1/4 -> WIREGUARD` while the
+     *    command line said `--masque`.
+     *  * **TURBO scan.** The shortest scan the engine has: 45 s, first answer
+     *    wins, Cloudflare's known gateways (MASQUE_SEEDS) probed first, every probe
+     *    carried over h2 through Tor. It is still a scan, not a single forced peer
+     *    (r8: the old wording here said otherwise); what fixed the field log is the
+     *    Tor-sized budget below and the engine waiting for Tor before it starts.
+     *  * **No manual ranges.** `endpointMode` and `manualRange` are cleared. Those
+     *    ranges come from a DPI fingerprint measured on the DIRECT path; what this
+     *    phone can reach has no bearing on what a Tor exit can reach, and feeding
+     *    them in is what narrowed the scan onto two /24s that the exit could not
+     *    get to.
+     *
+     * The budget is [torBudget] - minutes, sized for a directory fetch and a circuit
+     * build - because the 60 s scan timeout the ordinary ladder uses expires while
+     * Tor is still bootstrapping.
+     */
+    private fun reversePlan(profile: ConnectionProfile): List<AutoCandidate> = listOf(
+        AutoCandidate(
+            profile.copy(
+                protocol = Protocol.MASQUE,
+                masqueHttp2 = true,
+                scanMode = ScanMode.TURBO,
+                endpointMode = EndpointMode.AUTO,
+                manualRange = "",
+            ),
+            torBudget(profile),
+            "MASQUE \u00b7 h2 \u00b7 through Tor",
+        ),
+    )
+
+    /**
+     * SMART PLUS: remember what worked here, and race what is left.
+     *
+     * The mode the protocol selector offers next to Smart. [SmartPlusPlan] decides
+     * WHAT to try; this decides HOW, and the two design rules that matter are both
+     * about not disturbing anything that already works:
+     *
+     * **1. A race only SELECTS a strategy; it never becomes the session.** Each
+     * lane brings up a throwaway engine on a port of its own, proves it carries
+     * real outbound TCP, and is then killed - winner included. The session the user
+     * ends up with is established afterwards by [connectAttempt], the same call
+     * Smart and a hand-picked protocol go through, on the ordinary ports. So the
+     * TUN, the LAN bridge, the self-test, the supervisor and the notification
+     * behave identically in all three modes, and nothing in this method can leave
+     * the app in a state the other modes do not already handle.
+     *
+     * The cost of that decision is one extra engine start for the winner. It is
+     * small in practice and by construction: the winning engine saved its gateway
+     * to the engine's own `lastconn` file while it was proving itself, so the
+     * confirming connect takes the cached path (`[+] cached gateway ... still
+     * works; skipping scan`) rather than scanning again.
+     *
+     * **2. It can be slower than Smart, never worse.** If the race finds nothing,
+     * this hands over to the Smart ladder instead of failing. Smart Plus can
+     * therefore only ever add outcomes, which is what makes it safe to put a new
+     * button next to Smart for it.
+     */
+    private suspend fun connectSmartPlus(userProfile: ConnectionProfile): ConnectionProfile {
+        // Excluded profiles are not an error and not a silent downgrade: the reason
+        // is named, once, in the log the user can read.
+        if (!SmartPlusPlan.eligible(userProfile)) {
+            DiagnosticsLog.i(
+                TAG,
+                "Smart Plus cannot race this profile (" +
+                    "endpoint=${userProfile.endpointMode}, backend=${userProfile.backend.name}, " +
+                    "zero-trust=${userProfile.teamAuth.name}) - using the Smart ladder instead.",
+            )
+            return connectSmartAuto(userProfile)
+        }
+
+        AetherController.setState(ConnectionState.Launching)
+        updateNotification(getString(R.string.state_analyzing))
+        val fingerprint = SmartAuto.fingerprint(this)
+        val networkKey = NetworkIdentity.key(this)
+        val onMobileData = NetworkIdentity.onMobileData(this)
+        val memory = SmartPlusMemory.recall(this, networkKey)
+        val plan = SmartPlusPlan.plan(
+            dpi = fingerprint.dpiClass,
+            onMobileData = onMobileData,
+            memory = memory,
+            nowMs = System.currentTimeMillis(),
+        )
+        DiagnosticsLog.i(
+            TAG,
+            "Smart Plus on network $networkKey (${fingerprint.dpiClass}, " +
+                "${if (onMobileData) "mobile data" else "local link"}): " +
+                plan.joinToString(" then ") { step ->
+                    when (step) {
+                        is SmartPlusPlan.Step.Remembered -> "remembered=${step.tactic.id}"
+                        is SmartPlusPlan.Step.Race ->
+                            "race[" + step.lanes.joinToString(" | ") { lane ->
+                                lane.tactics.joinToString(",") { it.id } + "@+${lane.startAfterMs / 1000}s"
+                            } + "]"
+                    }
+                },
+        )
+
+        for (step in plan) {
+            currentCoroutineContext().ensureActive()
+            when (step) {
+                is SmartPlusPlan.Step.Remembered -> {
+                    // Evidence, so it gets the ordinary path directly rather than a
+                    // probe: if it still works this IS the session, with no second
+                    // engine started and no extra connect paid for.
+                    DiagnosticsLog.i(TAG, "Smart Plus: trying the remembered route first - ${step.tactic.label}")
+                    val profile = step.tactic.applyTo(userProfile)
+                    val ok = runCatching {
+                        connectAttempt(profile, step.tactic.budgetMs)
+                        true
+                    }.getOrElse { e ->
+                        if (e is CancellationException) throw e
+                        DiagnosticsLog.w(
+                            TAG,
+                            "Smart Plus: the remembered route did not come up (${e.message}) - racing.",
+                        )
+                        SmartPlusMemory.noteFailure(this, networkKey, step.tactic.id)
+                        cleanupNativeOnly()
+                        Diagnostics.resetChecks()
+                        false
+                    }
+                    if (ok) {
+                        SmartPlusMemory.remember(this, networkKey, step.tactic.id)
+                        return profile
+                    }
+                }
+
+                is SmartPlusPlan.Step.Race -> {
+                    val winner = runRace(userProfile, step.lanes) ?: continue
+                    DiagnosticsLog.i(TAG, "Smart Plus: ${winner.id} won the race - confirming it as the session.")
+                    updateNotification(getString(R.string.state_connecting))
+                    // The confirming connect gets the user's own scan mode, not the
+                    // lane's TURBO: the strategy is already proven, so this one is
+                    // allowed to take as long as the user's settings permit rather
+                    // than being cut short by a probe's budget.
+                    val profile = winner.applyTo(userProfile).copy(scanMode = userProfile.scanMode)
+                    val ok = runCatching {
+                        connectAttempt(profile, profile.connectTimeoutMs())
+                        true
+                    }.getOrElse { e ->
+                        if (e is CancellationException) throw e
+                        DiagnosticsLog.w(
+                            TAG,
+                            "Smart Plus: ${winner.id} proved itself but the session did not come up " +
+                                "(${e.message}) - falling back to the Smart ladder.",
+                        )
+                        cleanupNativeOnly()
+                        Diagnostics.resetChecks()
+                        false
+                    }
+                    if (ok) {
+                        SmartPlusMemory.remember(this, networkKey, winner.id)
+                        return profile
+                    }
+                }
+            }
+        }
+
+        // Nothing won. Every tactic that ran is worth remembering as a failure, so
+        // the next attempt on this network does not open with the same order.
+        DiagnosticsLog.w(TAG, "Smart Plus found nothing - handing over to the Smart ladder.")
+        return connectSmartAuto(userProfile)
+    }
+
+    /**
+     * Runs the lanes side by side and returns the first tactic that carried real
+     * outbound TCP, or null.
+     *
+     * ## What a lane is allowed to touch
+     *
+     * Nothing shared. A lane owns one [AetherProcess] and one port, and verifies
+     * with [Diagnostics.runProxyStage] - which takes the port as a parameter and,
+     * as its own comment says, deliberately leaves the four self-test circles
+     * alone. So two lanes cannot fight over the session's port, the session's
+     * engine field, the UI state or the self-test display.
+     *
+     * ## Why no lane is ever leaked
+     *
+     * This is the failure mode that matters, because this project has already been
+     * bitten by exactly one stray engine: a cancelled ladder that had started a
+     * rung left an unsupervised `libaether.so` running after the user pressed
+     * Disconnect, i.e. traffic still going through a tunnel the user believed was
+     * gone. Three things together make that impossible here:
+     *
+     *  * every lane kills its engine in `finally`, which runs on a normal exit, on
+     *    an exception AND on cancellation;
+     *  * the winner's engine is killed too - it was only ever a probe;
+     *  * `coroutineScope` does not return until every child has finished, so the
+     *    race cannot outlive the call even by a millisecond.
+     *
+     * The ports come from [PortLease.leaseRacePorts], which keeps them clear of the
+     * five session roles; if it can only find one, one lane runs and the other is
+     * skipped rather than two engines being pointed at one port.
+     */
+    private suspend fun runRace(
+        userProfile: ConnectionProfile,
+        lanes: List<SmartPlusPlan.Lane>,
+    ): SmartPlusPlan.Tactic? {
+        if (lanes.isEmpty()) return null
+        val ports = PortLease.leaseRacePorts(lanes.size)
+        if (ports.isEmpty()) {
+            DiagnosticsLog.w(TAG, "Smart Plus: no free local port for a lane - not racing.")
+            return null
+        }
+        val running = lanes.take(ports.size)
+        if (running.size < lanes.size) {
+            DiagnosticsLog.w(
+                TAG,
+                "Smart Plus: only ${ports.size} free local port(s), racing ${running.size} of ${lanes.size} lanes.",
+            )
+        }
+        AetherController.setState(ConnectionState.Connecting)
+        updateNotification(getString(R.string.state_smart_plus_racing))
+
+        val winner = CompletableDeferred<SmartPlusPlan.Tactic?>()
+        val startedAt = SystemClock.elapsedRealtime()
+        return try {
+            coroutineScope {
+                running.forEachIndexed { index, lane ->
+                    launch {
+                        if (lane.startAfterMs > 0) {
+                            // A lane that is beaten before it starts never starts:
+                            // that is the whole point of staggering the second one.
+                            val early = withTimeoutOrNull(lane.startAfterMs) { winner.await() }
+                            if (early != null) return@launch
+                        }
+                        runLane(userProfile, lane, ports[index], index + 1, startedAt, winner)
+                    }
+                }
+                // The ceiling is a backstop, not the normal end: a lane that runs
+                // out of tactics finishes on its own and the scope ends with it.
+                launch {
+                    delay(SmartPlusPlan.RACE_CEILING_MS)
+                    if (winner.isActive) {
+                        DiagnosticsLog.w(TAG, "Smart Plus: race ceiling reached with no winner.")
+                        winner.complete(null)
+                    }
+                }
+                val result = winner.await()
+                // Ends every sibling, including the ceiling timer. `coroutineScope`
+                // then waits for their `finally` blocks, which is what guarantees no
+                // engine survives this call.
+                coroutineContext.cancelChildren()
+                result
+            }
+        } finally {
+            // Belt and braces: whatever happened above, nothing from a lane may
+            // still be holding a port when the session's own engine starts.
+            raceEngines.forEach { runCatching { it.stop() } }
+            raceEngines.clear()
+        }
+    }
+
+    /**
+     * One lane: its tactics, in order, on one port, until one proves itself or the
+     * lane runs out.
+     */
+    private suspend fun runLane(
+        userProfile: ConnectionProfile,
+        lane: SmartPlusPlan.Lane,
+        port: Int,
+        laneNumber: Int,
+        startedAt: Long,
+        winner: CompletableDeferred<SmartPlusPlan.Tactic?>,
+    ) {
+        for (tactic in lane.tactics) {
+            if (!winner.isActive) return
+            currentCoroutineContext().ensureActive()
+            val elapsed = SystemClock.elapsedRealtime() - startedAt
+            if (elapsed + tactic.budgetMs > SmartPlusPlan.RACE_CEILING_MS) {
+                DiagnosticsLog.d(TAG, "Smart Plus lane $laneNumber: no room left for ${tactic.id}.")
+                return
+            }
+            val profile = tactic.applyTo(userProfile, bindPort = port)
+            DiagnosticsLog.i(TAG, "Smart Plus lane $laneNumber on :$port -> ${tactic.label}")
+            val engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir)
+            raceEngines.add(engine)
+            try {
+                engine.start(profile)
+                val opened = PortProbe.awaitOpen(SOCKS_HOST, port, tactic.budgetMs) { engine.isAlive() }
+                if (!opened) {
+                    DiagnosticsLog.w(
+                        TAG,
+                        "Smart Plus lane $laneNumber: ${tactic.id} never opened :$port " +
+                            (if (engine.isAlive()) "(still scanning)" else "(engine exited)"),
+                    )
+                    continue
+                }
+                // An open port is not a working proxy - the same gate the chained
+                // stage uses, and for the same reason.
+                val carries = Diagnostics.runProxyStage(
+                    host = SOCKS_HOST,
+                    port = port,
+                    alive = { engine.isAlive() },
+                )
+                if (!carries) {
+                    DiagnosticsLog.w(TAG, "Smart Plus lane $laneNumber: ${tactic.id} opened :$port but carried nothing.")
+                    continue
+                }
+                if (winner.complete(tactic)) {
+                    DiagnosticsLog.i(TAG, "Smart Plus lane $laneNumber: ${tactic.id} carries traffic - claiming the race.")
+                }
+                return
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                DiagnosticsLog.w(TAG, "Smart Plus lane $laneNumber: ${tactic.id} failed (${e.message}).")
+            } finally {
+                // A probe is over the moment it has answered, win or lose. This runs
+                // on cancellation too, which is what stops a losing lane outliving
+                // the race.
+                runCatching { engine.stop() }
+                raceEngines.remove(engine)
+            }
+        }
+        DiagnosticsLog.d(TAG, "Smart Plus lane $laneNumber: out of tactics.")
+    }
 
     /**
      * SOCKS5 port the finished pipeline exposes for [profile].
@@ -1179,7 +1717,7 @@ class AetherVpnService : VpnService() {
         }
         tun = descriptor ?: throw IllegalStateException("Failed to establish the VPN interface")
 
-        val mtu = profile.mtu.coerceIn(576, 9000)
+        val mtu = profile.mtu.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX)
         DiagnosticsLog.i(
             TAG,
             "TUN established: ipv4=${TunnelConfig.TUN_IPV4}/${TunnelConfig.TUN_IPV4_PREFIX} " +
@@ -1224,7 +1762,7 @@ class AetherVpnService : VpnService() {
     private fun buildTun(profile: ConnectionProfile, withoutIpv6Address: Boolean): Builder {
         // User-tunable MTU (defaults to 1280 -- safe for Iranian mobile/DPI).
         // Clamped to a sane range so a bad saved value can't break establish().
-        val mtu = profile.mtu.coerceIn(576, 9000)
+        val mtu = profile.mtu.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX)
         val builder = Builder()
             .setSession("Aether")
             .setMtu(mtu)
@@ -1354,7 +1892,7 @@ class AetherVpnService : VpnService() {
                 tunDescriptor = pfd,
                 socksHost = SOCKS_HOST,
                 socksPort = socksPort,
-                mtu = profile.mtu.coerceIn(576, 9000),
+                mtu = profile.mtu.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX),
                 blockedPackagesProvider = { profile.blockedApps.toSet() },
                 routingEngine = RoutingEngine(emptyList()),
             )
@@ -1363,7 +1901,7 @@ class AetherVpnService : VpnService() {
             tunBridge = bridge
             return
         }
-        val config = writeHevConfig(profile.mtu.coerceIn(576, 9000), socksPort)
+        val config = writeHevConfig(profile.mtu.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX), socksPort)
         // Use the LIVE fd of the ParcelFileDescriptor (do NOT detach): hev uses it
         // while running and we close the pfd ourselves on teardown. The fd is only
         // valid inside THIS process, which is exactly why hev must run in-process.
@@ -1448,8 +1986,19 @@ class AetherVpnService : VpnService() {
             EngineMeta.reset()
             PingMonitor.resetTunnelPort()
             PingMonitor.reset()
+            // Back to the documented ports for the next session: a relocation is a
+            // fact about one session's environment, not a setting.
+            PortLease.reset()
             AetherController.setState(ConnectionState.Idle)
             AetherTileService.requestUpdate(this@AetherVpnService)
+            // ISSUE #20 / #23 ROOT CAUSE (1.3.1): the widget was repainted ONLY
+            // from updateNotification(), and this path does not call it - the
+            // notification is about to be dropped, not updated. So the last thing
+            // ever written to the widget was the "Disconnecting…" painted at the
+            // top of this method, and it stayed there forever: "when disconnect
+            // with widget it shows disconnecting .... always". The tile was
+            // already refreshed on the line above; the widget was simply missed.
+            AetherWidgetProvider.updateAllWidgets(this@AetherVpnService)
             stopForegroundCompat()
             stopSelf()
             job?.join()
@@ -1491,7 +2040,7 @@ class AetherVpnService : VpnService() {
     }
 
     /**
-     * Tells [PsiphonHealth] which destinations belong to the app's own health
+     * Tells the Psiphon health watchdog (removed in 1.4.0) which destinations belong to the app's own health
      * checks, so a refusal of one can never be read as "this exit filters".
      * See [PROBE_TARGETS].
      */
@@ -1499,10 +2048,10 @@ class AetherVpnService : VpnService() {
         if (selfProbesRegistered) return
         selfProbesRegistered = true
         for (target in PROBE_TARGETS) {
-            PsiphonHealth.registerSelfProbe(target.first, target.second)
+            PsiphonEngine.noteSelfProbe(target.first, target.second)
         }
         PingMonitor.probeTargets().forEach { (host, probePort) ->
-            PsiphonHealth.registerSelfProbe(host, probePort)
+            PsiphonEngine.noteSelfProbe(host, probePort)
         }
     }
 
@@ -1659,7 +2208,7 @@ class AetherVpnService : VpnService() {
         tun = null
         val builder = Builder()
             .setSession("Aether KillSwitch")
-            .setMtu(profile.mtu.coerceIn(576, 9000))
+            .setMtu(profile.mtu.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX))
             .addAddress(TunnelConfig.TUN_IPV4, TunnelConfig.TUN_IPV4_PREFIX)
             .addRoute("0.0.0.0", 0)
             .setBlocking(true)
@@ -1724,6 +2273,19 @@ class AetherVpnService : VpnService() {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+        // ISSUE #20 (1.3.1): "when it connects the notification says
+        // disconnecting and stays". STOP_FOREGROUND_REMOVE only removes the
+        // notification the service currently holds the foreground WITH. But
+        // updateNotification() posts through NotificationManager.notify()
+        // directly, so if the service was not foreground at that moment - a
+        // disconnect arriving after the foreground was already dropped, or a
+        // rescued start - that "Disconnecting…" notification belongs to nobody
+        // and outlives the service. Cancelling the id explicitly is idempotent
+        // and covers both cases.
+        runCatching {
+            getSystemService(android.app.NotificationManager::class.java)?.cancel(NOTIF_ID)
+        }
+        lastNotifText = null
     }
 
     /**
@@ -1764,6 +2326,18 @@ class AetherVpnService : VpnService() {
         if (live === this) live = null
         runJob?.cancel()
         cleanupNativeOnly()
+        // 1.3.1: the service can also die WITHOUT going through stopEverything -
+        // task removal, a system kill, the user revoking VPN consent. Every one of
+        // those left the widget showing whatever transient text it had last. The
+        // tunnel is gone by the time we are here, so record Idle and repaint.
+        // (WidgetStateCache would map a transient value to Idle on the next cold
+        // read anyway, but a widget on a screen that is already visible does not
+        // get a cold read - it gets nothing at all unless we paint it.)
+        runCatching {
+            AetherController.setState(ConnectionState.Idle)
+            AetherTileService.requestUpdate(this)
+            AetherWidgetProvider.updateAllWidgets(this)
+        }
         scope.coroutineContext[Job]?.cancel()
         super.onDestroy()
     }
@@ -1788,7 +2362,7 @@ class AetherVpnService : VpnService() {
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(openIntent)
-            .addAction(0, getString(R.string.state_disconnecting), disconnectIntent)
+            .addAction(0, getString(R.string.notif_action_disconnect), disconnectIntent)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
@@ -1821,14 +2395,29 @@ class AetherVpnService : VpnService() {
 
         private const val NOTIF_ID = 0x4145
         private const val TAG = "vpn"
+        private const val ZT_TAG = "zerotrust"
         private const val SOCKS_HOST = TunnelConfig.SOCKS_HOST
-        private const val SOCKS_PORT = TunnelConfig.SOCKS_PORT
+
+        // ------------------------------------------------------------------
+        // 1.3.1, issues #27 and #52: these three were `const val`, i.e. the
+        // number 1819 / 1825 / 1821 inlined at every use site. Android's Private
+        // Space runs the app as another user but SHARES the network namespace,
+        // so a second instance bound the same addresses and lost
+        // ("Address already in use (os error 98)") before it ever tried a tunnel.
+        //
+        // They are now accessors over [PortLease], which is resolved once per
+        // session in onStartCommand: the preferred port when it is free - so a
+        // normal install is byte-identical in behaviour - and the next free one
+        // when it is not. Everything in this file reads them unqualified and did
+        // not have to change.
+        // ------------------------------------------------------------------
+        private val SOCKS_PORT: Int get() = PortLease.socks
 
         /** Where a chained session's SECOND stage listens (see connectExternal). */
-        private const val CHAIN_SOCKS_PORT = TunnelConfig.CHAIN_SOCKS_PORT
+        private val CHAIN_SOCKS_PORT: Int get() = PortLease.chain
 
         /** Where the DNS-capable Tor front listens (see connectTor). */
-        private const val TOR_FRONT_PORT = TunnelConfig.TOR_FRONT_PORT
+        private val TOR_FRONT_PORT: Int get() = PortLease.torFront
 
         /**
          * How long Tor may take to become usable.
@@ -1935,7 +2524,7 @@ class AetherVpnService : VpnService() {
          * 09:33:36.288 ssh: rejected: administratively prohibited      <- probe: refused
          * ...
          * 09:34:39.090 ping: Latency probe failed (viaTunnel=true): Connect timed out
-         * 09:34:59.391 PsiphonHealth ... refused 6 different destinations in 45s
+         * 09:34:59.391 the Psiphon health watchdog (removed in 1.4.0) ... refused 6 different destinations in 45s
          * 09:34:59.396 PsiphonSocksFront udpgw session closed
          * 09:35:03.298 Rebuilding the session: the data path is wedged
          * ```
@@ -1951,7 +2540,7 @@ class AetherVpnService : VpnService() {
          * Port 443 is the one port every exit must allow, and a TLS handshake to
          * it is a genuine payload round trip through the data plane, which is
          * what the probe was supposed to be measuring in the first place. Each
-         * target is also registered with [PsiphonHealth] so it can never count
+         * target is also registered with the Psiphon health watchdog (removed in 1.4.0) so it can never count
          * as evidence against a server again, whatever port it lands on.
          */
         private val PROBE_TARGETS = arrayOf(

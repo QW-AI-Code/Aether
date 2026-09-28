@@ -41,6 +41,77 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # RELEASE TREE: the repository must hold exactly the uploaded release.
+      #
+      # A new version is published by uploading its files over the previous
+      # one. That overwrites everything the release ships but can never delete
+      # what it dropped (1.3.0 -> 1.4.0: the psiphontunnel AAR, its PROVENANCE
+      # file and transport/PsiphonHealth.kt), and a leftover source or library
+      # breaks the build or the app. scripts/enforce-release-tree.sh uses
+      # SOURCE_MANIFEST.sha256 as the list of the release's files: it first
+      # proves the upload is complete (every file present, every hash right -
+      # otherwise it stops and deletes nothing), then removes every tracked file
+      # that is not in the manifest, except CI-managed signing files and
+      # workflows. It runs once per release (marker .github/release-tree.applied)
+      # and FIRST, before any build step can see a stale file.
+      - name: Enforce release tree (remove files from older versions)
+        run: bash scripts/enforce-release-tree.sh
+
+      # Record the cleanup on the branch, so the repository itself shows only the
+      # new release. Best-effort: if the push fails the next build simply
+      # enforces again (the marker was not pushed either).
+      - name: Commit release-tree cleanup
+        if: github.ref_type == 'branch'
+        run: |
+          set -uo pipefail
+          if git diff --cached --quiet; then
+            echo "Nothing to commit - the release tree was already exact."
+            exit 0
+          fi
+          VERSION="$(sed -n 's/^version=//p' .github/release-tree.applied)"
+          REMOVED="$(sed -n 's/^removed=//p' .github/release-tree.applied)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci: keep only Aether ${VERSION} files (removed ${REMOVED} leftover file(s)) [skip ci]" || exit 0
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "::warning::Could not push the release-tree cleanup; the next build will enforce it again."
+
+      # 1.4.0: "No space left on device".
+      #
+      # A 1.4.0 build built, tested, signed and PUBLISHED all four APKs, and then the
+      # job went red in its very last post-step: setup-gradle's "Caching Gradle
+      # state" ran zstd into a full disk (`zstd: error 70 : Write error : cannot
+      # write block : No space left on device`). The culprit is 1.4.0's build
+      # volume: the Tor-enabled engine for three ABIs (~30 min of cargo, several GB
+      # of target/), plus the Go builds of Psiphon and lyrebird, plus Gradle, on a
+      # hosted runner that starts with only ~14 GB free. Two fixes, both needed:
+      #   1. free the preinstalled toolchains this build never uses, up front;
+      #   2. delete the native build intermediates once the .so files are
+      #      installed in jniLibs (next step after the engine build), and again
+      #      right before the post-job cache save.
+      # Nothing removed here is used by any later step.
+      - name: Free runner disk space
+        run: |
+          set -u
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/.ghcup /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Ruby \
+            /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/julia* \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /usr/local/lib/node_modules \
+            /opt/microsoft /opt/google /opt/az \
+            "${AGENT_TOOLSDIRECTORY:-/nonexistent}/CodeQL" || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          echo "After:"; df -h / | tail -1
+
       - name: Set up JDK 17
         uses: actions/setup-java@v5
         with:
@@ -147,7 +218,7 @@ jobs:
       - name: Set up Rust (Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -178,6 +249,47 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           AETHER_REPO: CluvexStudio/Aether
 
+      # ------------------------------------------------------------------ 1.3.1
+      # Bump engine dependencies that carry a KNOWN advisory, within the semver
+      # range their crate already allows.
+      #
+      # WHY THIS IS A WORKFLOW STEP AND NOT AN EDIT TO Cargo.lock: the step above
+      # replaces native/aether/aether wholesale from upstream (sync-core.sh line
+      # ~348, `cp -R "$staging/new/aether"`), and Cargo.lock is not in its
+      # PATCHED_FILES set. Any fix committed to that lock file is therefore
+      # deleted on the next run. Doing it here means it is re-applied every time,
+      # on whatever version upstream just handed us.
+      #
+      # AND IT MUST RUN BEFORE "Build engine": the point is that the SHIPPED
+      # binary is fixed. Updating the lock only before `cargo audit` would turn
+      # the report green while the APK still carried the vulnerable code, which is
+      # worse than the warning.
+      #
+      # rustls: RUSTSEC-2026-0285 - TLS 1.3 handshake messages accepted across
+      # encryption-level boundaries, fixed in 0.23.45. Reached through reqwest
+      # (the WARP registration calls), quinn and tor-rtcompat, so it is on a live
+      # path, not a dev dependency. `-p rustls` without --precise takes the newest
+      # compatible 0.23.x, so this does not need editing again at the next
+      # advisory in the same line.
+      #
+      # Non-fatal on purpose: if a future upstream lock has no rustls at all, or
+      # the registry is briefly unreachable, that is not a reason to fail a
+      # release build. The audit step below still reports the truth either way.
+      - name: Patch known-vulnerable engine dependencies
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          lock=native/aether/aether/Cargo.lock
+          [ -f "$lock" ] || { echo "no engine lock yet - nothing to patch"; exit 0; }
+          before="$(grep -A1 '^name = "rustls"' "$lock" | grep '^version' | head -1 || true)"
+          ( cd native/aether/aether && cargo update --package rustls ) || true
+          after="$(grep -A1 '^name = "rustls"' "$lock" | grep '^version' | head -1 || true)"
+          echo "rustls: ${before:-absent} -> ${after:-absent}"
+          {
+            echo "### Engine dependency patch"
+            echo "rustls: \`${before:-absent}\` -> \`${after:-absent}\` (RUSTSEC-2026-0285)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Fetch native sources
         run: bash scripts/fetch-natives.sh
         env:
@@ -194,6 +306,12 @@ jobs:
       - name: Build pluggable transport (lyrebird, for Tor bridges)
         continue-on-error: true
         run: bash scripts/build-natives.sh pt
+
+      # 1.4.0: Psiphon lives in the engine (core 2.1.0). The engine runs the
+      # psiphon-tunnel-core console client; on Android it ships as libpsiphon.so.
+      # NOT allowed to fail: both Psiphon modes need it.
+      - name: Build Psiphon (the engine's console client)
+        run: bash scripts/build-natives.sh psiphon
 
       # The engine build is the one step an automatic core upgrade can break:
       # upstream may add a struct field or a function parameter at any time and
@@ -223,6 +341,21 @@ jobs:
           bash scripts/build-natives.sh aether
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1.4.0: every native .so is now in app/src/main/jniLibs. The Rust
+      # target/ tree (several GB for three ABIs with Tor) and the Go build/module
+      # caches are dead weight from here on, and they are what filled the disk
+      # before the post-job Gradle cache save. Sources are kept: Gradle and the
+      # commit step below still read them.
+      - name: Reclaim disk space (native build intermediates)
+        if: always()
+        run: |
+          set -u
+          echo "Before:"; df -h / | tail -1
+          rm -rf .native/aether/target native/aether/target 2>/dev/null || true
+          go clean -cache -modcache 2>/dev/null || true
+          rm -rf "${HOME}/.cargo/registry/src" "${HOME}/.cache/go-build" 2>/dev/null || true
+          echo "After:"; df -h / | tail -1
 
       # If the core moved AND the engine actually built with it, commit the new
       # CORE_VERSION, the refreshed upstream baseline and the auto-written
@@ -382,7 +515,7 @@ jobs:
       # never retried, so a genuine compile failure still fails fast.
       # 1.2.7 removed the Tor backend, so there is no native Tor core to build
       # here any more (scripts/build-tor.sh is gone with it). The Aether core and
-      # the Psiphon AAR are the only native inputs left.
+      # libpsiphon.so (1.4.0, replacing the Psiphon AAR) are the native inputs.
       # 1.2.9-r3: RUN THE TESTS. The 1.2.9 crash (AiRedaction "No group 1", which
       # killed the app a minute after every connect) shipped past eight unit tests
       # that would all have failed on it, because nothing ever executed them. The
@@ -421,7 +554,23 @@ jobs:
             [ -f "$lock" ] || continue
             dir="$(dirname "$lock")"
             echo "::group::cargo audit $dir"
-            ( cd "$dir" && cargo audit --color never | tee "${RUNNER_TEMP:-/tmp}/cargo-audit.txt" )
+            # --ignore RUSTSEC-2023-0071 (rsa "Marvin Attack" timing side channel).
+            # 1.3.1: this advisory has NO fixed release - `cargo audit` itself
+            # prints "No fixed upgrade is available!" - so it can only ever fail
+            # this step forever, which is how a check stops being read.
+            #
+            # It is also not on a path this app exercises. `rsa` arrives only
+            # through arti's Tor stack (tor-llcrypto -> tor-key-forge ->
+            # ssh-key-fork-arti), where RSA is used to VERIFY legacy relay
+            # identity keys. The Marvin attack needs the victim to perform RSA
+            # PRIVATE-key decryption on attacker-chosen ciphertexts and to have
+            # its timing measured; a Tor client checking signatures does neither.
+            #
+            # `--ignore` still LISTS the advisory in the output, so this hides
+            # nothing - it stops an unfixable finding from masking a fixable one.
+            # Remove this flag the day the rsa crate ships a patched release.
+            ( cd "$dir" && cargo audit --color never --ignore RUSTSEC-2023-0071 \
+                | tee "${RUNNER_TEMP:-/tmp}/cargo-audit.txt" )
             rc=${PIPESTATUS[0]}
             echo "::endgroup::"
             [ "$rc" -eq 0 ] || status=1
@@ -689,6 +838,8 @@ jobs:
                 || { echo "ERROR: $apk lacks hev for $abi"; exit 1; }
               grep -qx -- "lib/${abi}/libaethertun.so" <<< "$entries" \
                 || { echo "ERROR: $apk lacks the aethertun JNI bridge for $abi"; exit 1; }
+              grep -qx -- "lib/${abi}/libpsiphon.so" <<< "$entries" \
+                || { echo "ERROR: $apk lacks libpsiphon.so for $abi (Psiphon modes would not work)"; exit 1; }
               # ---------------------------------------------------------- r5
               # THE GATE THAT WOULD HAVE SAVED THE r4 ROUND.
               # The engine inside the APK must carry THIS revision's build
@@ -723,6 +874,7 @@ jobs:
           declare -A MAP=(
             ["arm64-v8a"]="arm64-v8a"
             ["armeabi-v7a"]="armeabi-v7a"
+            ["x86_64"]="x86_64"
             ["universal"]="universal"
           )
           for key in "${!MAP[@]}"; do
@@ -776,3 +928,16 @@ jobs:
           files: artifacts/*.apk
           make_latest: true
           body_path: ${{ env.RELEASE_BODY }}
+
+      # 1.4.0: last step before the post-job hooks. setup-gradle packs the
+      # Gradle home into a zstd archive AFTER this step, and in an earlier 1.4.0 build that archive
+      # is what hit "No space left on device". The APKs are already in
+      # artifacts/ and published, so the Android build intermediates can go.
+      - name: Reclaim disk space before the Gradle cache save
+        if: always()
+        run: |
+          set -u
+          rm -rf app/build/intermediates app/build/tmp app/build/kotlin \
+                 .native/aether/target "${HOME}/.cargo/registry/src" 2>/dev/null || true
+          go clean -cache 2>/dev/null || true
+          df -h / | tail -1

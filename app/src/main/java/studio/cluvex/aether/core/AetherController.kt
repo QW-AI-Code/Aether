@@ -115,6 +115,7 @@ object ProfileCodec {
         add("keepalive=${p.keepalive}")
         add("fragment=${p.fragment}")
         add("ech=${p.ech}")
+        add("echConfig=${p.echConfig}")
         add("mtu=${p.mtu}")
         add("proxy=${p.proxyMode}")
         add("split=${p.splitMode.name}")
@@ -153,6 +154,8 @@ object ProfileCodec {
         add("dns=${p.dnsServers}")
         add("routeBlock=${p.routeBlock}")
         add("routeDirect=${p.routeDirect}")
+        add("bypassIran=${p.bypassIran}")
+        add("blockAds=${p.blockAds}")
         add("sniff=${p.routeSniff}")
         add("sniffMs=${p.routeSniffMs}")
         add("upstream=${p.upstreamProxy}")
@@ -199,7 +202,10 @@ object ProfileCodec {
                 keepalive = map["keepalive"]?.toIntOrNull() ?: d.keepalive,
                 fragment = map["fragment"]?.toBooleanStrictOrNull() ?: d.fragment,
                 ech = map["ech"]?.toBooleanStrictOrNull() ?: d.ech,
-                mtu = map["mtu"]?.toIntOrNull() ?: d.mtu,
+                echConfig = map["echConfig"] ?: d.echConfig,
+                mtu = map["mtu"]?.toIntOrNull()
+                    ?.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX)
+                    ?: d.mtu,
                 proxyMode = map["proxy"]?.toBooleanStrictOrNull() ?: d.proxyMode,
                 splitMode = map["split"]?.let { enumOr<SplitMode>(it) } ?: d.splitMode,
                 splitApps = map["splitApps"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
@@ -223,6 +229,8 @@ object ProfileCodec {
                 dnsServers = map["dns"] ?: d.dnsServers,
                 routeBlock = map["routeBlock"] ?: d.routeBlock,
                 routeDirect = map["routeDirect"] ?: d.routeDirect,
+                bypassIran = map["bypassIran"]?.toBooleanStrictOrNull() ?: d.bypassIran,
+                blockAds = map["blockAds"]?.toBooleanStrictOrNull() ?: d.blockAds,
                 routeSniff = map["sniff"]?.toBooleanStrictOrNull() ?: d.routeSniff,
                 routeSniffMs = map["sniffMs"]?.toIntOrNull() ?: d.routeSniffMs,
                 upstreamProxy = map["upstream"] ?: d.upstreamProxy,

@@ -1,4 +1,7 @@
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use ipnet::IpNet;
 use regex::Regex;
@@ -176,10 +179,131 @@ pub fn is_private(ip: IpAddr) -> bool {
     }
 }
 
+// >>> AETHER-APP-PATCH smart-routes-index
+//
+// 1.4.0 (smart Iran bypass + ad blocking): the rule sets are no longer a
+// handful of hand-typed entries. The routes file the app hands over
+// (`AETHER_ROUTES_FILE`) carries ~1,300 Iranian address blocks and tens of
+// thousands of ad/tracker domains, and `decide()` runs for EVERY flow and
+// every UDP datagram. The old representation was a flat `Vec<Matcher>`
+// walked with `any()`, and `DomainSuffix::matches` allocated a lowercase copy
+// of the name plus a `format!(".{suffix}")` string per entry - i.e. ~40,000
+// heap allocations per new connection with the ad list loaded.
+//
+// Same syntax, same semantics, same precedence (block before direct), indexed:
+//
+//   * suffix / full domains -> `HashSet`, matched by walking the labels of the
+//     name ("a.b.example.com" -> "b.example.com" -> "example.com" -> "com"),
+//     O(labels) instead of O(rules);
+//   * IPv4 networks -> sorted, merged `[start, end]` ranges, binary search;
+//   * IPv6 networks, keywords, regexes, ports and `private` stay a short list.
+#[derive(Debug, Default)]
+struct Rules {
+    suffixes: HashSet<String>,
+    fulls: HashSet<String>,
+    v4: Vec<(u32, u32)>,
+    v6: Vec<IpNet>,
+    others: Vec<Matcher>,
+    count: usize,
+}
+
+impl Rules {
+    fn from_matchers(list: Vec<Matcher>) -> Self {
+        let mut rules = Rules::default();
+        let mut v4: Vec<(u32, u32)> = Vec::new();
+        for matcher in list {
+            rules.count += 1;
+            match matcher {
+                Matcher::DomainSuffix(suffix) => {
+                    rules.suffixes.insert(suffix);
+                }
+                Matcher::DomainFull(full) => {
+                    rules.fulls.insert(full);
+                }
+                Matcher::Net(IpNet::V4(net)) => {
+                    v4.push((u32::from(net.network()), u32::from(net.broadcast())));
+                }
+                Matcher::Net(net @ IpNet::V6(_)) => rules.v6.push(net),
+                other => rules.others.push(other),
+            }
+        }
+        v4.sort_unstable();
+        let mut merged: Vec<(u32, u32)> = Vec::with_capacity(v4.len());
+        for (start, end) in v4 {
+            if let Some(last) = merged.last_mut() {
+                if (start as u64) <= (last.1 as u64) + 1 {
+                    if end > last.1 {
+                        last.1 = end;
+                    }
+                    continue;
+                }
+            }
+            merged.push((start, end));
+        }
+        rules.v4 = merged;
+        rules
+    }
+
+    fn len(&self) -> usize {
+        self.count
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    fn has_domain_rules(&self) -> bool {
+        !self.suffixes.is_empty()
+            || !self.fulls.is_empty()
+            || self.others.iter().any(|rule| {
+                matches!(rule, Matcher::DomainKeyword(_) | Matcher::DomainRegex(_))
+            })
+    }
+
+    fn matches(&self, host: Host<'_>, port: u16) -> bool {
+        match host {
+            Host::Domain(name) => {
+                if !self.suffixes.is_empty() || !self.fulls.is_empty() {
+                    let lowered = name.trim_end_matches('.').to_ascii_lowercase();
+                    if self.fulls.contains(&lowered) {
+                        return true;
+                    }
+                    if !self.suffixes.is_empty() {
+                        let mut rest = lowered.as_str();
+                        loop {
+                            if self.suffixes.contains(rest) {
+                                return true;
+                            }
+                            match rest.find('.') {
+                                Some(dot) => rest = &rest[dot + 1..],
+                                None => break,
+                            }
+                        }
+                    }
+                }
+            }
+            Host::Ip(IpAddr::V4(v4)) => {
+                let x = u32::from(v4);
+                let idx = self.v4.partition_point(|&(start, _)| start <= x);
+                if idx > 0 && self.v4[idx - 1].1 >= x {
+                    return true;
+                }
+            }
+            Host::Ip(ip @ IpAddr::V6(_)) => {
+                if self.v6.iter().any(|net| net.contains(&ip)) {
+                    return true;
+                }
+            }
+        }
+        self.others.iter().any(|rule| rule.matches(host, port))
+    }
+}
+// <<< AETHER-APP-PATCH smart-routes-index
+
 #[derive(Debug, Default)]
 pub struct RuleSet {
-    block: Vec<Matcher>,
-    direct: Vec<Matcher>,
+    block: Rules,
+    direct: Rules,
 }
 
 impl RuleSet {
@@ -224,33 +348,226 @@ impl RuleSet {
     }
 
     pub fn has_domain_rules(&self) -> bool {
-        self.block.iter().chain(self.direct.iter()).any(|rule| {
-            matches!(
-                rule,
-                Matcher::DomainSuffix(_)
-                    | Matcher::DomainFull(_)
-                    | Matcher::DomainKeyword(_)
-                    | Matcher::DomainRegex(_)
-            )
-        })
+        self.block.has_domain_rules() || self.direct.has_domain_rules()
     }
 
     pub fn decide(&self, host: Host<'_>, port: u16) -> Action {
-        if self.block.iter().any(|rule| rule.matches(host, port)) {
+        if self.block.matches(host, port) {
             return Action::Block;
         }
-        if self.direct.iter().any(|rule| rule.matches(host, port)) {
+        if self.direct.matches(host, port) {
             return Action::Direct;
         }
         Action::Proxy
     }
+
+    // >>> AETHER-APP-PATCH smart-routes-dns
+    /// DNS-level blocking (the sinkhole every modern ad blocker is built on).
+    ///
+    /// When [query] is a standard one-question DNS query for a name the BLOCK
+    /// rules cover, returns an `NXDOMAIN` answer to hand straight back to the
+    /// device, so the app never even gets an address to connect to. `None` for
+    /// anything else, in which case the query is carried untouched.
+    ///
+    /// Only block rules are consulted: a direct rule changes where a flow goes,
+    /// never whether a name resolves.
+    pub fn dns_block_reply(&self, query: &[u8]) -> Option<Vec<u8>> {
+        if self.block.is_empty() {
+            return None;
+        }
+        let (name, question_end) = dns_question(query)?;
+        if !self.block.matches(Host::Domain(&name), 53) {
+            return None;
+        }
+        log::debug!("[route] dns sinkhole {name}");
+        let mut reply = query.get(..question_end)?.to_vec();
+        // QR=1, opcode 0, RD copied; RA=1, RCODE=3 (NXDOMAIN); only the question.
+        reply[2] = (query[2] & 0x01) | 0x80;
+        reply[3] = 0x83;
+        for byte in &mut reply[6..12] {
+            *byte = 0;
+        }
+        Some(reply)
+    }
+    // <<< AETHER-APP-PATCH smart-routes-dns
 }
 
-fn parse_list(raw: &str) -> Vec<Matcher> {
-    raw.split(['\n', ',', ';'])
-        .filter_map(Matcher::parse)
-        .collect()
+fn parse_list(raw: &str) -> Rules {
+    Rules::from_matchers(raw.split(['\n', ',', ';']).filter_map(Matcher::parse).collect())
 }
+
+// >>> AETHER-APP-PATCH smart-routes-dns
+/// The single question of a DNS QUERY: its name (lowercase, no trailing dot)
+/// and the offset just past QTYPE/QCLASS. `None` for a response, a message
+/// with more or fewer than one question, a compression pointer inside the
+/// question (illegal there) or a truncated buffer.
+fn dns_question(msg: &[u8]) -> Option<(String, usize)> {
+    if msg.len() < 17 || msg[2] & 0x80 != 0 {
+        return None;
+    }
+    if u16::from_be_bytes([msg[4], msg[5]]) != 1 {
+        return None;
+    }
+    let (name, end) = read_plain_name(msg, 12)?;
+    let end = end.checked_add(4)?;
+    if end > msg.len() {
+        return None;
+    }
+    Some((name, end))
+}
+
+/// Reads an uncompressed name starting at [at]; returns it and the offset
+/// just past its terminating zero label.
+fn read_plain_name(msg: &[u8], mut at: usize) -> Option<(String, usize)> {
+    let mut name = String::new();
+    let mut labels = 0;
+    loop {
+        let len = *msg.get(at)? as usize;
+        if len == 0 {
+            at += 1;
+            break;
+        }
+        if len & 0xc0 != 0 || labels > 127 {
+            return None;
+        }
+        let label = msg.get(at + 1..at + 1 + len)?;
+        if !name.is_empty() {
+            name.push('.');
+        }
+        name.push_str(&String::from_utf8_lossy(label).to_ascii_lowercase());
+        at += 1 + len;
+        labels += 1;
+    }
+    if name.is_empty() {
+        return None;
+    }
+    Some((name, at))
+}
+
+fn skip_dns_name(msg: &[u8], mut at: usize) -> Option<usize> {
+    let mut hops = 0;
+    loop {
+        let len = *msg.get(at)? as usize;
+        if len & 0xc0 == 0xc0 {
+            return Some(at + 2);
+        }
+        if len == 0 {
+            return Some(at + 1);
+        }
+        at += 1 + len;
+        hops += 1;
+        if hops > 128 {
+            return None;
+        }
+    }
+}
+
+/// Address -> name memory, filled from the DNS answers that pass through the
+/// SOCKS5 UDP relay. It lets a flow that carries no readable name of its own
+/// (QUIC, or a TCP protocol that is neither TLS nor HTTP) still be matched
+/// against the domain rules.
+///
+/// It is a HINT, never an authority: CDN addresses are shared by many names,
+/// so callers use it only where a wrong guess is harmless (dropping a QUIC
+/// datagram makes the app fall back to TCP, where the real server name
+/// decides) or where no better signal exists at all.
+struct NameMemory {
+    names: HashMap<IpAddr, (String, Instant)>,
+}
+
+const NAME_MEMORY_MAX: usize = 8192;
+const NAME_MEMORY_MIN_TTL: Duration = Duration::from_secs(60);
+const NAME_MEMORY_MAX_TTL: Duration = Duration::from_secs(3600);
+
+fn name_memory() -> &'static Mutex<NameMemory> {
+    static MEMORY: OnceLock<Mutex<NameMemory>> = OnceLock::new();
+    MEMORY.get_or_init(|| {
+        Mutex::new(NameMemory {
+            names: HashMap::new(),
+        })
+    })
+}
+
+/// Records every A/AAAA answer in the DNS RESPONSE [msg] under the name that
+/// was asked for (not the CNAME target: the asked-for name is what the user's
+/// app will present as its server name, so it is what the rules are written
+/// against).
+pub fn learn_dns_answer(msg: &[u8]) {
+    if msg.len() < 12 || msg[2] & 0x80 == 0 || msg[3] & 0x0f != 0 {
+        return;
+    }
+    if u16::from_be_bytes([msg[4], msg[5]]) != 1 {
+        return;
+    }
+    let answers = u16::from_be_bytes([msg[6], msg[7]]) as usize;
+    if answers == 0 {
+        return;
+    }
+    let Some((name, question_end)) = read_plain_name(msg, 12) else {
+        return;
+    };
+    let mut at = question_end + 4;
+    let now = Instant::now();
+    let Ok(mut memory) = name_memory().lock() else {
+        return;
+    };
+    for _ in 0..answers.min(64) {
+        let Some(after_name) = skip_dns_name(msg, at) else {
+            return;
+        };
+        if after_name + 10 > msg.len() {
+            return;
+        }
+        let rtype = u16::from_be_bytes([msg[after_name], msg[after_name + 1]]);
+        let ttl = u32::from_be_bytes([
+            msg[after_name + 4],
+            msg[after_name + 5],
+            msg[after_name + 6],
+            msg[after_name + 7],
+        ]);
+        let rdlen = u16::from_be_bytes([msg[after_name + 8], msg[after_name + 9]]) as usize;
+        let rdata = after_name + 10;
+        if rdata + rdlen > msg.len() {
+            return;
+        }
+        let ip = match (rtype, rdlen) {
+            (1, 4) => Some(IpAddr::from([
+                msg[rdata],
+                msg[rdata + 1],
+                msg[rdata + 2],
+                msg[rdata + 3],
+            ])),
+            (28, 16) => {
+                let mut raw = [0u8; 16];
+                raw.copy_from_slice(&msg[rdata..rdata + 16]);
+                Some(IpAddr::from(raw))
+            }
+            _ => None,
+        };
+        if let Some(ip) = ip {
+            if memory.names.len() >= NAME_MEMORY_MAX {
+                memory.names.retain(|_, (_, expires)| *expires > now);
+                if memory.names.len() >= NAME_MEMORY_MAX {
+                    memory.names.clear();
+                }
+            }
+            let ttl = Duration::from_secs(ttl as u64).clamp(NAME_MEMORY_MIN_TTL, NAME_MEMORY_MAX_TTL);
+            memory.names.insert(ip, (name.clone(), now + ttl));
+        }
+        at = rdata + rdlen;
+    }
+}
+
+/// The name [ip] was last resolved from, while that answer is still fresh.
+pub fn recall_name(ip: IpAddr) -> Option<String> {
+    let memory = name_memory().lock().ok()?;
+    let (name, expires) = memory.names.get(&ip)?;
+    if *expires <= Instant::now() {
+        return None;
+    }
+    Some(name.clone())
+}
+// <<< AETHER-APP-PATCH smart-routes-dns
 
 fn push_list(target: &mut String, extra: &str) {
     if extra.trim().is_empty() {
@@ -491,6 +808,115 @@ mod tests {
         assert!(block.contains("ads.example"));
         assert!(direct.trim().is_empty());
     }
+
+    // >>> AETHER-APP-PATCH smart-routes-dns
+    fn dns_query(name: &str, qtype: u16) -> Vec<u8> {
+        let mut msg = vec![0x12, 0x34, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+        for label in name.split('.') {
+            msg.push(label.len() as u8);
+            msg.extend_from_slice(label.as_bytes());
+        }
+        msg.push(0);
+        msg.extend_from_slice(&qtype.to_be_bytes());
+        msg.extend_from_slice(&1u16.to_be_bytes());
+        msg
+    }
+
+    fn dns_answer(name: &str, ip: [u8; 4], ttl: u32) -> Vec<u8> {
+        let mut msg = dns_query(name, 1);
+        msg[2] = 0x81;
+        msg[3] = 0x80;
+        msg[7] = 1;
+        // A compression pointer back to the question name at offset 12.
+        msg.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1]);
+        msg.extend_from_slice(&ttl.to_be_bytes());
+        msg.extend_from_slice(&[0, 4]);
+        msg.extend_from_slice(&ip);
+        msg
+    }
+
+    #[test]
+    fn a_blocked_name_is_answered_with_nxdomain() {
+        let set = rules("ads.example", "");
+        let query = dns_query("tracker.ads.example", 1);
+        let reply = set.dns_block_reply(&query).expect("a blocked name is sinkholed");
+        assert_eq!(&reply[..2], &query[..2], "the id is echoed");
+        assert_eq!(reply[2] & 0x80, 0x80, "it is a response");
+        assert_eq!(reply[2] & 0x01, 0x01, "RD is copied");
+        assert_eq!(reply[3] & 0x0f, 3, "NXDOMAIN");
+        assert_eq!(&reply[4..6], &[0, 1], "the question stays");
+        assert_eq!(&reply[6..12], &[0; 6], "no answers");
+        assert_eq!(reply.len(), query.len());
+    }
+
+    #[test]
+    fn an_allowed_name_or_a_direct_rule_is_not_sinkholed() {
+        let set = rules("ads.example", "bank.example");
+        assert!(set.dns_block_reply(&dns_query("example.com", 1)).is_none());
+        assert!(set.dns_block_reply(&dns_query("bank.example", 1)).is_none());
+        assert!(rules("", "").dns_block_reply(&dns_query("ads.example", 1)).is_none());
+    }
+
+    #[test]
+    fn a_response_or_garbage_is_never_sinkholed() {
+        let set = rules("ads.example", "");
+        assert!(set.dns_block_reply(&dns_answer("ads.example", [1, 2, 3, 4], 60)).is_none());
+        assert!(set.dns_block_reply(&[0u8; 5]).is_none());
+        let mut truncated = dns_query("ads.example", 1);
+        truncated.truncate(truncated.len() - 3);
+        assert!(set.dns_block_reply(&truncated).is_none());
+    }
+
+    #[test]
+    fn answers_are_remembered_under_the_name_that_was_asked_for() {
+        let ip: IpAddr = "198.51.100.77".parse().unwrap();
+        assert_eq!(recall_name(ip), None);
+        learn_dns_answer(&dns_answer("cdn.ads.example", [198, 51, 100, 77], 300));
+        assert_eq!(recall_name(ip).as_deref(), Some("cdn.ads.example"));
+    }
+
+    #[test]
+    fn a_query_teaches_the_memory_nothing() {
+        let ip: IpAddr = "198.51.100.78".parse().unwrap();
+        let mut query = dns_answer("x.example", [198, 51, 100, 78], 300);
+        query[2] = 0x01; // QR cleared: a query, not an answer
+        learn_dns_answer(&query);
+        assert_eq!(recall_name(ip), None);
+    }
+
+    #[test]
+    fn a_large_ipv4_list_is_merged_and_binary_searched() {
+        let mut list = String::new();
+        for third in 0..=255u32 {
+            list.push_str(&format!("10.20.{third}.0/24\n"));
+        }
+        list.push_str("192.0.2.0/25\n192.0.2.128/25\n");
+        let set = rules("", &list);
+        assert_eq!(set.direct.v4.len(), 2, "adjacent ranges are merged");
+        for probe in ["10.20.0.1", "10.20.255.254", "192.0.2.200"] {
+            assert_eq!(
+                set.decide(Host::Ip(probe.parse().unwrap()), 443),
+                Action::Direct,
+                "{probe}"
+            );
+        }
+        for probe in ["10.19.255.255", "10.21.0.0", "192.0.3.0"] {
+            assert_eq!(
+                set.decide(Host::Ip(probe.parse().unwrap()), 443),
+                Action::Proxy,
+                "{probe}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tld_suffix_covers_every_name_under_it() {
+        let set = rules("", "ir");
+        assert_eq!(set.decide(Host::Domain("www.digikala.ir"), 443), Action::Direct);
+        assert_eq!(set.decide(Host::Domain("IR."), 443), Action::Direct);
+        assert_eq!(set.decide(Host::Domain("example.iran"), 443), Action::Proxy);
+    }
+    // <<< AETHER-APP-PATCH smart-routes-dns
 
     #[test]
     fn malformed_entries_are_dropped_without_panicking() {

@@ -34,7 +34,7 @@ data class PingResult(
  * of Psiphon exits, so on those exits the badge reported `Connect timed out` or
  * a multi-second number on a tunnel that was working perfectly - the "ping goes
  * to 2000" the user was reading off the screen. Worse, every one of those dials
- * was counted by [studio.cluvex.aether.transport.PsiphonHealth] as one more
+ * was counted by the Psiphon health watchdog (removed in 1.4.0) as one more
  * destination the server had refused, helping to convict a healthy exit and
  * trigger a rotation that killed every live flow on the device.
  *
@@ -60,7 +60,7 @@ object PingMonitor {
      * 1000". [AetherVpnService] publishes the finished pipeline's port here.
      */
     @Volatile
-    private var tunnelPort: Int = TunnelConfig.SOCKS_PORT
+    private var tunnelPort: Int = PortLease.socks
 
     /** Points tunnelled probes at the port the finished pipeline exposes. */
     fun setTunnelPort(port: Int) {
@@ -69,7 +69,7 @@ object PingMonitor {
 
     /** Back to the engine's own listener; called on teardown. */
     fun resetTunnelPort() {
-        tunnelPort = TunnelConfig.SOCKS_PORT
+        tunnelPort = PortLease.socks
     }
 
     /**

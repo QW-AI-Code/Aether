@@ -59,17 +59,48 @@ class AiModelPolicyTest {
 
     @Test
     fun `display numbers are fixed positions not list indices`() {
-        // Model 1 is unavailable to this key; model 2 must still read "2".
-        assertEquals(2, AiModelPolicy.displayNumber("gemini-3.5-flash-lite"))
+        // Model 1 is unavailable to this key; the others must still read the number
+        // of their POSITION in ALLOWED, not of their place in what this key offers.
+        //
+        // 1.3.1: gemini-3.7-flash was inserted at rank 2 (it shipped 2026-08-13 and
+        // belongs between 3.8-flash and 3.5-flash-lite), so everything after it
+        // moved down one. That renumbering is deliberate and harmless: the number is
+        // a label in the model picker, while the SELECTION is stored by id - see
+        // AiSession.effectiveModel - so nobody's saved choice moves with it. Rank
+        // order is what this file is for, and rank order has to follow the models.
         assertEquals(1, AiModelPolicy.displayNumber("models/gemini-3.8-flash"))
+        assertEquals(2, AiModelPolicy.displayNumber("gemini-3.7-flash"))
+        assertEquals(3, AiModelPolicy.displayNumber("gemini-3.5-flash-lite"))
         assertEquals(0, AiModelPolicy.displayNumber("gemini-2.5-pro"))
     }
 
     @Test
-    fun `default pick is the newest available model`() {
+    fun `default pick is 3_1 flash-lite when the key can see it`() {
+        // 1.4.0-r5: the default is the model with the highest free daily limit,
+        // not the newest one.
+        val all = AiModelPolicy.ALLOWED.map { model("models/$it") }
+        assertEquals("gemini-3.1-flash-lite", AiModelPolicy.pickDefault(all))
+        assertEquals("gemini-3.1-flash-lite", AiModelPolicy.pickDefaultId(AiModelPolicy.ALLOWED))
+    }
+
+    @Test
+    fun `default pick falls back through the flash-lite family, then display order`() {
+        val noStable = listOf(model("gemini-3.8-flash"), model("gemini-3.1-flash-lite-preview"))
+        assertEquals("gemini-3.1-flash-lite-preview", AiModelPolicy.pickDefault(noStable))
         val available = listOf(model("gemini-flash-lite-latest"), model("gemini-3.5-flash-lite"))
-        assertEquals("gemini-3.5-flash-lite", AiModelPolicy.pickDefault(available))
+        assertEquals("gemini-flash-lite-latest", AiModelPolicy.pickDefault(available))
+        val fastOnly = listOf(model("gemini-3.7-flash"), model("gemini-3.8-flash"))
+        assertEquals("gemini-3.8-flash", AiModelPolicy.pickDefault(fastOnly))
         assertEquals(null, AiModelPolicy.pickDefault(listOf(model("gemini-2.5-pro"))))
+    }
+
+    @Test
+    fun `every allowed model has a picker description tier`() {
+        AiModelPolicy.ALLOWED.forEach { assertTrue(it, AiModelPolicy.tier(it) != null) }
+        assertEquals(AiModelPolicy.Tier.RECOMMENDED_DEFAULT, AiModelPolicy.tier("models/gemini-3.1-flash-lite"))
+        assertEquals(AiModelPolicy.Tier.FAST_LOW_QUOTA, AiModelPolicy.tier("gemini-3.8-flash"))
+        assertEquals(AiModelPolicy.Tier.FAST_LOW_QUOTA, AiModelPolicy.tier("gemini-3.7-flash"))
+        assertEquals(AiModelPolicy.Tier.FAST_LOW_QUOTA, AiModelPolicy.tier("gemini-3.5-flash-lite"))
     }
 
     @Test

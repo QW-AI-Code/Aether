@@ -34,6 +34,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringArrayResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -47,37 +48,6 @@ import studio.cluvex.aether.core.SignerIdentity
 private const val URL_ORIGINAL_GITHUB = "https://github.com/CluvexStudio/Aether"
 private const val URL_ORIGINAL_TELEGRAM = "https://t.me/CluvexStudio"
 private const val URL_PORT_GITHUB = "https://github.com/QW-AI-Code"
-
-// Deliberately English-only, mirroring the upstream README's feature list.
-private val ORIGINAL_FEATURES = listOf(
-    "Automatic endpoint discovery with end-to-end data-plane validation",
-    "MASQUE (HTTP/3 & HTTP/2) with optional TLS ClientHello fragmentation",
-    "WireGuard and nested WireGuard (WARP-in-WARP \"gool\")",
-    "Traffic obfuscation for DPI-heavy networks",
-    "Automatic reconnection with quick-reconnect to the last good gateway",
-    "Local SOCKS5 proxy — CLI for Linux, Windows, macOS and Android (Termux)",
-)
-
-// What this edition adds on top of upstream (which ships no Android or
-// Windows GUI — CLI/Termux only).
-private val PORT_IMPROVEMENTS = listOf(
-    "Chained Aether → Psiphon transport added — a real foreign exit IP behind Aether's obfuscated first hop",
-    "Chained mode fixes the Iranian exit address plain Aether hands out, and opens AI services (Gemini and friends) that refuse it",
-    "Exit-country selector with flags for the chained mode, plus a UDP-capable SOCKS front so DNS and QUIC work through it",
-    "Full native Android app — upstream is CLI-only (no Android or Windows GUI)",
-    "One-tap system-wide VPN via Android VpnService — no manual proxy setup",
-    "Embedded hev-socks5-tunnel (tun2socks) running in-process on a native thread",
-    "Live \"Your IP / Server IP\" badge with multi-provider geolocation",
-    "Step-by-step connectivity self-test with crash-persistent diagnostic logs",
-    "Automatic reconnect with backoff and per-scan-mode connect timeouts",
-    "Protocol, scan-mode and IP-version controls in a Material 3 UI (English + فارسی)",
-    "Quick Settings tile — connect/disconnect straight from the notification shade",
-    "Share the VPN over Wi‑Fi/hotspot — built-in HTTP + SOCKS5 proxy for laptops & other phones",
-    "Advanced settings reachable right from the home screen",
-    "Signed per-ABI release APKs published automatically from GitHub Actions",
-    "Engine version shown in About, so the bundled core is always verifiable",
-    "Zero Trust (WARP for organizations), split routing rules and custom in-tunnel DNS",
-)
 
 /**
  * Collapsible "About" card.
@@ -261,7 +231,7 @@ fun AboutPanel(modifier: Modifier = Modifier, startExpanded: Boolean = false) {
                     )
                     LinkRow(R.drawable.ic_github, "github.com/QW-AI-Code", URL_PORT_GITHUB)
                     Spacer(Modifier.height(6.dp))
-                    FeatureList(PORT_IMPROVEMENTS)
+                    FeatureList(stringArrayResource(R.array.about_port_improvements).toList())
 
                     Spacer(Modifier.height(16.dp))
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
@@ -275,7 +245,7 @@ fun AboutPanel(modifier: Modifier = Modifier, startExpanded: Boolean = false) {
                     LinkRow(R.drawable.ic_github, "github.com/CluvexStudio/Aether", URL_ORIGINAL_GITHUB)
                     LinkRow(R.drawable.ic_telegram, "t.me/CluvexStudio", URL_ORIGINAL_TELEGRAM)
                     Spacer(Modifier.height(6.dp))
-                    FeatureList(ORIGINAL_FEATURES)
+                    FeatureList(stringArrayResource(R.array.about_original_features).toList())
                 }
             }
         }

@@ -141,25 +141,42 @@ object IdentityVault {
     }
 
     /**
-     * Startup sweep: seals anything a crashed session left in the clear.
+     * How many engines are running right now.
      *
-     * Guarded by [running] so it can never race a live engine: the tunnel service
-     * runs in the same process, and pulling the identity file out from under a
-     * connected engine would break the session it is describing.
+     * A COUNTER rather than a flag, because a Smart Plus race has two engines
+     * alive at once ([studio.cluvex.aether.core.SmartPlusPlan]). With a boolean,
+     * the first lane to be reaped would set it false and seal the identity files
+     * out from under the lane that is still connecting - and sealing shreds the
+     * plaintext, so that is not a slow path, it is a broken session and a WARP
+     * device that has to re-enrol.
+     *
+     * Guarded by [running] so [sealIfIdle] can never race a live engine: the
+     * tunnel service runs in the same process, and pulling the identity file out
+     * from under a connected engine would break the session it is describing.
      */
     fun sealIfIdle(dir: File) {
         if (running) return
         sealAndShred(dir)
     }
 
-    /** Set by [AetherProcess] around the engine's lifetime. */
-    @Volatile
-    var running: Boolean = false
-        private set
+    /** True while at least one engine process is alive. */
+    val running: Boolean
+        get() = liveEngines.get() > 0
 
-    internal fun markRunning(alive: Boolean) {
-        running = alive
-    }
+    private val liveEngines = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Set by [AetherProcess] around each engine's lifetime.
+     *
+     * Returns the number of engines still alive afterwards, so the caller can seal
+     * exactly when the last one is gone and not once per engine.
+     */
+    internal fun markRunning(alive: Boolean): Int =
+        if (alive) {
+            liveEngines.incrementAndGet()
+        } else {
+            liveEngines.updateAndGet { (it - 1).coerceAtLeast(0) }
+        }
 
     private fun File.readBytesOrNull(): ByteArray? = runCatching { readBytes() }.getOrNull()
 }

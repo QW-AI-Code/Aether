@@ -1,0 +1,34 @@
+# Iranian domains, used by "Bypass Iranian sites" (1.4.0).
+# Suffix rules: an entry covers the name and every name under it, so the single
+# line "ir" sends every .ir site (and every Iranian service under .ir) direct.
+# The rest are well-known Iranian services on non-.ir domains. Sites hosted
+# inside Iran on any domain are ALSO caught by iran_cidr.txt by address.
+ir
+xn--mgba3a4f16a
+# shopping / marketplaces
+digikala.com
+digistyle.com
+digikalamag.com
+torob.com
+basalam.com
+sheypoor.com
+emalls.ir
+# video / media
+aparat.com
+filimo.com
+telewebion.com
+namava.ir
+# news / sport
+varzesh3.com
+tasnimnews.com
+khabarfoori.com
+ninisite.com
+digiato.com
+# messengers / social
+eitaa.com
+bale.ai
+# payments / banking gateways
+zarinpal.com
+# infrastructure
+arvancloud.com
+arvancloud.ir

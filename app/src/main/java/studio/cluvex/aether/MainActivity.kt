@@ -29,6 +29,7 @@ import studio.cluvex.aether.ai.AiSession
 import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
+import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.data.LanguagePrefs
 import studio.cluvex.aether.data.OnboardingStore
@@ -38,6 +39,7 @@ import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.HomeScreen
+import studio.cluvex.aether.ui.LoginCodeDialog
 import studio.cluvex.aether.ui.OnboardingScreen
 import studio.cluvex.aether.ui.theme.AetherTheme
 import java.io.File
@@ -225,7 +227,7 @@ class MainActivity : ComponentActivity() {
                                 val info = withContext(Dispatchers.IO) {
                                     NetProbe.fetchIpInfoViaSocksWithRetry(
                                         TunnelConfig.SOCKS_HOST,
-                                        TunnelConfig.SOCKS_PORT,
+                                        PortLease.socks,
                                     )
                                 }
                                 if (info != null) {
@@ -278,6 +280,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
+                    // ZERO TRUST (1.3.1, issue #12): the engine may stop mid-connect
+                    // and wait on stdin for the one-time code the organization just
+                    // e-mailed. Placed here rather than inside a screen because the
+                    // request can arrive while the user is anywhere in the app, and
+                    // a prompt that only exists on one screen is one they miss.
+                    // Renders nothing unless a request is outstanding.
+                    LoginCodeDialog()
                     if (!onboardingDone) {
                         OnboardingScreen(
                             onFinished = {

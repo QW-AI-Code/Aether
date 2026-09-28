@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # ------------------------------------------------------------------
@@ -16,22 +16,32 @@ jobs:
   # is cross-compiled from that same runner.
   # Windows uses windows-latest for x86_64. The arm64 MSVC target is not
   # built: it has never been verified on a real arm64 Windows machine.
+  #
+  # Every leg builds the pluggable transports first and ships them in a
+  # pt/ folder beside the binary, so tor works out of the box with
+  # nothing for anyone to install by hand.
   # ------------------------------------------------------------------
   desktop:
-    name: Build ${{ matrix.archive }} 
-    runs-on: ${{ matrix.os }} 
+    name: Build ${{ matrix.archive }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: macos-latest
             target: aarch64-apple-darwin
+            goos: darwin
+            goarch: arm64
             archive: aether-macos-arm64.tar.gz
           - os: macos-latest
             target: x86_64-apple-darwin
+            goos: darwin
+            goarch: amd64
             archive: aether-macos-x86_64.tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            goos: windows
+            goarch: amd64
             archive: aether-windows-x86_64.zip
     defaults:
       run:
@@ -39,11 +49,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }} 
+          targets: ${{ matrix.target }}
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -57,25 +69,36 @@ jobs:
         if: runner.os == 'Windows'
         uses: ilammy/setup-nasm@v1
 
+      - name: Build pluggable transports
+        shell: bash
+        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
+      - name: Build psiphon
+        shell: bash
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} 
+        run: cargo build --release --features tor --target ${{ matrix.target }}
 
       - name: Package archive (Unix)
         if: runner.os != 'Windows'
         run: |
+          cp -R pt target/${{ matrix.target }}/release/pt
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether
+          tar -czf ../../../${{ matrix.archive }}  aether pt
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path target/${{ matrix.target }}/release/aether.exe,run-aether.bat -DestinationPath ${{ matrix.archive }} 
+        run: |
+          Copy-Item -Recurse -Force pt target/${{ matrix.target }}/release/pt
+          Compress-Archive -Path target/${{ matrix.target }}/release/aether.exe,target/${{ matrix.target }}/release/pt,run-aether.bat -DestinationPath ${{ matrix.archive }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }} 
-          path: aether/${{ matrix.archive }} 
+          name: ${{ matrix.archive }}
+          path: aether/${{ matrix.archive }}
           if-no-files-found: error
 
   # ------------------------------------------------------------------
@@ -83,11 +106,11 @@ jobs:
   # x86_64 builds on an x86_64 runner and arm64 on a native arm64
   # runner, both using fedora:latest so binaries link against a fresh
   # Fedora toolchain. Rust is installed via rustup to guarantee the
-  # latest stable (>= 1.91 required by the crate).
+  # latest stable (>= 1.98 required by the crate).
   # ------------------------------------------------------------------
   linux:
-    name: Build ${{ matrix.archive }} 
-    runs-on: ${{ matrix.os }} 
+    name: Build ${{ matrix.archive }}
+    runs-on: ${{ matrix.os }}
     container:
       image: fedora:latest
     strategy:
@@ -96,9 +119,13 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            goos: linux
+            goarch: amd64
             archive: aether-linux-x86_64.tar.gz
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            goos: linux
+            goarch: arm64
             archive: aether-linux-arm64.tar.gz
     defaults:
       run:
@@ -110,10 +137,12 @@ jobs:
           dnf -y install \
             gcc gcc-c++ make cmake ninja-build golang nasm clang \
             perl perl-FindBin perl-IPC-Cmd \
-            curl git tar gzip xz findutils which
+            curl git tar gzip xz unzip findutils which
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust (latest stable via rustup)
         working-directory: /
@@ -122,21 +151,28 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - name: Add Rust target
-        run: rustup target add ${{ matrix.target }} 
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build pluggable transports
+        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} 
+        run: cargo build --release --features tor --target ${{ matrix.target }}
 
       - name: Package archive
         run: |
+          cp -R pt target/${{ matrix.target }}/release/pt
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether
+          tar -czf ../../../${{ matrix.archive }}  aether pt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }} 
-          path: aether/${{ matrix.archive }} 
+          name: ${{ matrix.archive }}
+          path: aether/${{ matrix.archive }}
           if-no-files-found: error
 
   # ------------------------------------------------------------------
@@ -159,6 +195,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -178,13 +216,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
+      - name: Build pluggable transports
+        run: bash ../pt-build.sh linux arm "$PWD/pt" 7
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7
+
       - name: Build release binary
-        run: cargo build --release --target armv7-unknown-linux-gnueabihf
+        run: cargo build --release --features tor --target armv7-unknown-linux-gnueabihf
 
       - name: Package archive
         run: |
+          cp -R pt target/armv7-unknown-linux-gnueabihf/release/pt
           cd target/armv7-unknown-linux-gnueabihf/release
-          tar -czf ../../../aether-linux-armv7.tar.gz aether
+          tar -czf ../../../aether-linux-armv7.tar.gz aether pt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -236,6 +281,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -256,13 +303,20 @@ jobs:
           sudo mkdir -p /opt/musl-cross
           sudo tar -C /opt/musl-cross --strip-components=1 -xJf /tmp/musl-cross.tar.xz
 
+      - name: Build pluggable transports
+        run: bash ../pt-build.sh linux arm "$PWD/pt" 7
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7
+
       - name: Build release binary
-        run: cargo build --release --target armv7-unknown-linux-musleabihf
+        run: cargo build --release --features tor --target armv7-unknown-linux-musleabihf
 
       - name: Package archive
         run: |
+          cp -R pt target/armv7-unknown-linux-musleabihf/release/pt
           cd target/armv7-unknown-linux-musleabihf/release
-          tar -czf ../../../aether-linux-armv7-musl.tar.gz aether
+          tar -czf ../../../aether-linux-armv7-musl.tar.gz aether pt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -290,15 +344,21 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             cross_prefix: x86_64-unknown-linux-musl
+            goos: linux
+            goarch: amd64
             archive: aether-linux-x86_64-musl.tar.gz
           - target: aarch64-unknown-linux-musl
             cross_prefix: aarch64-unknown-linux-musl
+            goos: linux
+            goarch: arm64
             archive: aether-linux-aarch64-musl.tar.gz
     env:
       RUST_LIBC_UNSTABLE_MUSL_V1_2_3: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -329,13 +389,20 @@ jobs:
           echo "AR_${triple}=${prefix}-ar" >> "$GITHUB_ENV"
           echo "BINDGEN_EXTRA_CLANG_ARGS_${triple}=--target=${{ matrix.target }} --sysroot=/opt/musl-cross/${{ matrix.cross_prefix }}" >> "$GITHUB_ENV"
 
+      - name: Build pluggable transports
+        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --features tor --target ${{ matrix.target }}
 
       - name: Package archive
         run: |
+          cp -R pt target/${{ matrix.target }}/release/pt
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }} aether
+          tar -czf ../../../${{ matrix.archive }} aether pt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -348,9 +415,13 @@ jobs:
   # Android / Termux targets, built with the NDK via cargo-ndk on the
   # latest Ubuntu runner (the NDK cross toolchain, not the host libc,
   # determines the output).
+  #
+  # The transports are built as static GOOS=linux binaries rather than
+  # GOOS=android: android needs cgo, while a CGO_ENABLED=0 linux ELF
+  # runs as-is under Android and Termux.
   # ------------------------------------------------------------------
   android:
-    name: Build ${{ matrix.archive }} 
+    name: Build ${{ matrix.archive }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -358,12 +429,18 @@ jobs:
         include:
           - abi: arm64-v8a
             target: aarch64-linux-android
+            goarch: arm64
+            goarm: ""
             archive: aether-android-arm64.tar.gz
           - abi: armeabi-v7a
             target: armv7-linux-androideabi
+            goarch: arm
+            goarm: "7"
             archive: aether-android-armv7.tar.gz
           - abi: x86_64
             target: x86_64-linux-android
+            goarch: amd64
+            goarm: ""
             archive: aether-android-x86_64.tar.gz
     defaults:
       run:
@@ -371,11 +448,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }} 
+          targets: ${{ matrix.target }}
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -394,22 +473,29 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
+      - name: Build pluggable transports
+        run: bash ../pt-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}"
+
+      - name: Build psiphon
+        run: bash ../psiphon-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}"
+
       - name: Build release binary
         env:
-          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }} 
-          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }} 
-        run: cargo ndk -t ${{ matrix.abi }}  --platform 24 build --release
+          ANDROID_NDK_HOME: ${{ steps.ndk.outputs.ndk-path }}
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: cargo ndk -t ${{ matrix.abi }}  --platform 24 build --release --features tor
 
       - name: Package archive
         run: |
+          cp -R pt target/${{ matrix.target }}/release/pt
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether
+          tar -czf ../../../${{ matrix.archive }}  aether pt
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.archive }} 
-          path: aether/${{ matrix.archive }} 
+          name: ${{ matrix.archive }}
+          path: aether/${{ matrix.archive }}
           if-no-files-found: error
 
   # ------------------------------------------------------------------
@@ -421,6 +507,8 @@ jobs:
     name: Publish release
     needs: [desktop, linux, linux-armv7, linux-armv7-musl, linux-musl, android]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     if: ${{ always() && startsWith(github.ref, 'refs/tags/') }}
     steps:
       - name: Download artifacts
@@ -450,28 +538,44 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v1.9.0
+            Aether v2.1.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            What's new in v1.9.0:
+            Psiphon is built in
+
+            - Three ways to use it, the same three Tor has. `--psiphon` carries Psiphon inside the tunnel, `--psiphon-reverse` dials the tunnel through Psiphon so WARP is reached from a Psiphon exit, and `--psiphon-only` is plain Psiphon on the usual proxy port. Both appear in the menu when you run aether with no flags.
+            - Nothing to configure. The credentials and server list are built in, so it connects on a fresh machine. `--psiphon-config` lays your own settings over them if you have them.
+            - `--psiphon-region DE` asks for an exit in a country you name, and the log lists what is on offer.
+            - `--psiphon-mode cdn` limits it to fronted meek through a CDN, for networks that block the rest; `direct` turns fronting off.
+            - `--psiphon-http` serves it as an HTTP CONNECT proxy as well, for clients that cannot speak SOCKS5.
+            - The console client ships in the `pt/` folder beside the binary, next to the Tor transports.
+
+            Tor reaches its bridges again
+
+            - On a network that blocks Tor, bridgedb and onionoo are usually blocked too, so there was no way to fetch a bridge. With `--tor` the tunnel comes up first and the bridges are now fetched through it, which is what makes Tor work on a network that blocks it outright.
+            - `--tor-relays` takes running relays from onionoo and uses them as plain bridges. Bridgedb hands out a handful that are enumerated and blocked early; onionoo lists every running relay, thousands of them, filtered to the ports a restrictive firewall tends to leave open and measured before use.
+            - `--tor-bridge-file` reads bridge lines from a file, in the shape torrc uses.
+            - `--tor-http` serves Tor as an HTTP CONNECT proxy as well.
+            - The Tor SOCKS listener answers UDP ASSOCIATE for DNS, carried over TCP through the circuit, so a TUN front end can resolve names through it.
+
+            Keeping the exit where you want it
+
+            - `--exit-loc '!IR,AZ,RU'` refuses a tunnel whose exit country is not wanted. It is checked through the finished tunnel before SOCKS5 opens, and again every minute, so a tunnel that moves is dropped and replaced. `--exit-loc DE,SE` names the only countries to accept. Off unless you pass the flag.
+            - `--stats` logs how much has gone up and down and how long the tunnel has been up.
 
             Fixes
 
-            - MASQUE over HTTP/2 was slow. The flow-control window, the send path, the packet framing and the inner MTU are all fixed.
-            - Every transport was capped by the netstack's TCP receive buffer. It is larger now, and `AETHER_NETSTACK_TCP_RX` and `AETHER_NETSTACK_TCP_TX` set it by hand.
-            - `--gool --wg-peer <ip:port>` was documented but ignored. It works.
-
-            Features
-
-            - WARP-in-WARP endpoints can be given by hand: `--wiw-outer`, `--wiw-inner`, `--wiw-peers`, `--wiw-scan`, and the matching `AETHER_WIW_*` variables. Give one hop and the scan finds the other. The port is required. Scanning stays the default.
-            - `aether help` works alongside `--help` and `-h`, and covers every flag and every environment variable.
-            - `AETHER_MASQUE_MTU` sets the inner MTU of the MASQUE tunnel.
-            - The startup line and the HTTP/2 tunnel report the flow-control windows in use.
+            - The HTTP/2 scan was slow to find anything. Its data-plane probe was sent once and never repeated, so a single lost packet cost the whole per-probe budget instead of 700ms. The first gateway now turns up in about a second.
+            - `--noize firewall` and `--noize gfw` were advertised but never implemented and fell through to balanced. Since firewall is the default for MASQUE, the default profile did not exist. Both are real now, and the `<c>` counter tag emits a counter instead of repeating the timestamp.
+            - `--mark` never reached the registration calls, which hung for twenty seconds on a router that routes unmarked traffic into a TUN. Registration now takes the route that carries the mark.
+            - A fourth API fingerprint, TLS 1.3 with a fragmented ClientHello, for networks that block TLS 1.2 outright. Fragmenting now splits inside the server name rather than at a random offset.
+            - Gool's inner tunnel latched onto the first source port it saw and silently dropped everything from any other, which killed the tunnel when the inner engine rebound.
+            - Reconnects remember the last eight working gateways instead of one, and a gateway proved on HTTP/3 is no longer reused on HTTP/2, where its port may not answer at all.
 
             Changes
 
-            - smoltcp 0.14. The crate now needs Rust 1.91.
+            - The crate needs Rust 1.98.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
@@ -489,6 +593,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

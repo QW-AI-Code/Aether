@@ -74,7 +74,9 @@ object AiPatch {
      * text is written to be read by one.
      */
     val WRITABLE: Map<String, String> = linkedMapOf(
-        "protocol" to "AUTO | MASQUE | WIREGUARD | GOOL | MIM (MASQUE inside MASQUE)",
+        "protocol" to "AUTO (Smart: races two routes and remembers per network on the " +
+            "plain Aether backend, one at a time elsewhere) | MASQUE | WIREGUARD | GOOL | " +
+            "MIM (MASQUE inside MASQUE)",
         "scanMode" to "TURBO | BALANCED | THOROUGH | STEALTH | IRONCLAD",
         "ipVersion" to "V4 | V6 | BOTH",
         "noize" to "OFF | LIGHT | FIREWALL | BALANCED | GFW | AGGRESSIVE (anti-DPI obfuscation strength)",
@@ -111,26 +113,79 @@ object AiPatch {
         val applied = mutableListOf<AiChange>()
         val rejected = mutableListOf<Pair<AiChange, String>>()
 
+        val seen = HashSet<String>()
         for (change in changes) {
             val key = change.key.trim()
             if (key !in WRITABLE) {
-                rejected += change to "not an AI-writable setting"
+                rejected += change to REASON_NOT_WRITABLE
+                continue
+            }
+            // r4: one proposal, one value per key. A model that lists `mtu` twice
+            // is contradicting itself, and applying both silently keeps whichever
+            // came last - the user approved a card that showed both.
+            if (!seen.add(key)) {
+                rejected += change to REASON_DUPLICATE_KEY
                 continue
             }
             val raw = change.value.trim()
             val updated = write(next, key, raw)
             if (updated == null) {
-                rejected += change to "value \"$raw\" is not valid for $key"
+                rejected += change to REASON_INVALID_VALUE
                 continue
             }
-            if (updated == next) {
-                rejected += change to "already set to that value"
+            // Compared against the ORIGINAL profile, not the running one: a
+            // proposal that sets a value the user already has is redundant even if
+            // an earlier change in the same batch touched something else.
+            if (updated == next || write(profile, key, raw) == profile) {
+                rejected += change to REASON_ALREADY_SET
                 continue
             }
             next = updated
             applied += change
         }
         return AiPatchResult(next, applied, rejected)
+    }
+
+    // ---- r4: rejection reasons, as constants the verifier can switch on ------
+
+    const val REASON_NOT_WRITABLE = "not an AI-writable setting"
+    const val REASON_DUPLICATE_KEY = "the same setting appears twice in one proposal"
+    const val REASON_INVALID_VALUE = "value is not one of the accepted values"
+    const val REASON_ALREADY_SET = "already set to that value"
+
+    /**
+     * r4: the feedback handed back to the model when its proposal failed
+     * verification, one line per refused change, with the user's REAL current
+     * value next to it. Null when there is nothing to correct.
+     *
+     * This is what turns "the app quietly drops the button" into "the model
+     * learns, before the user sees anything, that it was about to recommend the
+     * setting the user already has" - the answer is then rewritten around a
+     * different cause instead of shipping advice that makes the assistant look
+     * like it never read the settings.
+     */
+    fun verificationFeedback(profile: ConnectionProfile, result: AiPatchResult): String? {
+        if (result.rejected.isEmpty()) return null
+        return buildString {
+            result.rejected.forEach { (change, reason) ->
+                val key = change.key.trim()
+                append("- ").append(key).append(" = \"").append(change.value.trim()).append("\": ")
+                when (reason) {
+                    REASON_ALREADY_SET ->
+                        append("REDUNDANT - the user ALREADY has ").append(key).append(" = ")
+                            .append(read(profile, key))
+                            .append(". Do not recommend it; if it matters, say it is already set.")
+                    REASON_INVALID_VALUE ->
+                        append("INVALID - accepted values for ").append(key).append(" are: ")
+                            .append(WRITABLE[key] ?: "?").append('.')
+                    REASON_DUPLICATE_KEY ->
+                        append("DUPLICATE - pick one value for this setting.")
+                    else ->
+                        append("NOT CHANGEABLE BY YOU - explain where the user changes it by hand, or drop it.")
+                }
+                append('\n')
+            }
+        }.trimEnd()
     }
 
     /**
@@ -214,12 +269,31 @@ object AiPatch {
         "torBridgeLines",
     )
 
-    /** The current value of every AI-visible key, as the prompt's context block. */
+    /**
+     * The current value of every AI-visible key, as the prompt's context block.
+     *
+     * r4: every writable line also says whether the value is still the app's
+     * DEFAULT and, when it is not, what the default is. A model that cannot tell
+     * "the user chose 1280" from "1280 is what everyone has" cannot reason about
+     * what to try next, and "reset X to default" is advice it could not give
+     * correctly before because it did not know the default.
+     */
     fun snapshot(profile: ConnectionProfile): String = buildString {
-        (WRITABLE.keys + READ_ONLY).forEach { key ->
-            append(key).append(" = ").append(read(profile, key)).append('\n')
+        val defaults = DEFAULTS
+        WRITABLE.keys.forEach { key ->
+            val current = read(profile, key)
+            val default = read(defaults, key)
+            append(key).append(" = ").append(current)
+            if (current == default) append("   [default]") else append("   [changed by user; default: ").append(default).append(']')
+            append('\n')
+        }
+        READ_ONLY.forEach { key ->
+            append(key).append(" = ").append(read(profile, key)).append("   [read-only for you]").append('\n')
         }
     }
+
+    /** A pristine profile, for the "[default]" annotations in [snapshot]. */
+    private val DEFAULTS: ConnectionProfile by lazy { ConnectionProfile() }
 
     /** Reads one key as display text. Used by the prompt and by the AI hint icons. */
     fun read(profile: ConnectionProfile, key: String): String = when (key) {

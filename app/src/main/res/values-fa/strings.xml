@@ -7,8 +7,8 @@
 
     <string name="protocol">پروتکل</string>
     <string name="protocol_auto">هوشمند</string>
-    <string name="protocol_masque">MASQUE</string>
-    <string name="protocol_wireguard">WireGuard</string>
+    <string name="protocol_masque">⁨MASQUE⁩</string>
+    <string name="protocol_wireguard">⁨WireGuard⁩</string>
     <string name="protocol_gool">وارپ×۲</string>
 
     <string name="scan_mode">حالت اسکن</string>
@@ -18,15 +18,15 @@
     <string name="scan_stealth">مخفی</string>
     <string name="scan_ironclad">زره‌پوش</string>
 
-    <string name="ip_version">نسخه IP</string>
-    <string name="ip_v4">IPv4</string>
-    <string name="ip_v6">IPv6</string>
+    <string name="ip_version">نسخه ⁨IP⁩</string>
+    <string name="ip_v4">⁨IPv4⁩</string>
+    <string name="ip_v6">⁨IPv6⁩</string>
     <string name="ip_both">هر دو</string>
 
     <string name="quick_reconnect">اتصال مجدد سریع</string>
     <string name="quick_reconnect_desc">بعد از قطعی، سریع‌تر وصل شو</string>
-    <string name="masque_http2">MASQUE روی HTTP/2</string>
-    <string name="masque_http2_desc">استفاده از HTTP/2 برای انتقال MASQUE</string>
+    <string name="masque_http2">‏⁨MASQUE⁩ روی ⁨HTTP/2⁩</string>
+    <string name="masque_http2_desc">استفاده از ⁨HTTP/2⁩ برای انتقال ⁨MASQUE⁩</string>
 
     <string name="state_idle">قطع شده</string>
     <string name="state_launching">در حال راه‌اندازی هسته…</string>
@@ -41,9 +41,10 @@
     <string name="secure_via">تونل امن از طریق %1$s</string>
     <string name="reconnect_attempt">تلاش %1$d از %2$d</string>
 
-    <string name="notif_channel">وضعیت VPN</string>
+    <string name="notif_channel">وضعیت ⁨VPN⁩</string>
     <string name="notif_channel_desc">وضعیت اتصال اِتِر را نشان می‌دهد</string>
     <string name="notif_title">اِتِر</string>
+    <string name="notif_action_disconnect">قطع اتصال</string>
 
     <string name="err_engine_timeout">هسته نتوانست پراکسی محلی را به‌موقع باز کند.</string>
     <string name="err_engine_died">هسته به‌طور غیرمنتظره متوقف شد.</string>
@@ -76,9 +77,9 @@
     <string name="about_title">درباره</string>
     <string name="about_subtitle">سازندگان، لینک‌ها و تغییرات این نسخه</string>
     <string name="about_version">نسخه %1$s</string>
-    <string name="about_original_title">هستهٔ اتر — Cluvex Studio</string>
+    <string name="about_original_title">هستهٔ اتر — ⁨Cluvex Studio⁩</string>
     <string name="about_original_note">موتور اصلی که این برنامه روی آن اجرا می‌شود</string>
-    <string name="about_port_title">برنامهٔ اندروید و رابط کاربری — QW-AI-Code</string>
+    <string name="about_port_title">برنامهٔ اندروید و رابط کاربری — ⁨QW-AI-Code⁩</string>
     <string name="about_port_note">همین نسخه: رابط کاربری، اجرای اندروید و پروتکل‌های ترکیبی</string>
     <string name="menu_open">باز کردن منو</string>
     <string name="advanced_open">باز کردن تنظیمات پیشرفته</string>
@@ -87,15 +88,15 @@
     <string name="qs_tile_label">اِتِر</string>
 
     <!-- Share VPN panel -->
-    <string name="share_title">اشتراک‌گذاری VPN</string>
+    <string name="share_title">اشتراک‌گذاری ⁨VPN⁩</string>
     <string name="share_subtitle">استفاده از این گوشی به‌عنوان پراکسی برای لپ‌تاپ یا گوشی دیگر</string>
     <string name="share_toggle">اشتراک‌گذاری در این شبکه</string>
     <string name="share_toggle_desc">یک پراکسی محلی باز می‌کند که دستگاه‌های روی همین وای‌فای یا هات‌اسپات می‌توانند استفاده کنند</string>
-    <string name="share_http_label">پراکسی HTTP — در تنظیمات پراکسی سیستم وارد کنید</string>
-    <string name="share_socks_label">پراکسی SOCKS5 — برای برنامه‌هایی که SOCKS پشتیبانی می‌کنند</string>
+    <string name="share_http_label">پراکسی ⁨HTTP⁩ — در تنظیمات پراکسی سیستم وارد کنید</string>
+    <string name="share_socks_label">پراکسی ⁨SOCKS5⁩ — برای برنامه‌هایی که ⁨SOCKS⁩ پشتیبانی می‌کنند</string>
     <string name="share_copy">کپی آدرس</string>
     <string name="share_copied">آدرس کپی شد</string>
-    <string name="share_need_connect">اول VPN را وصل کنید — اشتراک‌گذاری، دستگاه‌های دیگر را از طریق تونل همین گوشی عبور می‌دهد.</string>
+    <string name="share_need_connect">اول ⁨VPN⁩ را وصل کنید — اشتراک‌گذاری، دستگاه‌های دیگر را از طریق تونل همین گوشی عبور می‌دهد.</string>
     <string name="share_starting">در حال راه‌اندازی اشتراک‌گذاری… اگر بیش از چند ثانیه طول کشید، سوییچ را خاموش و دوباره روشن کنید.</string>
     <string name="share_need_wifi">برای اشتراک‌گذاری به وای‌فای وصل شوید یا هات‌اسپات را روشن کنید.</string>
     <string name="share_howto">در دستگاه دیگر (روی همان شبکه)، تنظیمات پراکسی را باز کنید و یکی از این آدرس‌ها را وارد کنید:</string>
@@ -113,12 +114,12 @@
 
     <!-- مبهم‌سازی (امنزیا) -->
     <string name="noize_title">مبهم‌سازی (امنزیا)</string>
-    <string name="noize_desc">تزریق بسته‌های زائد و دست‌دادن جعلی ��ا DPI نتواند تونل را شناسایی کند</string>
+    <string name="noize_desc">تزریق بسته‌های زائد و دست‌دادن جعلی ��ا ⁨DPI⁩ نتواند تونل را شناسایی کند</string>
     <string name="noize_off">خاموش</string>
     <string name="noize_light">سبک</string>
     <string name="noize_firewall">فایروال</string>
     <string name="noize_balanced">متعادل</string>
-    <string name="noize_gfw">GFW</string>
+    <string name="noize_gfw">⁨GFW⁩</string>
     <string name="noize_aggressive">تهاجمی</string>
 
     <!-- انتخاب اندپوینت / رنج دستی -->
@@ -126,28 +127,28 @@
     <string name="endpoint_auto">اسکن خودکار</string>
     <string name="endpoint_peer">آی‌پی دستی</string>
     <string name="endpoint_range">رنج دلخواه</string>
-    <string name="manual_peer_label">اندپوینت (ip:port)</string>
+    <string name="manual_peer_label">اندپوینت (⁨ip:port⁩)</string>
     <string name="manual_peer_hint">مثال: 162.159.192.1:443</string>
     <string name="manual_range_label">رنج(های) آی‌پی برای اسکن</string>
     <string name="manual_range_hint">مثال: 8.6.112.0/24, 188.114.96.0/24</string>
-    <string name="manual_range_help">موتور فقط رنجی را که وارد می‌کنید اسکن می‌کند. فرمت‌های 8.6.112.x یا 8.6.112.0/24 یا یک آی‌پی تکی پذیرفته می‌شود. چند رنج را با ویرگول جدا کنید.</string>
+    <string name="manual_range_help">موتور فقط رنجی را که وارد می‌کنید اسکن می‌کند. فرمت‌های 8.6.112.⁨x⁩ یا 8.6.112.0/24 یا یک آی‌پی تکی پذیرفته می‌شود. چند رنج را با ویرگول جدا کنید.</string>
 
     <!-- تنظیم انتقال -->
-    <string name="keepalive_label">Keepalive (ثانیه)</string>
+    <string name="keepalive_label">‏⁨Keepalive⁩ (ثانیه)</string>
     <string name="keepalive_default">پیش‌فرض</string>
-    <string name="fragment_title">تکه‌تکه‌سازی TLS</string>
-    <string name="fragment_desc">تقسیم دست‌دادن TLS برای عبور از DPI</string>
-    <string name="ech_title">Encrypted Client Hello</string>
-    <string name="ech_desc">پنهان‌کردن نام مقصد (SNI) از DPI</string>
-    <string name="mtu_label">MTU</string>
+    <string name="fragment_title">تکه‌تکه‌سازی ⁨TLS⁩</string>
+    <string name="fragment_desc">تقسیم دست‌دادن ⁨TLS⁩ برای عبور از ⁨DPI⁩</string>
+    <string name="ech_title">⁨Encrypted Client Hello⁩</string>
+    <string name="ech_desc">پنهان‌کردن نام مقصد (⁨SNI⁩) از ⁨DPI⁩</string>
+    <string name="mtu_label">⁨MTU⁩</string>
     <string name="mtu_desc">مقادیر کمتر (۱۲۸۰) روی دیتای موبایل امن‌تر است</string>
 
     <!-- حالت پراکسی + اسپلیت تانل -->
-    <string name="proxy_mode_title">حالت پراکسی (بدون VPN سیستمی)</string>
-    <string name="proxy_mode_desc">به‌جای عبور کل دستگاه، یک پراکسی محلی SOCKS5/HTTP اجرا می‌کند</string>
+    <string name="proxy_mode_title">حالت پراکسی (بدون ⁨VPN⁩ سیستمی)</string>
+    <string name="proxy_mode_desc">به‌جای عبور کل دستگاه، یک پراکسی محلی ⁨SOCKS5/HTTP⁩ اجرا می‌کند</string>
     <string name="proxy_endpoints_hint">آدرس‌های ثابت — یکی از این‌ها را در تنظیمات پراکسی برنامهٔ موردنظر وارد کنید:</string>
-    <string name="proxy_socks_label">پراکسی SOCKS5</string>
-    <string name="proxy_http_label">پراکسی HTTP</string>
+    <string name="proxy_socks_label">پراکسی ⁨SOCKS5⁩</string>
+    <string name="proxy_http_label">پراکسی ⁨HTTP⁩</string>
     <string name="split_mode">تونل تفکیکی</string>
     <string name="split_off">خاموش</string>
     <string name="split_include">فقط انتخاب‌شده‌ها</string>
@@ -157,7 +158,7 @@
     <string name="apps_search_hint">جستجوی برنامه‌ها</string>
     <string name="apps_done">تمام</string>
     <string name="apps_loading">در حال بارگذاری برنامه‌ها…</string>
-    <string name="section_transport">انتقال و ضد-DPI</string>
+    <string name="section_transport">انتقال و ضد-⁨DPI⁩</string>
     <string name="section_routing">مسیریابی</string>
 
     <!-- گیت آمادگی + بازنشانی تنظیمات (v1.2.1) -->
@@ -178,49 +179,53 @@
 
 
     <!-- درباره: نسخهٔ هسته (همتای نسخهٔ ویندوز) -->
-    <string name="about_core_version">نسخهٔ هسته (Core) %1$s</string>
+    <string name="about_core_version">نسخهٔ هسته (⁨Core⁩) %1$s</string>
     <string name="about_patch_level">نسخهٔ بیلد: %1$s</string>
     <!-- 1.2.9-r3 (کاهش ریسک F-1): آیا این همان بیلدی است که منتشر شده؟ -->
     <string name="about_signer">گواهی امضا: %1$s</string>
-    <string name="about_signer_ok">با گواهی رسمی Aether یکسان است.</string>
-    <string name="about_signer_bad">این نسخه با کلید شخص دیگری امضا شده، نه توسط پروژهٔ Aether. یک برنامهٔ VPN همهٔ ترافیک شما را می‌بیند — از صفحهٔ رسمی انتشار دوباره نصب کنید.</string>
+    <string name="about_signer_ok">با گواهی رسمی ⁨Aether⁩ یکسان است.</string>
+    <string name="about_signer_bad">این نسخه با کلید شخص دیگری امضا شده، نه توسط پروژهٔ ⁨Aether⁩. یک برنامهٔ ⁨VPN⁩ همهٔ ترافیک شما را می‌بیند — از صفحهٔ رسمی انتشار دوباره نصب کنید.</string>
     <string name="about_signer_unpinned">اثر انگشت رسمی در این بیلد کامپایل نشده، پس همین‌جا قابل بررسی نیست.</string>
     <string name="about_signer_unknown">سیستم گواهی امضایی برای این برنامه گزارش نکرد.</string>
-    <string name="about_apk_hash">‏SHA-256 فایل APK: %1$s</string>
+    <string name="about_apk_hash">‏⁨SHA-256⁩ فایل ⁨APK⁩: %1$s</string>
     <string name="about_apk_hash_loading">در حال محاسبه…</string>
     <string name="about_verify_hint">پیش از اعتماد به یک به‌روزرسانی، این هش را با هشی که در صفحهٔ رسمی انتشار برای فایل شما اعلام شده مقایسه کنید.</string>
 
     <!-- قابلیت‌های هستهٔ ۱.۵.۰ -->
-    <string name="section_zerotrust">Zero Trust (سازمانی)</string>
+    <string name="section_zerotrust">‏⁨Zero Trust⁩ (سازمانی)</string>
     <string name="team_auth_label">روش عضویت</string>
     <string name="team_auth_off">خاموش</string>
     <string name="team_auth_service">توکن سرویس</string>
     <string name="team_auth_email">کد ایمیلی</string>
     <string name="team_auth_token">توکن عضویت</string>
-    <string name="team_auth_desc">اتصال به یک سازمان Cloudflare Zero Trust به‌جای WARP شخصی. برای استفادهٔ معمولی خاموش بماند.</string>
+    <string name="team_auth_desc">اتصال به یک سازمان ⁨Cloudflare Zero Trust⁩ به‌جای ⁨WARP⁩ شخصی. برای استفادهٔ معمولی خاموش بماند.</string>
     <string name="team_label">نام تیم</string>
-    <string name="team_hint">acme</string>
-    <string name="team_help">فقط نام؛ مثلاً acme یعنی acme.cloudflareaccess.com</string>
+    <string name="team_hint">⁨acme⁩</string>
+    <string name="team_help">فقط نام؛ مثلاً ⁨acme⁩ یعنی ⁨acme.cloudflareaccess.com⁩</string>
     <string name="access_id_label">شناسهٔ کلاینت</string>
     <string name="access_secret_label">کلید محرمانه</string>
     <string name="access_email_label">ایمیل سازمانی</string>
     <string name="access_token_label">توکن عضویت</string>
     <string name="access_secret_help">رمزنگاری‌شده با کلید سخت‌افزاری ذخیره می‌شود و هرگز به‌صورت آرگومان خط فرمان به هسته داده نمی‌شود.</string>
-    <string name="gateway_title">استفاده از Gateway سازمان</string>
-    <string name="gateway_desc">ترافیک HTTP/HTTPS را از پروکسی فیلترینگ سازمان عبور می‌دهد. یک پرش اضافه می‌کند و سازمان می‌تواند مرور شما را ثبت کند؛ جز در صورت نیاز خاموش بماند.</string>
+    <string name="gateway_title">استفاده از ⁨Gateway⁩ سازمان</string>
+    <string name="gateway_desc">ترافیک ⁨HTTP/HTTPS⁩ را از پروکسی فیلترینگ سازمان عبور می‌دهد. یک پرش اضافه می‌کند و سازمان می‌تواند مرور شما را ثبت کند؛ جز در صورت نیاز خاموش بماند.</string>
 
     <string name="section_routes">قواعد مسیریابی</string>
     <string name="route_block_label">هرگز وصل نشو (بلاک)</string>
-    <string name="route_block_hint">ads.example.com, port:25</string>
+    <string name="route_block_hint">⁨ads.example.com, port:25⁩</string>
     <string name="route_direct_label">بدون تونل (مستقیم)</string>
-    <string name="route_direct_hint">private, bank.example.com</string>
-    <string name="routes_help">با کاما جدا کنید. پشتیبانی از example.com و full: و keyword: و regexp: و 10.0.0.0/8 و port:25 و private. ابتدا بلاک بررسی می‌شود، سپس مستقیم.</string>
+    <string name="bypass_iran_title">بای‌پس سایت‌های ایرانی</string>
+    <string name="bypass_iran_desc">سایت‌های ایرانی (⁨.ir⁩ و رنج آی‌پی ایران) مستقیم و بدون تونل باز می‌شوند. هنگام اشتراک‌گذاری غیرفعال است.</string>
+    <string name="block_ads_title">حذف تبلیغات و ردیاب‌ها</string>
+    <string name="block_ads_desc">دامنه‌های تبلیغاتی و ردیاب مسدود می‌شوند (لیست ⁨HaGeZi Light⁩، به‌روزرسانی هفتگی از داخل تونل).</string>
+    <string name="route_direct_hint">⁨private, bank.example.com⁩</string>
+    <string name="routes_help">با کاما جدا کنید. پشتیبانی از ⁨example.com⁩ و ⁨full⁩: و ⁨keyword⁩: و ⁨regexp⁩: و 10.0.0.0/8 و ⁨port:25⁩ و ⁨private⁩. ابتدا بلاک بررسی می‌شود، سپس مستقیم.</string>
 
-    <string name="dns_label">DNS داخل تونل</string>
+    <string name="dns_label">‏⁨DNS⁩ داخل تونل</string>
     <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
     <string name="dns_help">برای مقدار پیش‌فرض هسته (1.1.1.1, 1.0.0.1) خالی بگذارید. ورودی‌های نامعتبر نادیده گرفته می‌شوند.</string>
     <!-- Feature merge: widget, onboarding, ping, crash report -->
-    <string name="widget_desc">اتصال یا قطع Aether با یک لمس</string>
+    <string name="widget_desc">اتصال یا قطع ⁨Aether⁩ با یک لمس</string>
     <string name="widget_toggle_desc">تغییر وضعیت اتصال</string>
     <string name="ping_label">پینگ</string>
     <string name="ping_measuring">در حال اندازه‌گیری…</string>
@@ -229,13 +234,13 @@
     <string name="onboarding_skip">رد کردن</string>
     <string name="onboarding_next">بعدی</string>
     <string name="onboarding_start">شروع</string>
-    <string name="onboarding_title_1">به Aether خوش آمدید</string>
-    <string name="onboarding_body_1">تانل سریع و امن برای عبور از سانسور. با یک لمس از طریق MASQUE، WireGuard یا وارپ×۲ متصل شوید.</string>
+    <string name="onboarding_title_1">به ⁨Aether⁩ خوش آمدید</string>
+    <string name="onboarding_body_1">تانل سریع و امن برای عبور از سانسور. با یک لمس از طریق ⁨MASQUE⁩، ⁨WireGuard⁩ یا وارپ×۲ متصل شوید.</string>
     <string name="onboarding_title_2">انتخاب هوشمند پروتکل</string>
-    <string name="onboarding_body_2">حالت هوشمند شبکه شما را بررسی می‌کند و پروتکلی را انتخاب می‌کند که واقعاً کار می‌کند، در صورت نیاز با مبهم‌سازی ضد DPI.</string>
+    <string name="onboarding_body_2">حالت هوشمند شبکه شما را بررسی می‌کند و پروتکلی را انتخاب می‌کند که واقعاً کار می‌کند، در صورت نیاز با مبهم‌سازی ضد ⁨DPI⁩.</string>
     <string name="onboarding_title_3">حریم خصوصی از همان ابتدا</string>
-    <string name="onboarding_body_3">بدون حساب کاربری، بدون لاگ، بدون ردیاب. اندروید در اولین اتصال اجازه VPN می‌خواهد؛ این سیستم است که کنترل را به شما می‌دهد.</string>
-    <string name="crash_title">Aether به‌طور غیرمنتظره متوقف شد</string>
+    <string name="onboarding_body_3">بدون حساب کاربری، بدون لاگ، بدون ردیاب. اندروید در اولین اتصال اجازه ⁨VPN⁩ می‌خواهد؛ این سیستم است که کنترل را به شما می‌دهد.</string>
+    <string name="crash_title">‏⁨Aether⁩ به‌طور غیرمنتظره متوقف شد</string>
     <string name="crash_subtitle">جزئیات زیر توسط کنترل‌کننده خرابی ذخیره شده است. می‌توانید آن را در گزارش خطا کپی کنید.</string>
     <string name="crash_copy">کپی جزئیات</string>
     <string name="crash_copied">کپی شد</string>
@@ -243,12 +248,12 @@
     <!-- 1.2.4 -->
     <string name="section_security">امنیت و پایداری</string>
     <string name="kill_switch_title">کیل سوییچ</string>
-    <string name="kill_switch_desc">در صورت قطع غیرمنتظره تونل، کل ترافیک مسدود می‌شود تا هیچ نشتی خارج از VPN رخ ندهد</string>
+    <string name="kill_switch_desc">در صورت قطع غیرمنتظره تونل، کل ترافیک مسدود می‌شود تا هیچ نشتی خارج از ⁨VPN⁩ رخ ندهد</string>
     <string name="strict_kill_switch_title">کیل سوییچ سخت‌گیرانه</string>
     <string name="strict_kill_switch_desc">حتی پس از قطع دستی هم مسدودسازی ادامه می‌یابد تا زمانی که خودتان آن را لغو کنید</string>
     <string name="state_killswitch">کیل سوییچ فعال است - ترافیک مسدود شد</string>
-    <string name="ipv6_leak_title">محافظت در برابر نشت IPv6</string>
-    <string name="ipv6_leak_desc">ترافیک IPv6 نیز از داخل تونل عبور می‌کند</string>
+    <string name="ipv6_leak_title">محافظت در برابر نشت ⁨IPv6⁩</string>
+    <string name="ipv6_leak_desc">ترافیک ⁨IPv6⁩ نیز از داخل تونل عبور می‌کند</string>
     <string name="smart_reconnect_title">اتصال مجدد هوشمند</string>
     <string name="smart_reconnect_desc">پس از تعداد مشخصی تلاش ناموفق، متوقف شده و خطا گزارش می‌شود</string>
     <string name="reconnect_limit_label">حداکثر تلاش‌های اتصال مجدد</string>
@@ -259,30 +264,29 @@
     <string name="fragment_delay_hint">2-10</string>
     <string name="no_data_check_title">بدون بررسی داده</string>
     <string name="no_data_check_desc">رد کردن بررسی سرتاسری داده پس از اتصال</string>
-    <string name="tls_groups_label">گروه‌های TLS</string>
-    <string name="tls_groups_hint">X25519:P-256</string>
+    <string name="tls_groups_label">گروه‌های ⁨TLS⁩</string>
+    <string name="tls_groups_hint">⁨X25519:P-256⁩</string>
     <string name="validate_secs_label">ثانیه‌های اعتبارسنجی (0 = پیش‌فرض)</string>
     <string name="reconnect_secs_label">ثانیه‌های اتصال مجدد (0 = پیش‌فرض)</string>
     <string name="secs_hint">0</string>
     <string name="no_profile_retry_title">بدون تلاش مجدد پروفایل</string>
-    <string name="no_profile_retry_desc">عدم بازگشت به پروفایل‌های جایگزین WireGuard</string>
+    <string name="no_profile_retry_desc">عدم بازگشت به پروفایل‌های جایگزین ⁨WireGuard⁩</string>
     <string name="core_log_level_label">سطح لاگ هسته</string>
     <string name="blocked_select_apps">اپ‌های مسدودشده (%1$d)</string>
-    <string name="blocked_apps_desc">اپ‌های مسدودشده هنگام روشن بودن VPN هیچ دسترسی به اینترنت ندارند. پل فیلتر داخلی فعال می‌شود.</string>
+    <string name="blocked_apps_desc">اپ‌های مسدودشده هنگام روشن بودن ⁨VPN⁩ هیچ دسترسی به اینترنت ندارند. پل فیلتر داخلی فعال می‌شود.</string>
     <!-- 1.2.4 -->
     <string name="meta_protocol">پروتکل</string>
-    <string name="meta_endpoint">اندپوینت</string>
     <string name="meta_latency">تأخیر</string>
 
     <!-- قابلیت‌های هستهٔ 1.7.0 حفظ‌شده در نسخهٔ ۱.۲.۷ -->
     <string name="route_sniff_title">تطبیق قواعد دامنه در پشت تونل</string>
-    <string name="route_sniff_desc">نام سایت را از دست‌دادن اولیهٔ TLS/HTTP می‌خواند تا قواعد دامنهٔ بالا در اندروید هم کار کنند؛ چون در غیر این صورت موتور فقط یک آی‌پی می‌بیند.</string>
+    <string name="route_sniff_desc">نام سایت را از دست‌دادن اولیهٔ ⁨TLS/HTTP⁩ می‌خواند تا قواعد دامنهٔ بالا در اندروید هم کار کنند؛ چون در غیر این صورت موتور فقط یک آی‌پی می‌بیند.</string>
     <string name="route_sniff_ms_label">مدت انتظار برای نام (میلی‌ثانیه)</string>
     <string name="route_sniff_ms_hint">400</string>
     <string name="section_upstream">پراکسی بالادست (زنجیره‌سازی)</string>
     <string name="upstream_label">پراکسی بالادست</string>
-    <string name="upstream_hint">socks5://127.0.0.1:1080</string>
-    <string name="upstream_help">اتصال را از دل پراکسی‌ای که همین حالا روی گوشی اجراست بیرون می‌برد. آدرس socks5://host:port همهٔ پروتکل‌ها را حمل می‌کند؛ http://host:port فقط MASQUE روی HTTP/2 را که خودِ برنامه برایتان فعال می‌کند. نام کاربری و گذرواژه را می‌توانید به شکل user:pass@host:port بنویسید؛ این مقدار به‌صورت محرمانه به موتور داده می‌شود و هرگز در خط فرمان آن قرار نمی‌گیرد. برای اتصال مستقیم خالی بگذارید.</string>
+    <string name="upstream_hint">⁨socks5://127.0.0.1:1080⁩</string>
+    <string name="upstream_help">اتصال را از دل پراکسی‌ای که همین حالا روی گوشی اجراست بیرون می‌برد. آدرس ⁨socks5://host:port⁩ همهٔ پروتکل‌ها را حمل می‌کند؛ ⁨http://host:port⁩ فقط ⁨MASQUE⁩ روی ⁨HTTP/2⁩ را که خودِ برنامه برایتان فعال می‌کند. نام کاربری و گذرواژه را می‌توانید به شکل ⁨user:pass@host:port⁩ بنویسید؛ این مقدار به‌صورت محرمانه به موتور داده می‌شود و هرگز در خط فرمان آن قرار نمی‌گیرد. برای اتصال مستقیم خالی بگذارید.</string>
     <string name="reprovision_title">جایگزینی شناسهٔ ردشده</string>
     <string name="reprovision_desc">اگر کلادفلر شناسهٔ ذخیره‌شدهٔ دستگاه را نپذیرد، به‌جای نگه‌داشتن تونلی که وصل می‌شود اما ترافیکی عبور نمی‌دهد، به‌صورت خودکار شناسهٔ تازه ثبت می‌کند.</string>
     <!-- ۱.۲.۷: نمایشگر انیمیشنی قدرت پینگ در اسلاید تأخیر -->
@@ -296,7 +300,7 @@
 
     <!-- ۱.۲.۷: صفحهٔ تنظیمات، انتخاب زبان در خود برنامه و بودجهٔ اندپوینت کش‌شده -->
     <string name="quick_settings_title">تنظیمات تونل</string>
-    <string name="quick_settings_subtitle">اتصال، ترابری، DNS و پراکسی بالادست</string>
+    <string name="quick_settings_subtitle">اتصال، ترابری، ⁨DNS⁩ و پراکسی بالادست</string>
     <string name="settings_title">تنظیمات</string>
     <string name="settings_subtitle">اتصال، برنامه‌ها، امنیت و عیب‌یابی</string>
     <string name="settings_locked_hint">برای تغییر تنظیمات تونل ابتدا قطع کنید؛ این مقادیر هنگام اجرای موتور به آن داده می‌شوند.</string>
@@ -306,28 +310,28 @@
     <string name="cat_group_device">این دستگاه</string>
     <string name="cat_group_app">برنامه</string>
     <string name="cat_group_tuning">تنظیم دقیق</string>
-    <string name="cat_group_antidpi">ضد DPI</string>
+    <string name="cat_group_antidpi">ضد ⁨DPI⁩</string>
     <string name="cat_group_recovery">بازیابی</string>
     <string name="section_core">هسته</string>
 
     <string name="cat_connection">اتصال</string>
     <string name="cat_connection_desc">بک‌اند شبکه، کشور خروجی، پروتکل و اسکن</string>
-    <string name="cat_transport_desc">مبهم‌سازی، اندپوینت، MTU و ضد DPI</string>
-    <string name="cat_dns_routing">DNS و قواعد مسیریابی</string>
-    <string name="cat_dns_routing_desc">سرورهای DNS داخل تونل، فهرست مسدود و عبور مستقیم</string>
+    <string name="cat_transport_desc">مبهم‌سازی، اندپوینت، ⁨MTU⁩ و ضد ⁨DPI⁩</string>
+    <string name="cat_dns_routing">‏⁨DNS⁩ و قواعد مسیریابی</string>
+    <string name="cat_dns_routing_desc">سرورهای ⁨DNS⁩ داخل تونل، فهرست مسدود و عبور مستقیم</string>
     <string name="cat_upstream_desc">اتصال از دل پراکسی‌ای که همین حالا روی گوشی اجراست</string>
     <string name="cat_apps">برنامه‌ها و پراکسی</string>
     <string name="cat_apps_desc">حالت پراکسی، تانل تقسیم‌شده و برنامه‌های مسدود</string>
-    <string name="cat_security_desc">کیل‌سوییچ، محافظت از نشت IPv6 و اتصال مجدد</string>
-    <string name="cat_engine_desc">فرگمنت، گروه‌های TLS و سطح لاگ هسته</string>
-    <string name="cat_zerotrust_desc">عضویت در سازمان Cloudflare Zero Trust</string>
+    <string name="cat_security_desc">کیل‌سوییچ، محافظت از نشت ⁨IPv6⁩ و اتصال مجدد</string>
+    <string name="cat_engine_desc">فرگمنت، گروه‌های ⁨TLS⁩ و سطح لاگ هسته</string>
+    <string name="cat_zerotrust_desc">عضویت در سازمان ⁨Cloudflare Zero Trust⁩</string>
     <string name="cat_appearance_desc">انتخاب فارسی یا انگلیسی، یا پیروی از گوشی</string>
 
     <string name="backend_label">بک‌اند شبکه</string>
-    <string name="backend_help_aether">یک هاپ از موتور اتر/WARP همراه برنامه. سریع‌ترین حالت.</string>
-    <string name="backend_help_chained">دو هاپ: اول اتر وصل می‌شود، بعد سایفون از داخل آن تونل می‌زند. آی‌پی خروجی شما به سایفون تغییر می‌کند، پس سایت‌هایی که آدرس‌های اتر/WARP را بلاک می‌کنند باز می‌شوند.</string>
+    <string name="backend_help_aether">یک هاپ از موتور اتر/⁨WARP⁩ همراه برنامه. سریع‌ترین حالت.</string>
+    <string name="backend_help_chained">دو هاپ: اول اتر وصل می‌شود، بعد سایفون از داخل آن تونل می‌زند. آی‌پی خروجی شما به سایفون تغییر می‌کند، پس سایت‌هایی که آدرس‌های اتر/⁨WARP⁩ را بلاک می‌کنند باز می‌شوند.</string>
     <string name="exit_country_label">کشور خروجی</string>
-    <string name="exit_help_aether">اتر/WARP خودش خروجی anycast را انتخاب می‌کند.</string>
+    <string name="exit_help_aether">اتر/⁨WARP⁩ خودش خروجی ⁨anycast⁩ را انتخاب می‌کند.</string>
     <string name="exit_help_psiphon">سایفون این را یک فیلتر سخت‌گیرانه می‌داند. اگر نتواند در آن کشور وصل شود، برنامه به‌صورت خودکار با خروجی خودکار دوباره تلاش می‌کند.</string>
 
     <string name="fast_endpoint_title">فقط اندپوینت سریع را دوباره استفاده کن</string>
@@ -336,7 +340,7 @@
     <string name="language_title">زبان</string>
     <string name="language_desc">روی کل برنامه اعمال می‌شود؛ شامل نوتیفیکیشن، تایل تنظیمات سریع و ویجت صفحهٔ اصلی. فارسی چیدمان را راست‌چین می‌کند.</string>
     <string name="language_system">پیروی از گوشی</string>
-    <string name="language_english">English</string>
+    <string name="language_english">⁨English⁩</string>
     <string name="language_persian">فارسی</string>
 
     <string name="reset_confirm_title">همهٔ تنظیمات بازنشانی شود؟</string>
@@ -347,22 +351,22 @@
          هر کلید این بخش باید در values/strings.xml هم وجود داشته باشد.
          ================================================================= -->
     <string name="ai_title">هوش مصنوعی اتر</string>
-    <string name="ai_subtitle">Gemini داخل برنامه: توضیح، بهینه‌سازی و چت</string>
-    <string name="ai_badge">AI</string>
+    <string name="ai_subtitle">‏⁨Gemini⁩ داخل برنامه: توضیح، بهینه‌سازی و چت</string>
+    <string name="ai_badge">⁨AI⁩</string>
     <string name="cat_ai">دستیار</string>
     <string name="cat_ai_desc">هر گزینه را توضیح می‌دهد، لاگ را می‌خواند و تنظیمات پیشنهاد می‌کند</string>
 
     <!-- کلید -->
-    <string name="ai_section_key">کلید API جمینای</string>
-    <string name="ai_key_label">کلید API</string>
-    <string name="ai_key_hint">AIza…</string>
-    <string name="ai_key_help">کلید رایگان را از Google AI Studio بگیرید (aistudio.google.com/apikey). این کلید روی همین گوشی و رمزنگاری‌شده با کلید سخت‌افزاری ذخیره می‌شود، فقط برای گوگل فرستاده می‌شود و همیشه از داخل تونل. بازگرداندن تنظیمات برنامه آن را پاک نمی‌کند.</string>
+    <string name="ai_section_key">کلید ⁨API⁩ جمینای</string>
+    <string name="ai_key_label">کلید ⁨API⁩</string>
+    <string name="ai_key_hint">⁨AIza⁩…</string>
+    <string name="ai_key_help">کلید رایگان را از ⁨Google AI Studio⁩ بگیرید (⁨aistudio.google.com/apikey⁩). این کلید روی همین گوشی و رمزنگاری‌شده با کلید سخت‌افزاری ذخیره می‌شود، فقط برای گوگل فرستاده می‌شود و همیشه از داخل تونل. بازگرداندن تنظیمات برنامه آن را پاک نمی‌کند.</string>
     <string name="ai_key_show">نمایش</string>
     <string name="ai_key_hide">پنهان</string>
     <string name="ai_key_paste">جای‌گذاری</string>
     <string name="ai_key_forget">پاک کردن کلید و فهرست مدل‌ها</string>
-    <string name="ai_key_forgotten">کلید API پاک شد</string>
-    <string name="ai_test">تست اتصال به API</string>
+    <string name="ai_key_forgotten">کلید ⁨API⁩ پاک شد</string>
+    <string name="ai_test">تست اتصال به ⁨API⁩</string>
     <string name="ai_test_hint">کلید را بررسی می‌کند و مدل‌های مجاز آن را فهرست می‌کند</string>
     <string name="ai_test_running">در حال تست…</string>
     <string name="ai_test_ok">سالم است — %1$d مدل از مسیر %2$s در دسترس است</string>
@@ -371,17 +375,17 @@
     <!-- مدل‌ها -->
     <string name="ai_section_models">مدل‌هایی که کلید شما می‌تواند استفاده کند</string>
     <string name="ai_model_label">مدل</string>
-    <string name="ai_models_count">%1$d مدل در دسترس</string>
-    <string name="ai_models_empty">هنوز مدلی پیدا نشده است. اول وصل شوید و بعد تست API را بزنید: فهرست از خودِ کلید شما خوانده می‌شود، پس دقیقاً همان مدل‌هایی را نشان می‌دهد که آن کلید اجازهٔ استفاده از آن‌ها را دارد.</string>
+    <string name="ai_models_count">‏%1$d مدل در دسترس</string>
+    <string name="ai_models_empty">هنوز مدلی پیدا نشده است. اول وصل شوید و بعد تست ⁨API⁩ را بزنید: فهرست از خودِ کلید شما خوانده می‌شود، پس دقیقاً همان مدل‌هایی را نشان می‌دهد که آن کلید اجازهٔ استفاده از آن‌ها را دارد.</string>
     <string name="ai_models_refresh">به‌روزرسانی فهرست مدل‌ها</string>
 
     <!-- رفتار -->
     <string name="ai_section_behaviour">رفتار دستیار</string>
     <string name="ai_auto_optimize">بررسی لاگ در هر بار اتصال</string>
-    <string name="ai_auto_optimize_desc">پس از هر اتصال موفق، جمینای بخشی از لاگ همین نشست را (پاک‌سازی‌شده) می‌خواند، گزارش می‌دهد که اپراتور شما با این اتصال چه می‌کند و تنظیماتی را که با آن وضعیت می‌خواند پیشنهاد می‌دهد.</string>
+    <string name="ai_auto_optimize_desc">به‌صورت پیش‌فرض خاموش است. با روشن کردن آن، جمینای پس از هر اتصال موفق بخشی پاک‌سازی‌شده از لاگ همین نشست را می‌خواند و تنظیمات مناسب را پیشنهاد می‌دهد، و چت هوش مصنوعی هم هر وقت دربارهٔ لاگ بپرسید، لاگ فعلی را خودکار می‌خواند. آدرس‌ها و شناسه‌ها پیش از ارسال پوشانده می‌شوند.</string>
     <string name="ai_auto_apply">اعمال خودکار پیشنهادها</string>
     <string name="ai_auto_apply_desc">پیشنهادها مستقیم در تنظیمات نوشته شوند، بدون اینکه منتظر تأیید شما بمانند. به‌صورت پیش‌فرض خاموش است، چون تنظیمی که خودش عوض می‌شود از یک اشکال قابل تشخیص نیست.</string>
-    <string name="ai_hints">نمایش آیکن AI کنار گزینه‌ها</string>
+    <string name="ai_hints">نمایش آیکن ⁨AI⁩ کنار گزینه‌ها</string>
     <string name="ai_hints_desc">روی آیکن کنار هر تنظیم بزنید و جمینای می‌گوید آن تنظیم چیست، چه کاربردی دارد و چطور باید از آن استفاده کرد.</string>
 
     <!-- چت -->
@@ -392,7 +396,7 @@
     <string name="ai_chat_empty_body">می‌توانم هر تنظیمی در این برنامه را توضیح بدهم، لاگ همین نشست را بخوانم و تنظیمات پیشنهاد کنم، یا فقط به سؤالتان جواب بدهم.</string>
     <string name="ai_chat_suggest_1">چرا اتصالم الان کند است؟</string>
     <string name="ai_chat_suggest_2">روی دیتای همراه چه پروتکلی بهتر است؟</string>
-    <string name="ai_chat_suggest_3">‏MTU را توضیح بده و بهترینش را انتخاب کن</string>
+    <string name="ai_chat_suggest_3">‏⁨MTU⁩ را توضیح بده و بهترینش را انتخاب کن</string>
     <string name="ai_chat_suggest_4">تونل را سخت‌تر قابل تشخیص کن</string>
     <string name="ai_chat_input_hint">از هوش مصنوعی اتر بپرسید…</string>
     <string name="ai_chat_send">ارسال</string>
@@ -429,15 +433,15 @@
     <string name="ai_dismiss">بستن</string>
 
     <!-- شرط‌های استفاده از هوش مصنوعی -->
-    <string name="ai_gate_no_key">برای استفاده از قابلیت‌های هوش مصنوعی، کلید API جمینای خود را وارد کنید.</string>
-    <string name="ai_gate_no_model">هنوز مدلی انتخاب نشده است. تست API را بزنید تا یکی برایتان انتخاب شود.</string>
+    <string name="ai_gate_no_key">برای استفاده از قابلیت‌های هوش مصنوعی، کلید ⁨API⁩ جمینای خود را وارد کنید.</string>
+    <string name="ai_gate_no_model">هنوز مدلی انتخاب نشده است. تست ⁨API⁩ را بزنید تا یکی برایتان انتخاب شود.</string>
     <string name="ai_gate_disconnected">هوش مصنوعی به تونل نیاز دارد. اول وصل شوید: سرویس‌های هوش مصنوعی گوگل مستقیم در دسترس نیستند و ترافیک خودِ اتر عمداً از تونلی که می‌سازد رد نمی‌شود.</string>
-    <string name="ai_gate_wrong_mode">حالت شبکه را روی Aether → Psiphon بگذارید. سرویس‌های هوش مصنوعی گوگل آدرس‌های خروجی اتر/WARP را نمی‌پذیرند؛ به همین دلیل هوش مصنوعی فقط در حالت ترکیبی کار می‌کند.</string>
+    <string name="ai_gate_wrong_mode">حالت شبکه را روی ⁨Aether → Psiphon⁩ بگذارید. سرویس‌های هوش مصنوعی گوگل آدرس‌های خروجی اتر/⁨WARP⁩ را نمی‌پذیرند؛ به همین دلیل هوش مصنوعی فقط در حالت ترکیبی کار می‌کند.</string>
     <string name="ai_gate_fix_key">رفتن به تنظیمات هوش مصنوعی</string>
     <string name="ai_gate_fix_mode">رفتن به تنظیمات اتصال</string>
 
     <!-- خطاها -->
-    <string name="ai_error_bad_key">کلید API شما پذیرفته نشد. آن را بررسی کنید و دوباره تلاش کنید.</string>
+    <string name="ai_error_bad_key">کلید ⁨API⁩ شما پذیرفته نشد. گوگل در سال ۲۰۲۶ کلیدهای «⁨standard⁩» قدیمی جمینای را بازنشسته کرد — اگر این کلید قبلاً کار می‌کرد، در ⁨Google AI Studio⁩ یک کلید تازه بسازید و همان را بچسبانید.</string>
     <string name="ai_error_rate_limit">به سقف مصرف یا محدودیت سرعت رسیدید. کمی صبر کنید و دوباره امتحان کنید.</string>
     <string name="ai_error_no_model">این مدل برای کلید شما در دسترس نیست. فهرست مدل‌ها را به‌روز کنید.</string>
     <string name="ai_error_transport">از داخل تونل نشد به گوگل رسید.</string>
@@ -448,7 +452,7 @@
     <string name="ai_privacy_title">چه چیزی از گوشی شما بیرون می‌رود</string>
     <string name="ai_privacy_body">فقط چیزی که هر درخواست لازم دارد: متن پرسش شما، نام تنظیمی که دربارهٔ آن پرسیده‌اید و مقدارهای فعلی تنظیمات. تحلیل لاگ یک بخش پاک‌سازی‌شده از لاگ را هم اضافه می‌کند: اطلاعات محرمانه حذف و آدرس‌های عمومی تا /16 ماسک می‌شوند. همهٔ این‌ها از داخل تونل به گوگل می‌رسند، هرگز به‌صورت مستقیم.</string>
     <string name="ai_scope_title">هوش مصنوعی چه چیزی را می‌تواند تغییر دهد</string>
-    <string name="ai_scope_body">فقط تنظیمات بهینه‌سازی: پروتکل، مبهم‌سازی، MTU، تکه‌تکه‌کردن، DNS، رفتار اتصال مجدد و مانند این‌ها. هرگز نمی‌تواند حالت شبکه، پراکسی بالادست، قواعد مسیریابی، اینکه کدام برنامه‌ها از تونل رد می‌شوند یا هیچ اطلاعات محرمانه‌ای را عوض کند — این‌ها تعیین می‌کنند کدام ترافیک محافظت می‌شود، پس در دست خودتان می‌مانند.</string>
+    <string name="ai_scope_body">فقط تنظیمات بهینه‌سازی: پروتکل، مبهم‌سازی، ⁨MTU⁩، تکه‌تکه‌کردن، ⁨DNS⁩، رفتار اتصال مجدد و مانند این‌ها. هرگز نمی‌تواند حالت شبکه، پراکسی بالادست، قواعد مسیریابی، اینکه کدام برنامه‌ها از تونل رد می‌شوند یا هیچ اطلاعات محرمانه‌ای را عوض کند — این‌ها تعیین می‌کنند کدام ترافیک محافظت می‌شود، پس در دست خودتان می‌مانند.</string>
 
     <!-- ===== افزوده‌های هوش مصنوعی در ۱.۲.۹ ========================= -->
     <string name="ai_error_server">سرویس هوش مصنوعی گوگل نتوانست پاسخ دهد. مشکل از سمت گوگل است، نه از اتصال شما.</string>
@@ -456,8 +460,12 @@
     <string name="ai_advisor_unreadable">مدل دو بار پشت سر هم پاسخ را در قالبی که برنامه لازم دارد نداد. دوباره تلاش کنید یا مدل دیگری انتخاب کنید.</string>
     <string name="ai_advisor_empty_log">هنوز چیزی در گزارش اتصال برای تحلیل وجود ندارد. اول وصل شوید، بعد تحلیل را اجرا کنید.</string>
     <string name="ai_models_none_allowed">کلید شما به گوگل می‌رسد، اما هیچ‌کدام از مدل‌هایی که این برنامه پشتیبانی می‌کند برای آن در دسترس نیست. مدل‌های پشتیبانی‌شده:\n%1$s</string>
-    <string name="ai_models_filtered">فقط مدل‌های Flash پشتیبانی‌شده نمایش داده می‌شوند</string>
-    <string name="ai_models_help">فهرست فقط به مدل‌های سریع Flash محدود شده که روی کلید رایگان قابل‌اعتماد پاسخ می‌دهند، از جدید به قدیم. مدل‌های تصویر، ویدئو، صوت و Pro پنهان شده‌اند چون یا اینجا پاسخ نمی‌دهند یا سهمیهٔ رایگان را فوراً تمام می‌کنند.</string>
+    <string name="ai_models_filtered">فقط مدل‌های ⁨Flash⁩ پشتیبانی‌شده نمایش داده می‌شوند</string>
+    <string name="ai_models_help">فقط مدل‌های سریع ⁨Flash⁩ که روی کلید رایگان قابل‌اعتماد پاسخ می‌دهند نمایش داده می‌شوند. ⁨Gemini 3.1 Flash-Lite⁩ پیش‌فرض است چون بیشترین سقف مصرف روزانهٔ رایگان را دارد؛ مدل‌های جدیدتر ⁨Flash⁩ سریع‌ترند اما زودتر به سقف روزانه می‌رسند. مدل‌های تصویر، ویدئو، صوت و ⁨Pro⁩ پنهان شده‌اند.</string>
+    <!-- 1.4.0-r5: راهنمای هر مدل در انتخابگر مدل -->
+    <string name="ai_model_desc_default">پیش‌فرض · سقف مصرف روزانهٔ بالا، بهینه برای استفادهٔ مداوم</string>
+    <string name="ai_model_desc_fast">سرعت بالا · رسیدن سریع‌تر به سقف محدودیت روزانه</string>
+    <string name="ai_model_desc_alt">خانوادهٔ ⁨Flash-Lite⁩ · سقف روزانهٔ بالا (نسخهٔ پیش‌نمایش/نام مستعار)</string>
     <string name="ai_applied_dialog_title">برای اتصال بعدی ذخیره شد</string>
     <string name="ai_applied_dialog_body">تنظیمات جدید ذخیره شد، اما تونل همچنان با تنظیمات قبلی در حال اجراست. تنظیمات تونل هنگام شروع به موتور داده می‌شود؛ پس یک‌بار قطع و دوباره وصل کنید تا اعمال شوند.</string>
     <string name="ai_applied_dialog_ok">متوجه شدم</string>
@@ -470,16 +478,16 @@
     <string name="ai_chat_edit_title">ویرایش پیام</string>
     <string name="ai_chat_edit_send">ارسال دوباره</string>
     <string name="ai_chat_edit_note">هر چیزی پس از این پیام حذف می‌شود و دستیار به پرسش ویرایش‌شده پاسخ می‌دهد.</string>
-    <string name="ai_chat_selected">%1$d مورد انتخاب شد</string>
+    <string name="ai_chat_selected">‏%1$d مورد انتخاب شد</string>
     <string name="ai_chat_select_all">انتخاب همه</string>
     <string name="ai_chat_selection_cancel">لغو انتخاب</string>
     <string name="ai_chat_delete_selected">حذف موارد انتخاب‌شده</string>
-    <string name="ai_chat_delete_title">%1$d پیام حذف شود؟</string>
+    <string name="ai_chat_delete_title">‏%1$d پیام حذف شود؟</string>
     <string name="ai_chat_delete_body">این کار قابل بازگشت نیست. پیام‌های حذف‌شده دیگر به‌عنوان زمینهٔ گفت‌وگو برای دستیار فرستاده نمی‌شوند.</string>
     <string name="ai_chat_delete_confirm">حذف</string>
 
     <!-- Tor (1.3.0, engine core 2.0.0) -->
-    <string name="protocol_mim">MASQUE×2</string>
+    <string name="protocol_mim">⁨MASQUE×2⁩</string>
     <string name="state_tor_bootstrap">در حال ساخت مدارهای تور…</string>
     <string name="state_tor_bootstrap_pct">در حال رسیدن به شبکهٔ تور… %1$d%%</string>
     <string name="state_tor_bridges">تور بلاک شده است — تلاش با پل‌ها…</string>
@@ -499,23 +507,229 @@
     <string name="tor_bridges_always">همیشه</string>
     <string name="tor_bridges_off">خاموش</string>
     <string name="tor_bridge_lines_title">خطوط پل خودتان</string>
-    <string name="tor_bridge_lines_hint">obfs4 192.0.2.55:38114 &lt;FINGERPRINT&gt; cert=… iat-mode=0</string>
-    <string name="tor_bridge_lines_desc">هر خط یکی، در قالبی که bridges.torproject.org می‌دهد. خالی بگذارید تا برنامه پل‌های مناسب کشور شما را خودش بگیرد. خطی که نام ترانسپورتی را بگوید که برنامه ندارد، نادیده گرفته می‌شود.</string>
-    <string name="tor_group_footer">تور فقط TCP را حمل می‌کند — در هر برنامه و روی هر پلتفرم. اتر DNS را روی TCP داخل تور پاسخ می‌دهد و بقیهٔ UDP را دور می‌ریزد، پس برنامه‌هایی که QUIC دارند به TCP برمی‌گردند. این طبیعی است و چیزی لیک نمی‌شود: UDP دورریخته به هیچ‌جا نمی‌رود، چه برسد به دور زدن تور. منتطر تاخیر محسوساً بیشتر باشید، و اینکه اولین اتصال طول بکشد — تور قبل از ساخت مدار، دایرکتوری خود را دانلود می‌کند.</string>
+    <string name="tor_bridge_lines_hint">⁨obfs4 192.0.2.55:38114 &lt;FINGERPRINT&gt; cert=… iat-mode=0⁩</string>
+    <string name="tor_bridge_lines_desc">هر خط یکی، در قالبی که ⁨bridges.torproject.org⁩ می‌دهد. خالی بگذارید تا برنامه پل‌های مناسب کشور شما را خودش بگیرد. خطی که نام ترانسپورتی را بگوید که برنامه ندارد، نادیده گرفته می‌شود.</string>
+    <string name="tor_group_footer">تور فقط ⁨TCP⁩ را حمل می‌کند — در هر برنامه و روی هر پلتفرم. اتر ⁨DNS⁩ را روی ⁨TCP⁩ داخل تور پاسخ می‌دهد و بقیهٔ ⁨UDP⁩ را دور می‌ریزد، پس برنامه‌هایی که ⁨QUIC⁩ دارند به ⁨TCP⁩ برمی‌گردند. این طبیعی است و چیزی لیک نمی‌شود: ⁨UDP⁩ دورریخته به هیچ‌جا نمی‌رود، چه برسد به دور زدن تور. منتطر تاخیر محسوساً بیشتر باشید، و اینکه اولین اتصال طول بکشد — تور قبل از ساخت مدار، دایرکتوری خود را دانلود می‌کند.</string>
 
     <!-- Tor reverse chain (1.3.0) -->
-    <string name="backend_help_tor_aether">زنجیرهٔ معکوس: اول تور، بعد تونل اتر داخل آن ساخته می‌شود. خروجی شما یک آدرس WARP است — همان چیزی که اتر ساده می‌دهد — اما شبکه‌ای که در آن هستید فقط تور را می‌بیند و اصلاً نمی‌تواند بفهمد که تونل VPN‌ی وجود دارد. جایی به کار بیاید که خود Cloudflare/WARP بلاک یا کند شده اما تور هنوز رد می‌شود. برخلاف حالت‌های با خروجی تور، UDP عادی را حمل می‌کند.</string>
-    <string name="protocol_forced_reverse">در این حالت روی MASQUE بر HTTP/2 قفل است. تور فقط TCP را حمل می‌کند و اندپوینت‌های WireGuard مربوط به WARP فقط روی UDP پاسخ می‌دهند، پس موتور اینجا WireGuard و WARP×۲ را قبول نمی‌کند.</string>
+    <string name="backend_help_tor_aether">زنجیرهٔ معکوس: اول تور، بعد تونل اتر داخل آن ساخته می‌شود. خروجی شما یک آدرس ⁨WARP⁩ است — همان چیزی که اتر ساده می‌دهد — اما شبکه‌ای که در آن هستید فقط تور را می‌بیند و اصلاً نمی‌تواند بفهمد که تونل ⁨VPN⁩‌ی وجود دارد. جایی به کار بیاید که خود ⁨Cloudflare/WARP⁩ بلاک یا کند شده اما تور هنوز رد می‌شود. برخلاف حالت‌های با خروجی تور، ⁨UDP⁩ عادی را حمل می‌کند.</string>
+    <string name="protocol_forced_reverse">در این حالت روی ⁨MASQUE⁩ بر ⁨HTTP/2⁩ قفل است. تور فقط ⁨TCP⁩ را حمل می‌کند و اندپوینت‌های ⁨WireGuard⁩ مربوط به ⁨WARP⁩ فقط روی ⁨UDP⁩ پاسخ می‌دهند، پس موتور اینجا ⁨WireGuard⁩ و ⁨WARP⁩×۲ را قبول نمی‌کند.</string>
 
     <!-- Tor tuning (1.3.0) -->
     <string name="tor_country_title">کشور پل</string>
     <string name="tor_country_auto">تشخیص خودکار</string>
-    <string name="tor_country_desc">اینکه bridgedb پل‌های مربوط به کدام کشور را بدهد. تشخیص خودکار از شبکه می‌پرسد کجا هستید، و همین درخواست بیشتر از هر چیز اینجا شکست می‌خورد.</string>
+    <string name="tor_country_desc">اینکه ⁨bridgedb⁩ پل‌های مربوط به کدام کشور را بدهد. تشخیص خودکار از شبکه می‌پرسد کجا هستید، و همین درخواست بیشتر از هر چیز اینجا شکست می‌خورد.</string>
     <string name="tor_direct_secs_title">مدت صبر برای بوت‌استرپ</string>
     <string name="tor_direct_auto">خودکار (۷۵ ثانیه)</string>
-    <string name="tor_direct_secs_value">%1$d ثانیه</string>
+    <string name="tor_direct_secs_value">‏%1$d ثانیه</string>
     <string name="tor_direct_secs_desc">تور چقدر مسیر مستقیم را امتحان کند پیش از رفتن به سراغ پل‌ها. اگر مطمئنید تور بلاک است، کوتاه‌ترش کنید.</string>
     <string name="tor_check_title">بررسی دسترسی</string>
-    <string name="tor_check_hint">check.torproject.org:443</string>
+    <string name="tor_check_hint">⁨check.torproject.org:443⁩</string>
     <string name="tor_check_desc">آدرسی که تور باید به آن برسد تا بوت‌استرپ موفق شمرده شود. فقط وقتی عوضش کنید که بوت‌استرپ مدام شکست می‌خورد در حالی که تور سالم به نظر می‌رسد — خود مقصد پیش‌فرض در بعضی شبکه‌ها بلاک است.</string>
+
+    <!-- Zero Trust: کد ورود ایمیلی -->
+    <string name="zt_code_title">کد ورود را وارد کنید</string>
+    <string name="zt_code_body">سازمان شما یک کد یک‌بارمصرف به %1$s ایمیل کرد. برای کامل شدن عضویت، آن را اینجا وارد کنید.</string>
+    <string name="zt_code_body_noaddr">سازمان شما یک کد یک‌بارمصرف برایتان ایمیل کرد. برای کامل شدن عضویت، آن را اینجا وارد کنید.</string>
+    <string name="zt_code_retry">آن کد پذیرفته نشد. تلاش %1$d از %2$d.</string>
+    <string name="zt_code_label">کد ورود</string>
+    <plurals name="zt_code_wait">
+        <item quantity="one">اتصال منتظر همین است. بعد از %1$d ثانیه منصرف می‌شود.</item>
+        <item quantity="other">اتصال منتظر همین است. بعد از %1$d ثانیه منصرف می‌شود.</item>
+    </plurals>
+    <string name="zt_code_send">ارسال کد</string>
+    <string name="zt_code_dismiss">حالا نه</string>
+
+    <!-- Zero Trust: توکن عضویت -->
+    <string name="access_token_how">در مرورگر به ⁨https://&lt;team&gt;.cloudflareaccess.com/warp⁩ بروید و وارد شوید، بعد مقداری که پس از ⁨token⁩= می‌آید را کپی و اینجا بچسبانید. یا به‌جایش در بالا «کد ایمیلی» را انتخاب کنید تا داخل خود برنامه وارد شوید.</string>
+    <string name="access_token_bad">این شبیه توکن نیست. کل مقداری که در صفحهٔ عضویت پس از ⁨token⁩= آمده را کپی کنید.</string>
+    <string name="access_token_expired">این توکن منقضی شده. دوباره وارد شوید و یک توکن تازه بچسبانید.</string>
+    <plurals name="access_token_ok">
+        <item quantity="one">توکن معتبر به‌نظر می‌رسد؛ %1$d روز دیگر منقضی می‌شود.</item>
+        <item quantity="other">توکن معتبر به‌نظر می‌رسد؛ %1$d روز دیگر منقضی می‌شود.</item>
+    </plurals>
+    <string name="access_token_ok_soon">توکن معتبر به‌نظر می‌رسد ولی کمتر از یک روز دیگر منقضی می‌شود.</string>
+    <string name="access_token_nodate">توکن معتبر به‌نظر می‌رسد. تاریخ انقضایی در آن نیست.</string>
+
+    <!-- کدام روش‌های ورود Zero Trust واقعاً کار می‌کنند -->
+    <string name="team_auth_email_note">پیش از وصل شدن از پایین وارد شوید تا اتصال بدون دخالت شما انجام شود. اگر وارد نشوید، کد در حین اتصال پرسیده می‌شود: سازمان آن را ایمیل می‌کند و یک پنجره باز می‌شود. در آن حالت برنامه را باز نگه دارید — اتصال تا پنج دقیقه منتظر می‌ماند.</string>
+    <string name="team_auth_service_note">بدون دخالت شما کار می‌کند: موتور خودش شناسه و رمز کلاینت را با یک توکن عوض می‌کند.</string>
+
+    <!-- ورود آزاد MTU -->
+    <string name="mtu_custom_label">یا خودتان ⁨MTU⁩ را وارد کنید</string>
+    <string name="mtu_custom_help">هر مقداری بین ۱۲۸۰ و ۹۰۰۰. اگر تونل بالا است ولی بعضی سایت‌ها یا تلگرام باز نمی‌شوند، کمترش کنید.</string>
+    <string name="mtu_custom_range">عددی بین %1$d و %2$d وارد کنید.</string>
+
+    <!-- راهنمای بهینه‌سازی باتری -->
+    <string name="battery_title">اجازهٔ اجرا در پس‌زمینه</string>
+    <string name="battery_desc">اندروید هنوز اجازه دارد اتر را متوقف کند. همین باعث می‌شود با خاموش شدن صفحه تونل بیفتد — می‌نویسد وصل است ولی چیزی باز نمی‌شود. برای معاف کردنش بزنید.</string>
+
+    <!-- ECHConfigList دلخواه -->
+    <string name="ech_config_label">‏⁨ECHConfigList (base64⁩، اختیاری)</string>
+    <string name="ech_config_help">خالی بگذارید تا موتور خودش بگیرد. یک ⁨ECHConfigList⁩ به شکل ⁨base64⁩ بچسبانید تا از همان استفاده شود — جایی به کار می‌آید که شبکه‌تان دقیقاً گرفتنِ نسخهٔ پیش‌فرض را بلاک می‌کند. دادن نام یک دامنهٔ دیگر، آن‌طور که ⁨v2rayNG⁩ می‌کند، نیاز به تغییر موتور دارد و اینجا ممکن نیست.</string>
+
+    <!-- فهرست قابلیت‌ها در کارت «درباره» -->
+    <string-array name="about_original_features">
+        <item>پیدا کردن خودکار سرور، با بررسی واقعی رد و بدل شدن داده پیش از قبول کردنش</item>
+        <item>‏⁨MASQUE⁩ روی ⁨HTTP/3⁩ و ⁨HTTP/2⁩، با تکه‌تکه کردن اختیاری دست‌دادن ⁨TLS⁩</item>
+        <item>‏⁨WireGuard⁩ و ⁨WireGuard⁩ تودرتو (همان ⁨WARP-in-WARP⁩ یا «⁨gool⁩»)</item>
+        <item>مبهم‌سازی ترافیک برای شبکه‌هایی که ⁨DPI⁩ سنگین دارند</item>
+        <item>اتصال مجدد خودکار، با برگشت سریع به آخرین سروری که کار می‌کرده</item>
+        <item>پراکسی ⁨SOCKS5⁩ محلی — نسخهٔ خط فرمان برای لینوکس، ویندوز، مک و اندروید (ترماکس)</item>
+    </string-array>
+
+    <string-array name="about_port_improvements">
+        <item>حالت زنجیره‌ای ⁨Aether ← Psiphon⁩ اضافه شد — یک آی‌پی خروجی واقعاً خارجی، پشت هاپ اول و مبهم‌شدهٔ اتر</item>
+        <item>همین حالت زنجیره‌ای، مشکل آی‌پی ایرانی اتر خالی را حل می‌کند و سرویس‌های هوش مصنوعی (جمینای و بقیه) که آن آی‌پی را قبول نمی‌کنند باز می‌شوند</item>
+        <item>انتخاب کشور خروجی با پرچم برای حالت زنجیره‌ای، به‌علاوهٔ یک فرانت ⁨SOCKS⁩ که ⁨UDP⁩ را هم حمل می‌کند تا ⁨DNS⁩ و ⁨QUIC⁩ از داخلش کار کنند</item>
+        <item>یک برنامهٔ کامل و بومی اندروید — نسخهٔ اصلی فقط خط فرمان است و هیچ رابط گرافیکی اندروید یا ویندوز ندارد</item>
+        <item>وی‌پی‌ان سراسری با یک لمس، از راه ⁨VpnService⁩ اندروید — بدون تنظیم دستی پراکسی</item>
+        <item>‏⁨hev-socks5-tunnel⁩ (همان ⁨tun2socks⁩) درون خود برنامه و روی یک ترد بومی اجرا می‌شود</item>
+        <item>نشان زندهٔ «آی‌پی شما / آی‌پی سرور» با چند سرویس مکان‌یابی</item>
+        <item>خودآزمایی اتصال مرحله‌به‌مرحله، با لاگ تشخیصی که بعد از کرش هم باقی می‌ماند</item>
+        <item>اتصال مجدد خودکار با فاصلهٔ فزاینده و مهلت اتصال متناسب با هر حالت اسکن</item>
+        <item>کنترل پروتکل، حالت اسکن و نسخهٔ آی‌پی در رابطی با ⁨Material 3⁩ (انگلیسی و فارسی)</item>
+        <item>کلید در تنظیمات سریع — وصل و قطع کردن مستقیم از پردهٔ اعلان‌ها</item>
+        <item>اشتراک وی‌پی‌ان روی وای‌فای یا هات‌اسپات — پراکسی ⁨HTTP⁩ و ⁨SOCKS5⁩ توکار برای لپ‌تاپ و گوشی‌های دیگر</item>
+        <item>تنظیمات پیشرفته، مستقیم از صفحهٔ خانه در دسترس</item>
+        <item>فایل‌های ⁨APK⁩ امضاشده برای هر معماری، که خودکار از ⁨GitHub Actions⁩ منتشر می‌شوند</item>
+        <item>نسخهٔ موتور در «درباره» نشان داده می‌شود، تا همیشه بشود هستهٔ همراه برنامه را راستی‌آزمایی کرد</item>
+        <item>‏⁨Zero Trust⁩ (همان ⁨WARP⁩ سازمانی)، قواعد مسیریابی تفکیکی و ⁨DNS⁩ دلخواه داخل تونل</item>
+    </string-array>
+    <string name="meta_pipeline">اتصال</string>
+
+    <string name="state_smart_plus_racing">چند مسیر را هم‌زمان امتحان می‌کند…</string>
+
+    <string name="protocol_auto_race">در این حالت، «هوشمند» دو مسیر را هم‌زمان امتحان می‌کند و به‌خاطر می‌سپارد روی این شبکه کدام‌یک کار کرد تا اتصال بعدی سریع باشد.</string>
+    <string name="protocol_auto_ladder">روی این بک‌اند، «هوشمند» مسیرها را یکی‌یکی امتحان می‌کند. مسابقهٔ موازی به بک‌اند سادهٔ اتر و انتخاب خودکار اندپوینت نیاز دارد.</string>
+    <!-- 1.4.0-r5: VPN sharing rewrite -->
+    <string name="share_status_live">اشتراک فعال · ⁨%1$d⁩ اتصال</string>
+    <string name="share_off_hint">اشتراک‌گذاری را روشن کنید و حالت را انتخاب کنید؛ آدرس‌هایی که باید در دستگاه دیگر وارد شوند اینجا نمایش داده می‌شوند.</string>
+    <string name="share_mode_title">حالت اشتراک‌گذاری</string>
+    <string name="share_mode_home">وای‌فای خانگی</string>
+    <string name="share_mode_home_desc">گوشی و دستگاه‌ها روی یک مودم</string>
+    <string name="share_mode_mobile">هات‌اسپات موبایل</string>
+    <string name="share_mode_mobile_desc">دستگاه‌ها به هات‌اسپات همین گوشی وصل می‌شوند (اینترنت موبایل)</string>
+    <string name="share_mode_detected">● شبکه شناسایی شد</string>
+    <string name="share_mode_not_detected">○ فعال نیست</string>
+    <string name="share_needs_reconnect">هنگام شروع این نشست، قوانین مسیریابی مستقیم (⁨Direct⁩) فعال بودند. برای تضمین عدم نشت ⁨IP⁩، اشتراک‌گذاری بسته ماند: یک بار قطع و دوباره وصل کنید (این قوانین هنگام اشتراک‌گذاری خودکار متوقف می‌شوند).</string>
+    <string name="share_port_busy">پورت‌های ⁨10810/10811⁩ در این شبکه توسط برنامهٔ دیگری استفاده می‌شوند. آن را ببندید و سوییچ را دوباره روشن کنید.</string>
+    <string name="share_wait_home">گوشی را به وای‌فای خانه وصل کنید. آدرس‌ها خودکار اینجا ظاهر می‌شوند.</string>
+    <string name="share_wait_mobile">هات‌اسپات وای‌فای (یا اشتراک ⁨USB⁩/بلوتوث) این گوشی را روشن کنید. آدرس‌ها خودکار اینجا ظاهر می‌شوند.</string>
+    <string name="share_open_hotspot">باز کردن تنظیمات هات‌اسپات</string>
+    <string name="share_switch_to_mobile">رفتن به حالت هات‌اسپات موبایل</string>
+    <string name="share_switch_to_home">رفتن به حالت وای‌فای خانگی</string>
+    <string name="share_zero_leak_on">محافظ ضدنشت فعال است</string>
+    <string name="share_zero_leak_desc">هر چه دستگاه دیگر از طریق اشتراک بفرستد فقط از تونل ⁨VPN⁩ خارج می‌شود: ⁨DNS⁩ داخل تونل حل می‌شود، ⁨UDP⁩ از تونل عبور می‌کند، مقصدهای محلی مسدودند و اگر تونل قطع شود اتصال برقرار نمی‌شود، نه اینکه مستقیم برود.</string>
+    <string name="share_direct_paused">قوانین مسیریابی مستقیم (⁨Direct⁩) هنگام اشتراک‌گذاری متوقف شده‌اند تا هیچ ترافیکی بیرون از تونل نرود.</string>
+    <string name="share_values_home">در دستگاه دیگر (روی همین وای‌فای) وارد کنید</string>
+    <string name="share_values_mobile">در دستگاه متصل به این هات‌اسپات وارد کنید</string>
+    <string name="share_ip_label">آدرس ⁨IP⁩ گوشی</string>
+    <string name="share_pac_label">نشانی پراکسی خودکار (⁨PAC⁩) — ساده‌ترین و ایمن‌ترین</string>
+    <string name="share_copy_all">کپی همهٔ مشخصات</string>
+    <string name="share_copy_all_label">مشخصات اشتراک اتر</string>
+    <string name="share_copied_all">همهٔ مشخصات کپی شد</string>
+    <string name="share_steps_title">روش اتصال</string>
+    <string name="share_step_home_1">مطمئن شوید دستگاه دیگر به همان وای‌فای گوشی وصل است.</string>
+    <string name="share_step_mobile_1">دستگاه دیگر را به هات‌اسپات این گوشی وصل کنید.</string>
+    <string name="share_step_common_proxy">در تنظیمات وای‌فای/شبکهٔ آن، پراکسی را روی «خودکار» بگذارید و نشانی ⁨PAC⁩ را بچسبانید (یا «دستی» با پراکسی ⁨HTTP⁩). برای برنامه‌ها و کلاینت‌های ⁨TUN⁩ مثل ⁨v2rayN⁩، ⁨NekoBox⁩ و ⁨sing-box⁩ از آدرس ⁨SOCKS5⁩ با ⁨DNS⁩ راه‌دور استفاده کنید.</string>
+    <string name="share_step_common_check">صفحهٔ بررسی زیر را در مرورگر باز کنید: فقط وقتی دستگاه محافظت شود باز می‌شود.</string>
+    <string name="share_check_label">صفحهٔ بررسی محافظت</string>
+    <string name="share_warning_unconfigured">فقط ترافیکی که به اشتراک فرستاده شود محافظت می‌شود. دستگاه یا برنامه‌ای که روی آن تنظیم نشده باشد با اینترنت خودش بیرون می‌رود — اندروید به هیچ برنامه‌ای اجازه نمی‌دهد ترافیک دستگاه‌های متصل را اجباری از ⁨VPN⁩ عبور دهد.</string>
+    <string name="share_auth_toggle">الزام نام کاربری و رمز عبور</string>
+    <string name="share_auth_toggle_desc">اختیاری. دستگاه‌ها پیش از استفاده باید وارد شوند.</string>
+    <string name="share_auth_toggle_desc_home">اختیاری — در وای‌فای عمومی یا مشترک توصیه می‌شود. دستگاه‌ها پیش از استفاده باید وارد شوند.</string>
+    <string name="share_auth_edit">ویرایش</string>
+    <string name="share_auth_edit_title">نام کاربری و رمز اشتراک</string>
+    <string name="share_auth_bad_user">نام کاربری: ۱ تا ۶۴ نویسهٔ لاتین، بدون فاصله و «:».</string>
+    <string name="share_auth_short_pass">رمز باید دست‌کم ⁨%1$d⁩ نویسهٔ لاتین باشد.</string>
+    <string name="share_auth_saved">مشخصات ذخیره شد</string>
+    <string name="share_auth_save">ذخیره</string>
+    <string name="share_auth_cancel">انصراف</string>
+    <!-- 1.4.0-r6: اشتراک VPN -->
+    <string name="share_other_addresses">روی این اتصال‌ها هم در دسترس است (آدرس همان اتصالی را بزنید که دستگاه با آن وصل است)</string>
+    <string name="share_iface_hotspot">آدرس هات‌اسپات وای‌فای</string>
+    <string name="share_iface_usb">آدرس اشتراک ⁨USB⁩ / اترنت</string>
+    <string name="share_iface_bt">آدرس اشتراک بلوتوث</string>
+    <string name="share_iface_wifi">آدرس وای‌فای</string>
+    <string name="share_iface_eth">آدرس اترنت</string>
+    <string name="share_webrtc_title">‏⁨WebRTC⁩ (نشت ⁨IP⁩ واقعی در مرورگر)</string>
+    <string name="share_webrtc_desc">مرورگری که روی پروکسی تنظیم شده، ⁨WebRTC⁩ را همچنان از اینترنت خودش می‌فرستد و می‌تواند ⁨IP⁩ واقعی دستگاه را لو دهد. صفحهٔ تنظیم زیر را روی دستگاه دیگر باز کنید: ⁨WebRTC⁩ را زنده آزمایش می‌کند و برای کروم، اج، بریو و فایرفاکس قفل یک‌کلیکی می‌دهد. در گوشی‌ها از ⁨v2rayNG⁩ یا ⁨NekoBox⁩ در حالت ⁨VPN⁩ با آدرس ⁨SOCKS5⁩ استفاده کنید.</string>
+    <string name="share_setup_label">صفحهٔ تنظیم + آزمایش ⁨WebRTC⁩ (روی دستگاه دیگر باز کنید)</string>
+
+    <!-- Zero Trust: اول وارد شو، بعد وصل شو (۱.۴.۰-r9) -->
+    <string name="zt_need_team">برای ورود، یا برای دیدن اینکه این دستگاه از قبل عضو است یا نه، اول نام تیم را در بالا وارد کنید.</string>
+    <string name="zt_checking">در حال بررسی عضویت این دستگاه…</string>
+    <string name="zt_enrolled">این دستگاه از قبل عضو ⁨%1$s⁩ است. برای وصل شدن ورود لازم نیست.</string>
+    <string name="zt_forget">حذف عضویت این دستگاه</string>
+    <string name="zt_forget_desc">فقط عضویت ذخیره‌شده برای همین تیم را پاک می‌کند و اتصال بعدی دوباره عضو می‌شود. وقتی سازمان این دستگاه را حذف کرده، یا می‌خواهید با کاربر دیگری عضو شوید، از این استفاده کنید.</string>
+    <string name="zt_forget_title">عضویت حذف شود؟</string>
+    <string name="zt_forget_body">هویت ذخیره‌شدهٔ این گوشی در ⁨%1$s⁩ پاک می‌شود و اتصال بعدی به‌عنوان یک دستگاه تازه دوباره عضو سازمان می‌شود. ‏⁨WARP⁩ شخصی و تیم‌های دیگر دست نمی‌خورند. این کار برگشت‌پذیر نیست.</string>
+    <string name="zt_forget_ok">حذف</string>
+    <string name="zt_forget_done">عضویت حذف شد. اتصال بعدی دوباره عضو می‌شود.</string>
+    <string name="zt_forget_busy">اول اتصال را قطع کنید: تونلِ روشن از همین عضویت استفاده می‌کند.</string>
+    <string name="zt_disconnect_first">برای ورود یا تغییر عضویت، اتصال را قطع کنید.</string>
+    <string name="zt_cancel">انصراف</string>
+    <string name="zt_token_pending">هنوز عضو نیست. اتصال بعدی با توکن عضویتِ بالا عضو می‌شود.</string>
+    <string name="zt_service_pending">هنوز عضو نیست. اتصال بعدی با توکن سرویسِ بالا و بدون دخالت شما عضو می‌شود.</string>
+
+    <string name="zt_signin_none">هنوز وارد نشده‌اید. اگر الان وارد شوید، اتصال برای پرسیدن کد متوقف نمی‌شود. اگر این کار را نکنید، کد در حین اتصال پرسیده می‌شود.</string>
+    <string name="zt_signin_other">ورود ذخیره‌شده برای ⁨%1$s⁩ در تیم ⁨%2$s⁩ است، نه نشانی و تیمِ بالا. از آن استفاده نمی‌شود: دوباره وارد شوید.</string>
+    <string name="zt_signin_expired">اعتبار ورود شما تمام شده. پیش از وصل شدن دوباره وارد شوید، وگرنه کد در حین اتصال پرسیده می‌شود.</string>
+    <string name="zt_signin_ready">با ⁨%1$s⁩ وارد شده‌اید. اتصال بعدی بدون پرسیدن کد این دستگاه را عضو می‌کند.</string>
+    <plurals name="zt_signin_left_minutes">
+        <item quantity="one">ورود تا %1$d دقیقهٔ دیگر معتبر است: پیش از آن وصل شوید.</item>
+        <item quantity="other">ورود تا %1$d دقیقهٔ دیگر معتبر است: پیش از آن وصل شوید.</item>
+    </plurals>
+    <plurals name="zt_signin_left_hours">
+        <item quantity="one">ورود تا %1$d ساعت دیگر معتبر است.</item>
+        <item quantity="other">ورود تا %1$d ساعت دیگر معتبر است.</item>
+    </plurals>
+    <plurals name="zt_signin_left_days">
+        <item quantity="one">ورود تا %1$d روز دیگر معتبر است.</item>
+        <item quantity="other">ورود تا %1$d روز دیگر معتبر است.</item>
+    </plurals>
+    <string name="zt_signin_left_soon">اعتبار ورود کمتر از یک دقیقهٔ دیگر تمام می‌شود.</string>
+    <string name="zt_signin_left_nodate">این ورود تاریخ انقضا ندارد.</string>
+    <string name="zt_signin">ورود</string>
+    <string name="zt_signin_again">ورود دوباره</string>
+    <string name="zt_signin_desc">سازمان شما یک کد یک‌بارمصرف به نشانی بالا ایمیل می‌کند، شما آن را اینجا وارد می‌کنید، و نتیجه برای اتصال بعدی به‌صورت رمزشده روی همین گوشی نگه داشته می‌شود.</string>
+    <string name="zt_signin_need_email">اول ایمیل کاری خود را در بالا وارد کنید.</string>
+    <string name="zt_signout">فراموش کردن این ورود</string>
+    <string name="zt_signout_desc">ورود ذخیره‌شده را از این گوشی پاک می‌کند. عضویتی که این دستگاه از قبل دارد دست نمی‌خورد.</string>
+    <string name="zt_signed_in">وارد شدید. حالا وصل شوید تا عضو سازمان شوید.</string>
+    <string name="zt_signed_out">ورود فراموش شد.</string>
+
+    <string name="zt_dlg_title">ورود به ⁨%1$s⁩</string>
+    <string name="zt_dlg_sending">در حال درخواست از سازمان برای ارسال کد به ⁨%1$s⁩…</string>
+    <string name="zt_dlg_code_body">یک کد یک‌بارمصرف به ⁨%1$s⁩ ایمیل شد. برای ورود، آن را اینجا وارد کنید.</string>
+    <string name="zt_dlg_rejected">آن کد پذیرفته نشد. تلاش %1$d از %2$d.</string>
+    <string name="zt_dlg_exhausted">این کد هم پذیرفته نشد. یک کد تازه بخواهید و دوباره امتحان کنید.</string>
+    <string name="zt_dlg_resent">کد تازه در راه است. فقط جدیدترین کد کار می‌کند.</string>
+    <string name="zt_dlg_verifying">در حال بررسی کد…</string>
+    <string name="zt_dlg_resending">در حال درخواست کد تازه…</string>
+    <string name="zt_dlg_confirm">ورود</string>
+    <string name="zt_dlg_resend">ارسال کد تازه</string>
+    <plurals name="zt_dlg_resend_wait">
+        <item quantity="one">کد تازه تا %1$d ثانیهٔ دیگر</item>
+        <item quantity="other">کد تازه تا %1$d ثانیهٔ دیگر</item>
+    </plurals>
+    <string name="zt_dlg_retry">دوباره امتحان کنید</string>
+    <string name="zt_dlg_close">بستن</string>
+
+    <string name="zt_err_team">این نام تیم معتبر نیست. فقط خود نام را بنویسید، مثلاً ⁨acme⁩.</string>
+    <string name="zt_err_email">این نشانی ایمیل کامل نیست.</string>
+    <string name="zt_err_no_otp">این سازمان ورود با کد ایمیلی را ارائه نمی‌کند. از مدیر آن بپرسید، یا به‌جایش از توکن سرویس یا توکن عضویت استفاده کنید.</string>
+    <string name="zt_err_refused">کلادفلر درخواست را رد کرد (⁨HTTP %1$d⁩). نام تیم را بررسی کنید، و اینکه این نشانی اجازهٔ عضویت دارد.</string>
+    <string name="zt_err_no_nonce">کد فرستاده شد، ولی در پاسخ کلادفلر چیزی که ورود لازم دارد نبود. دوباره امتحان کنید؛ اگر تکرار شد، صفحهٔ ورود تغییر کرده است.</string>
+    <string name="zt_err_network">دسترسی به ⁨%1$s⁩ ممکن نشد (⁨%2$s⁩). اتصال را بررسی کنید و دوباره امتحان کنید. اگر کلادفلر فقط از راه پروکسی بالادستیِ شما در دسترس است، از ورود در اینجا بگذرید: کدی که در حین اتصال پرسیده می‌شود از همان پروکسی می‌گذرد.</string>
+    <string name="zt_err_expired_on_arrival">کلادفلر توکنی داد که از همین حالا منقضی است. درست بودن تاریخ و ساعت گوشی را بررسی کنید و دوباره وارد شوید.</string>
+    <string name="zt_err_store">وارد شدید، ولی این گوشی نتوانست نتیجه را به‌صورت امن ذخیره کند، پس چیزی ذخیره نشد.</string>
+
+    <string name="zt_svc_test">آزمایش توکن سرویس</string>
+    <string name="zt_svc_test_desc">دقیقاً همان‌طور که موتور موقع اتصال این کار را می‌کند، از سازمان شما یک توکن عضویت می‌خواهد. چیزی ذخیره نمی‌شود.</string>
+    <string name="zt_svc_need_both">اول شناسه و رمز کلاینت را هر دو وارد کنید.</string>
+    <string name="zt_svc_testing">در حال آزمایش…</string>
+    <string name="zt_svc_ok">پذیرفته شد: سازمان برای این توکن سرویس یک توکن عضویت صادر کرد.</string>
+    <string name="zt_svc_no_token">پذیرفته نشد (⁨HTTP %1$d⁩). شناسه و رمز را بررسی کنید، و اینکه این توکن سرویس اجازهٔ عضو کردن دستگاه (⁨Service Auth⁩) را دارد.</string>
 </resources>

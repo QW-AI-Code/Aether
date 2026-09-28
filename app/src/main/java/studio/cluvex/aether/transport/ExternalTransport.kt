@@ -1,7 +1,7 @@
 package studio.cluvex.aether.transport
 
 import android.net.VpnService
-import studio.cluvex.aether.core.TunnelConfig
+import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ExternalKind
 
@@ -16,41 +16,32 @@ object ExternalTransportFactory {
     /**
      * Builds the transport for [profile].
      *
-     * There is exactly ONE external transport left: Psiphon, always chained. The
-     * single-hop backends and the whole Tor runtime both went in 1.2.7
-     * (see [studio.cluvex.aether.model.TransportBackend]), so the wiring is fixed:
+     * 1.4.0: Psiphon runs INSIDE the engine (core 2.1.0, `--psiphon`), so the
+     * wiring is:
      *
      * ```
-     *   stage 1  Aether engine      -> SOCKS5 127.0.0.1:1819
-     *   stage 2  Psiphon            -> SOCKS5 127.0.0.1:1827, dialling via 1819
+     *   stage 1  Aether engine      -> SOCKS5 127.0.0.1:1819 (WARP, or Tor with --tor-only)
+     *            + engine's Psiphon -> SOCKS5 127.0.0.1:1827, dialling via stage 1
      *   front    PsiphonSocksFront  -> SOCKS5 127.0.0.1:1825   <- tun2socks talks here
      * ```
      *
-     * The transport returns the FRONT's port, never its own: the front is the
-     * only listener in this app that answers SOCKS5 `UDP ASSOCIATE`, which is the
-     * command hev-socks5-tunnel needs for every DNS query the device makes.
-     * Handing tun2socks the raw transport port is precisely the bug that left
-     * `Aether -> Psiphon` connected and unable to open a single site.
+     * The transport returns the FRONT's port, never Psiphon's own: the front is
+     * the only listener that answers SOCKS5 `UDP ASSOCIATE`, which hev needs for
+     * every DNS query the device makes.
      */
-    fun create(service: VpnService, profile: ConnectionProfile): ExternalTransport {
-        // Which local proxy Psiphon dials THROUGH. In `Aether -> Psiphon` that is
-        // the engine's WARP listener; in `Tor -> Psiphon` it is the engine's Tor
-        // listener, which in `--tor-only` mode happens to be the same port.
-        // Derived from the backend rather than hard-coded, because this is the one
-        // mistake in this file that would be invisible: the session would connect
-        // and only the exit address would be wrong.
-        val upstreamPort = profile.backend.torSocksPort ?: TunnelConfig.SOCKS_PORT
-        val upstream = "socks5://${TunnelConfig.SOCKS_HOST}:$upstreamPort"
-
-        return when (profile.backend.externalKind) {
+    fun create(
+        service: VpnService,
+        profile: ConnectionProfile,
+        engineAlive: () -> Boolean,
+    ): ExternalTransport =
+        when (profile.backend.externalKind) {
             ExternalKind.PSIPHON -> PsiphonTransport(
                 service = service,
                 region = profile.exitRegion,
-                upstreamProxy = upstream,
-                localSocksPort = TunnelConfig.PSIPHON_SOCKS_PORT,
-                frontPort = TunnelConfig.CHAIN_SOCKS_PORT,
+                engineAlive = engineAlive,
+                localSocksPort = PortLease.psiphon,
+                frontPort = PortLease.chain,
             )
             null -> error("${profile.backend} is not an external transport")
         }
-    }
 }

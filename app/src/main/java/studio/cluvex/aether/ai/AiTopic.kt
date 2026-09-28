@@ -328,7 +328,9 @@ enum class AiTopic(
         "Zero Trust enrolment",
         "Joins a Cloudflare Zero Trust ('WARP for Teams') organization instead of " +
             "consumer WARP, using a service token, an e-mail code or an enrolment " +
-            "token. For company devices - leave it off for normal personal use.",
+            "token. With the e-mail code the user can sign in beforehand on this page, " +
+            "so connecting needs no code; skipped, the code is asked for while " +
+            "connecting. For company devices - leave it off for normal personal use.",
     ),
     GATEWAY(
         "gateway",
@@ -494,17 +496,20 @@ enum class AiTopic(
     AI_MODEL(
         "aiModel",
         "Gemini model",
-        "Which Gemini model answers. The list is discovered from your own key, so it " +
-            "shows exactly the models that key may use. Flash models are fast and cheap; " +
-            "Pro models reason better and cost more quota.",
+        "Which Gemini model answers. The list is discovered from your own key and " +
+            "limited to supported Flash models. Default: Gemini 3.1 Flash-Lite, which has " +
+            "the highest free daily request limit and suits continuous use. Gemini 3.8 " +
+            "Flash, 3.7 Flash and 3.5 Flash-Lite answer faster but reach the daily limit " +
+            "sooner.",
     ),
     AI_AUTO_OPTIMIZE(
         "aiAutoOptimize",
         "Analyse the log on every connect",
-        "After each successful connect, sends a redacted excerpt of the connection log " +
-            "to Gemini, which reports what the operator's DPI appears to be doing and " +
-            "proposes matching settings. Nothing is changed without a tap unless " +
-            "automatic apply is also on.",
+        "Off by default. When on: after each successful connect, sends a redacted " +
+            "excerpt of the connection log to Gemini, which reports what the operator's " +
+            "DPI appears to be doing and proposes matching settings; and the AI chat " +
+            "receives the current redacted log with every question, so it can check the " +
+            "log itself. Nothing is changed without a tap unless automatic apply is also on.",
     ),
     AI_AUTO_APPLY(
         "aiAutoApply",
