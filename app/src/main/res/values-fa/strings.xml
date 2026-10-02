@@ -83,6 +83,17 @@
     <string name="about_port_note">همین نسخه: رابط کاربری، اجرای اندروید و پروتکل‌های ترکیبی</string>
     <string name="menu_open">باز کردن منو</string>
     <string name="advanced_open">باز کردن تنظیمات پیشرفته</string>
+    <!-- برچسب‌های دسترس‌پذیری برای دکمه‌های بدون متن (برای صفحه‌خوان) -->
+    <string name="a11y_connect">اتصال</string>
+    <string name="a11y_disconnect">قطع اتصال</string>
+    <string name="a11y_cancel_connecting">لغو اتصال</string>
+    <string name="a11y_back">بازگشت</string>
+    <string name="a11y_show_password">نمایش رمز عبور</string>
+    <string name="a11y_hide_password">پنهان کردن رمز عبور</string>
+    <string name="a11y_show_value">نمایش مقدار</string>
+    <string name="a11y_hide_value">پنهان کردن مقدار</string>
+    <string name="a11y_copy_value">کپی %1$s</string>
+    <string name="a11y_select_message">انتخاب پیام</string>
 
     <!-- Quick Settings tile -->
     <string name="qs_tile_label">اِتِر</string>
