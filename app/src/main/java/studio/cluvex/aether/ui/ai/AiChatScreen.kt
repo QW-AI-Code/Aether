@@ -71,6 +71,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.toggleableState
+import androidx.compose.ui.state.ToggleableState
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -219,7 +224,7 @@ fun AiChatScreen(
                             contentDescription = if (selecting) {
                                 stringResource(R.string.ai_chat_selection_cancel)
                             } else {
-                                null
+                                stringResource(R.string.a11y_back)
                             },
                         )
                     }
@@ -458,11 +463,28 @@ private fun MessageRow(
                 },
             )
             .combinedClickable(
+                // Long-press is the ONLY way into selection mode, and without a
+                // label a screen reader user is never told it exists. TalkBack
+                // lists it in the actions menu under this name.
+                onLongClickLabel = stringResource(R.string.a11y_select_message),
                 onLongClick = onToggle,
                 // In selection mode a tap toggles; outside it a tap on a bubble does
                 // nothing, which is why the click is a no-op rather than absent -
                 // an absent onClick would also remove the long-press ripple.
                 onClick = { if (selecting) onToggle() },
+            )
+            // ACCESSIBILITY: in selection mode the whole row IS the checkbox. It
+            // reads "<message text>, checkbox, checked/not checked" as one stop,
+            // instead of an unnamed checkbox sitting beside the message.
+            .then(
+                if (selecting) {
+                    Modifier.semantics {
+                        role = Role.Checkbox
+                        toggleableState = ToggleableState(selected)
+                    }
+                } else {
+                    Modifier
+                },
             )
             .padding(vertical = if (selecting) 4.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -470,7 +492,7 @@ private fun MessageRow(
         if (selecting) {
             Checkbox(
                 checked = selected,
-                onCheckedChange = { onToggle() },
+                onCheckedChange = null,
                 colors = CheckboxDefaults.colors(
                     checkedColor = AetherViolet,
                     uncheckedColor = OnDarkDim,
