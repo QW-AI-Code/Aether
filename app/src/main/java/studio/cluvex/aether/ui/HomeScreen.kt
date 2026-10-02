@@ -246,7 +246,11 @@ fun HomeScreen(
 
                     Spacer(Modifier.height(8.dp))
 
-                    ConnectButton(mode = mode, onClick = onToggleConnection)
+                    ConnectButton(
+                        mode = mode,
+                        onClick = onToggleConnection,
+                        stateText = stateTitle(state),
+                    )
 
                     // The button's box carries its own halo padding, so the gap
                     // under it is only there to separate two surfaces.

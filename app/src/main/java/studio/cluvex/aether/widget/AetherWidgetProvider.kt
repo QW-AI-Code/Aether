@@ -89,6 +89,16 @@ class AetherWidgetProvider : AppWidgetProvider() {
             // reading anything. setColorFilter(int) is on ImageView, so it is
             // reachable over RemoteViews' reflection call.
             views.setInt(R.id.widget_toggle, "setColorFilter", color)
+            // ACCESSIBILITY: the button used to say "Toggle connection" in every
+            // state. It now names what a tap will do, so it reads "Disconnect"
+            // once the tunnel is up (a tap while busy also tears it down).
+            views.setContentDescription(
+                R.id.widget_toggle,
+                context.getString(
+                    if (state.isConnected || state.isBusy) R.string.a11y_disconnect
+                    else R.string.a11y_connect,
+                ),
+            )
 
             // Power button toggles the tunnel.
             val toggle = PendingIntent.getBroadcast(
