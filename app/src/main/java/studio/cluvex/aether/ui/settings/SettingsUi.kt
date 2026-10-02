@@ -3,6 +3,8 @@ package studio.cluvex.aether.ui.settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -53,6 +55,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontFamily
@@ -60,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.R
 import studio.cluvex.aether.ai.AiTopic
 import studio.cluvex.aether.ui.ai.AiTopicIcon
 import studio.cluvex.aether.ui.theme.Navy700
@@ -157,7 +162,9 @@ fun SettingsScaffold(
                             // AutoMirrored: the arrow has to point the other way
                             // in Persian, and a hand-picked ArrowBack does not.
                             imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = null,
+                            // Was null: TalkBack announced an unnamed button on
+                            // every settings screen.
+                            contentDescription = stringResource(R.string.a11y_back),
                         )
                     }
                 },
@@ -333,6 +340,15 @@ private fun BaseRow(
      * so the row metrics with hints off are byte-identical to 1.2.8's.
      */
     aiTopic: AiTopic? = null,
+    /**
+     * ACCESSIBILITY: set for rows that carry a Switch or RadioButton. The row
+     * itself becomes the ONE toggleable/selectable node (title + summary + state
+     * read together) and the trailing control is drawn without its own click
+     * handler. Left as it was, the control stayed a separate stop, so a screen
+     * reader said the title on one swipe and an unnamed "switch" on the next.
+     */
+    stateRole: Role? = null,
+    stateValue: Boolean = false,
     trailing: @Composable () -> Unit = {},
 ) {
     val alpha = if (enabled) 1f else 0.45f
@@ -362,7 +378,23 @@ private fun BaseRow(
         modifier = Modifier
             .fillMaxWidth()
             .then(
-                if (onClick != null && enabled) {
+                if (stateRole != null && onClick != null) {
+                    if (stateRole == Role.RadioButton) {
+                        Modifier.selectable(
+                            selected = stateValue,
+                            enabled = enabled,
+                            role = stateRole,
+                            onClick = onClick,
+                        )
+                    } else {
+                        Modifier.toggleable(
+                            value = stateValue,
+                            enabled = enabled,
+                            role = stateRole,
+                            onValueChange = { onClick() },
+                        )
+                    }
+                } else if (onClick != null && enabled) {
                     Modifier.clickable(onClick = onClick)
                 } else {
                     Modifier
@@ -520,10 +552,12 @@ fun SettingsSwitchRow(
     enabled = enabled,
     onClick = { onCheckedChange(!checked) },
     aiTopic = aiTopic,
+    stateRole = Role.Switch,
+    stateValue = checked,
 ) {
     Switch(
         checked = checked,
-        onCheckedChange = onCheckedChange,
+        onCheckedChange = null,
         enabled = enabled,
         colors = SwitchDefaults.colors(
             checkedThumbColor = Color.White,
@@ -651,10 +685,14 @@ fun <T> SettingsChoiceRow(
                                 },
                                 shape = RoundedCornerShape(SheetItemRadius),
                             )
-                            .clickable {
-                                onSelect(option)
-                                open = false
-                            }
+                            .selectable(
+                                selected = isSelected,
+                                role = Role.RadioButton,
+                                onClick = {
+                                    onSelect(option)
+                                    open = false
+                                },
+                            )
                             .heightIn(min = 54.dp)
                             .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -823,10 +861,12 @@ fun SettingsRadioRow(
     enabled = enabled,
     onClick = onSelect,
     aiTopic = aiTopic,
+    stateRole = Role.RadioButton,
+    stateValue = selected,
 ) {
     RadioButton(
         selected = selected,
-        onClick = onSelect,
+        onClick = null,
         enabled = enabled,
         colors = RadioButtonDefaults.colors(
             selectedColor = MaterialTheme.colorScheme.primary,

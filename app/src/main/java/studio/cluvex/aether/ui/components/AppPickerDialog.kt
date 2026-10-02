@@ -2,7 +2,7 @@ package studio.cluvex.aether.ui.components
 
 import android.content.Context
 import android.content.Intent
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -115,19 +116,24 @@ fun AppPickerDialog(
                                 Row(
                                     modifier = Modifier
                                         .fillMaxWidth()
-                                        .clickable {
-                                            if (isChecked) chosen.remove(app.packageName)
-                                            else chosen.add(app.packageName)
-                                        }
+                                        // One node: "<app name>, <package>, checkbox,
+                                        // checked". The Checkbox below no longer has
+                                        // its own click handler, so it is not a
+                                        // separate, unnamed stop for the screen reader.
+                                        .toggleable(
+                                            value = isChecked,
+                                            role = Role.Checkbox,
+                                            onValueChange = {
+                                                if (it) chosen.add(app.packageName)
+                                                else chosen.remove(app.packageName)
+                                            },
+                                        )
                                         .padding(vertical = 6.dp),
                                     verticalAlignment = Alignment.CenterVertically,
                                 ) {
                                     Checkbox(
                                         checked = isChecked,
-                                        onCheckedChange = {
-                                            if (it) chosen.add(app.packageName)
-                                            else chosen.remove(app.packageName)
-                                        },
+                                        onCheckedChange = null,
                                     )
                                     Column(modifier = Modifier.padding(start = 8.dp)) {
                                         Text(
