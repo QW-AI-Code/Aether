@@ -89,6 +89,17 @@
     <string name="about_port_note">This edition: the GUI, the Android runtime and the chained transports</string>
     <string name="menu_open">Open menu</string>
     <string name="advanced_open">Open advanced settings</string>
+    <!-- Accessibility labels for icon-only controls (read by TalkBack) -->
+    <string name="a11y_connect">Connect</string>
+    <string name="a11y_disconnect">Disconnect</string>
+    <string name="a11y_cancel_connecting">Cancel connecting</string>
+    <string name="a11y_back">Back</string>
+    <string name="a11y_show_password">Show password</string>
+    <string name="a11y_hide_password">Hide password</string>
+    <string name="a11y_show_value">Show value</string>
+    <string name="a11y_hide_value">Hide value</string>
+    <string name="a11y_copy_value">Copy %1$s</string>
+    <string name="a11y_select_message">Select message</string>
 
     <!-- Quick Settings tile -->
     <string name="qs_tile_label">Aether</string>

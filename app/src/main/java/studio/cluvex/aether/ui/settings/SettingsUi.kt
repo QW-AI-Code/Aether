@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontFamily
@@ -60,6 +61,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.R
 import studio.cluvex.aether.ai.AiTopic
 import studio.cluvex.aether.ui.ai.AiTopicIcon
 import studio.cluvex.aether.ui.theme.Navy700
@@ -157,7 +159,9 @@ fun SettingsScaffold(
                             // AutoMirrored: the arrow has to point the other way
                             // in Persian, and a hand-picked ArrowBack does not.
                             imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = null,
+                            // Was null: TalkBack announced an unnamed button on
+                            // every settings screen.
+                            contentDescription = stringResource(R.string.a11y_back),
                         )
                     }
                 },

@@ -33,7 +33,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.R
 
 enum class ButtonMode { IDLE, BUSY, CONNECTED, ERROR }
 
@@ -68,6 +77,12 @@ fun ConnectButton(
     mode: ButtonMode,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    /**
+     * The human-readable connection state ("Connecting…", "Connected"), read out
+     * by screen readers as the button's state. Optional so other callers keep
+     * compiling; HomeScreen passes the same title it shows under the button.
+     */
+    stateText: String? = null,
 ) {
     val connected = mode == ButtonMode.CONNECTED
     val busy = mode == ButtonMode.BUSY
@@ -83,6 +98,21 @@ fun ConnectButton(
     val spin = if (busy) rememberSpin() else null
 
     val interaction = remember { MutableInteractionSource() }
+
+    // ACCESSIBILITY: this button is a bare disc with a glyph, so without this it
+    // reaches TalkBack as an unnamed "button". The label follows what a tap will
+    // DO right now, which is why it flips to "Disconnect" the moment the tunnel
+    // is up (and to "Cancel connecting" while it is still coming up - a tap in
+    // the busy state tears the attempt down, see MainActivity.toggleConnection).
+    // The live region makes the screen reader announce that flip by itself
+    // instead of waiting for the user to swipe back onto the button.
+    val actionLabel = stringResource(
+        when (mode) {
+            ButtonMode.CONNECTED -> R.string.a11y_disconnect
+            ButtonMode.BUSY -> R.string.a11y_cancel_connecting
+            ButtonMode.IDLE, ButtonMode.ERROR -> R.string.a11y_connect
+        },
+    )
 
     Box(contentAlignment = Alignment.Center, modifier = modifier.size(BUTTON_BOX)) {
         // Soft glowing halo behind the button.
@@ -115,8 +145,15 @@ fun ConnectButton(
                 .clickable(
                     interactionSource = interaction,
                     indication = null,
+                    role = Role.Button,
                     onClick = onClick,
-                ),
+                )
+                .semantics {
+                    contentDescription = actionLabel
+                    role = Role.Button
+                    if (stateText != null) stateDescription = stateText
+                    liveRegion = LiveRegionMode.Polite
+                },
         ) {
             // Progress sweep while busy.
             if (spin != null) {

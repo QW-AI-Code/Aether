@@ -219,7 +219,7 @@ fun AiChatScreen(
                             contentDescription = if (selecting) {
                                 stringResource(R.string.ai_chat_selection_cancel)
                             } else {
-                                null
+                                stringResource(R.string.a11y_back)
                             },
                         )
                     }
@@ -458,6 +458,10 @@ private fun MessageRow(
                 },
             )
             .combinedClickable(
+                // Long-press is the ONLY way into selection mode, and without a
+                // label a screen reader user is never told it exists. TalkBack
+                // lists it in the actions menu under this name.
+                onLongClickLabel = stringResource(R.string.a11y_select_message),
                 onLongClick = onToggle,
                 // In selection mode a tap toggles; outside it a tap on a bubble does
                 // nothing, which is why the click is a no-op rather than absent -
