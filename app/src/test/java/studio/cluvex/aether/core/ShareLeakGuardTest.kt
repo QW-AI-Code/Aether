@@ -147,7 +147,7 @@ class ShareLeakGuardTest {
     }
 
     @Test
-    fun `r10 share pages are Persian-first, bilingual, locked down and never echo raw input`() {
+    fun `r11 share pages are Vietnamese-first, trilingual, locked down and never echo raw input`() {
         val setup = SharePages.setupPage(
             "192.168.1.5\"><script>",
             10811,
@@ -155,7 +155,10 @@ class ShareLeakGuardTest {
             mode = ShareLeakGuard.Mode.MOBILE_HOTSPOT,
             authRequired = true,
         )
-        assertTrue(setup.contains("lang=\"fa\" dir=\"rtl\""))
+        assertTrue(setup.contains("lang=\"vi\" dir=\"ltr\""))
+        assertTrue(setup.contains("data-lang=\"vi\""))
+        assertTrue(setup.contains("data-set-lang=\"vi\""))
+        assertTrue(setup.contains("data-set-lang=\"fa\""))
         assertTrue(setup.contains("data-set-lang=\"en\""))
         assertTrue(setup.contains("Content-Security-Policy"))
         assertTrue(setup.contains("192.168.1.5&quot;&gt;&lt;script&gt;"))
