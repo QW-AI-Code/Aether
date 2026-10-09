@@ -1,0 +1,765 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Aether</string>
+    <string name="tagline">Tự do, chỉ với một chạm</string>
+
+    <string name="advanced">Cài đặt nâng cao</string>
+
+    <string name="protocol">Giao thức</string>
+    <string name="protocol_auto">Thông minh</string>
+    <string name="protocol_masque">MASQUE</string>
+    <string name="protocol_wireguard">WireGuard</string>
+    <string name="protocol_gool">WARP×2</string>
+
+    <string name="scan_mode">Chế độ quét</string>
+    <string name="scan_turbo">Turbo</string>
+    <string name="scan_balanced">Cân bằng</string>
+    <string name="scan_thorough">Kỹ lưỡng</string>
+    <string name="scan_stealth">Ẩn mình</string>
+    <string name="scan_ironclad">Vững chắc</string>
+
+    <string name="ip_version">Phiên bản IP</string>
+    <string name="ip_v4">IPv4</string>
+    <string name="ip_v6">IPv6</string>
+    <string name="ip_both">Cả hai</string>
+
+    <string name="quick_reconnect">Kết nối lại nhanh</string>
+    <string name="quick_reconnect_desc">Kết nối lại nhanh hơn sau khi rớt mạng</string>
+    <string name="masque_http2">MASQUE qua HTTP/2</string>
+    <string name="masque_http2_desc">Dùng HTTP/2 cho giao thức truyền tải MASQUE</string>
+
+    <string name="state_idle">Đã ngắt kết nối</string>
+    <string name="state_launching">Đang khởi động engine…</string>
+    <string name="state_connecting">Đang kết nối…</string>
+    <string name="state_connected">Đã kết nối</string>
+    <string name="state_reconnecting">Đang kết nối lại…</string>
+    <string name="state_disconnecting">Đang ngắt kết nối…</string>
+    <string name="state_error">Kết nối thất bại</string>
+
+    <string name="tap_to_connect">Chạm để kết nối an toàn</string>
+    <string name="tap_to_disconnect">Chạm để ngắt kết nối</string>
+    <string name="secure_via">Đường hầm an toàn qua %1$s</string>
+    <string name="reconnect_attempt">Lần thử %1$d / %2$d</string>
+
+    <string name="notif_channel">Trạng thái VPN</string>
+    <string name="notif_channel_desc">Hiển thị trạng thái kết nối Aether</string>
+    <string name="notif_title">Aether</string>
+    <!--
+      1.3.1, issue #20: the notification's action BUTTON used to be labelled with
+      state_disconnecting ("Disconnecting…"), so the ongoing notification read
+      "Disconnecting…" the entire time the tunnel was up and users reported it as
+      a stuck status. A button is an instruction, not a state.
+    -->
+    <string name="notif_action_disconnect">Ngắt kết nối</string>
+
+    <string name="err_engine_timeout">Engine không mở proxy nội bộ kịp thời.</string>
+    <string name="err_engine_died">Engine đã dừng đột ngột.</string>
+    <string name="err_proxy_ports">Không mở được cổng proxy nội bộ — có thể đang bị ứng dụng khác dùng.</string>
+
+    <!-- Connection meta: IP + flag + timer -->
+    <string name="ip_your_label">IP của bạn</string>
+    <string name="ip_server_label">IP máy chủ</string>
+    <string name="ip_checking">Đang kiểm tra IP…</string>
+    <string name="ip_unavailable">Không có IP</string>
+    <string name="connected_for">Đã kết nối được</string>
+
+    <!-- Diagnostics panel -->
+    <string name="diag_title">Chẩn đoán &amp; nhật ký</string>
+    <string name="diag_subtitle">Trạng thái trực tiếp của mọi thành phần đường hầm</string>
+    <string name="diag_run">Chạy kiểm tra</string>
+    <string name="diag_copy">Sao chép nhật ký</string>
+    <string name="diag_clear">Xóa</string>
+    <string name="diag_copied">Đã sao chép nhật ký</string>
+    <string name="diag_all_ok">Mọi kiểm tra đều đạt — lưu lượng sẽ thông suốt</string>
+    <string name="diag_problem">Phát hiện sự cố — xem mục kiểm tra bị lỗi</string>
+    <string name="diag_idle">Chạy kiểm tra để xác minh kết nối</string>
+    <string name="diag_empty_logs">Chưa có nhật ký. Hãy kết nối hoặc chạy kiểm tra.</string>
+    <!-- 1.2.9-r3 (audit §6): a log that is safe to paste in public. -->
+    <string name="diag_copy_redacted">Sao chép nhật ký đã ẩn địa chỉ (an toàn để chia sẻ)</string>
+    <string name="diag_copied_redacted">Đã sao chép nhật ký đã ẩn — IP và định danh đã được xóa</string>
+    <string name="diag_log_sealed">Nhật ký lưu trên thiết bị này được mã hóa bằng khóa thiết bị.</string>
+
+    <!-- About panel -->
+    <string name="about_title">Giới thiệu</string>
+    <string name="about_subtitle">Ghi công, liên kết &amp; những gì bản dựng này bổ sung</string>
+    <string name="about_version">Phiên bản %1$s</string>
+    <string name="about_original_title">Aether core — Cluvex Studio</string>
+    <string name="about_original_note">Engine gốc mà ứng dụng này chạy trên đó</string>
+    <string name="about_port_title">Android app &amp; GUI — QW-AI-Code</string>
+    <string name="about_port_note">Phiên bản này: GUI, runtime Android và các giao thức truyền tải chuỗi</string>
+    <string name="menu_open">Mở menu</string>
+    <string name="advanced_open">Mở cài đặt nâng cao</string>
+
+    <!-- Quick Settings tile -->
+    <string name="qs_tile_label">Aether</string>
+
+    <!-- Share VPN panel -->
+    <string name="share_title">Chia sẻ VPN</string>
+    <string name="share_subtitle">Dùng điện thoại này làm proxy cho laptop hoặc điện thoại khác</string>
+    <string name="share_toggle">Chia sẻ trên mạng này</string>
+    <string name="share_toggle_desc">Mở proxy nội bộ để các thiết bị trên cùng Wi‑Fi hoặc điểm phát sóng dùng</string>
+    <string name="share_http_label">Proxy HTTP — nhập trong cài đặt proxy hệ thống</string>
+    <string name="share_socks_label">Proxy SOCKS5 — cho ứng dụng hỗ trợ SOCKS</string>
+    <string name="share_copy">Sao chép địa chỉ</string>
+    <string name="share_copied">Đã sao chép địa chỉ</string>
+    <string name="share_need_connect">Hãy kết nối VPN trước — chia sẻ sẽ định tuyến các thiết bị khác qua đường hầm của điện thoại này.</string>
+    <string name="share_starting">Đang bắt đầu chia sẻ… nếu quá vài giây, hãy tắt rồi bật lại công tắc.</string>
+    <string name="share_need_wifi">Hãy tham gia mạng Wi‑Fi hoặc bật điểm phát sóng để chia sẻ.</string>
+    <string name="share_howto">Trên thiết bị kia (cùng mạng), mở cài đặt proxy và nhập một trong các địa chỉ sau:</string>
+    <string name="share_warning">Chỉ các thiết bị trong mạng nội bộ này nhập đúng tên người dùng và mật khẩu bên dưới mới dùng được proxy. Lưu lượng của chúng vẫn đi qua IP thoát của bạn, nên chỉ chia sẻ với thiết bị bạn tin tưởng.</string>
+    <!-- 1.2.9-r3 (audit F-5): the shared listeners authenticate remote clients. -->
+    <string name="share_auth_note">Thiết bị kia phải đăng nhập proxy bằng các thông tin sau:</string>
+    <string name="share_user_label">Tên người dùng proxy</string>
+    <string name="share_pass_label">Mật khẩu proxy</string>
+    <string name="share_pass_rotate">Tạo mật khẩu mới</string>
+    <string name="share_pass_rotated">Đã tạo mật khẩu proxy mới</string>
+
+    <string name="traffic_download">Tải xuống</string>
+    <string name="traffic_upload">Tải lên</string>
+    <string name="traffic_total">Tổng %1$s</string>
+
+    <!-- Obfuscation (Amnezia) -->
+    <string name="noize_title">Ngụy trang (Amnezia)</string>
+    <string name="noize_desc">Chèn dữ liệu rác + bắt tay giả để DPI không nhận diện được đường hầm</string>
+    <string name="noize_off">Tắt</string>
+    <string name="noize_light">Nhẹ</string>
+    <string name="noize_firewall">Tường lửa</string>
+    <string name="noize_balanced">Cân bằng</string>
+    <string name="noize_gfw">GFW</string>
+    <string name="noize_aggressive">Mạnh</string>
+
+    <!-- Endpoint selection / manual range -->
+    <string name="endpoint_mode">Điểm cuối</string>
+    <string name="endpoint_auto">Quét tự động</string>
+    <string name="endpoint_peer">IP thủ công</string>
+    <string name="endpoint_range">Dải tùy chỉnh</string>
+    <string name="manual_peer_label">Điểm cuối (ip:port)</string>
+    <string name="manual_peer_hint">vd: 162.159.192.1:443</string>
+    <string name="manual_range_label">Dải IP cần quét</string>
+    <string name="manual_range_hint">vd: 8.6.112.0/24, 188.114.96.0/24</string>
+    <string name="manual_range_help">Engine CHỈ quét (các) dải bạn nhập. Chấp nhận 8.6.112.x, 8.6.112.0/24 hoặc một IP đơn. Phân tách nhiều dải bằng dấu phẩy.</string>
+
+    <!-- Transport tuning -->
+    <string name="keepalive_label">Keepalive (giây)</string>
+    <string name="keepalive_default">Mặc định</string>
+    <string name="fragment_title">Phân mảnh TLS</string>
+    <string name="fragment_desc">Chia nhỏ bắt tay TLS để qua mặt DPI</string>
+    <string name="ech_title">Encrypted Client Hello</string>
+    <string name="ech_desc">Ẩn tên đích (SNI) khỏi DPI</string>
+    <string name="mtu_label">MTU</string>
+    <string name="mtu_desc">Giá trị thấp hơn (1280) an toàn hơn trên mạng di động</string>
+
+    <!-- Proxy mode + split tunneling -->
+    <string name="proxy_mode_title">Chế độ proxy (không dùng VPN hệ thống)</string>
+    <string name="proxy_mode_desc">Chạy proxy SOCKS5/HTTP nội bộ thay vì định tuyến toàn bộ thiết bị</string>
+    <string name="proxy_endpoints_hint">Địa chỉ cố định — nhập một trong các địa chỉ này vào cài đặt proxy của ứng dụng kia:</string>
+    <string name="proxy_socks_label">Proxy SOCKS5</string>
+    <string name="proxy_http_label">Proxy HTTP</string>
+    <string name="split_mode">Chia tách đường hầm</string>
+    <string name="split_off">Tắt</string>
+    <string name="split_include">Chỉ các app đã chọn</string>
+    <string name="split_exclude">Trừ các app đã chọn</string>
+    <string name="split_select_apps">Chọn ứng dụng (%1$d)</string>
+    <string name="apps_dialog_title">Chọn ứng dụng</string>
+    <string name="apps_search_hint">Tìm ứng dụng</string>
+    <string name="apps_done">Xong</string>
+    <string name="apps_loading">Đang tải ứng dụng…</string>
+    <string name="section_transport">Truyền tải &amp; chống DPI</string>
+    <string name="section_routing">Định tuyến</string>
+
+    <!-- Readiness gating + settings reset (v1.2.1) -->
+    <string name="state_verifying">Đang xác minh kết nối…</string>
+    <string name="state_analyzing">Đang phân tích mạng của bạn (chế độ Thông minh)…</string>
+    <string name="err_auto_failed">Chế độ Thông minh đã thử mọi chiến lược nhưng không kết nối được trên mạng này. Hãy thử chọn giao thức thủ công.</string>
+    <string name="err_protocol_failed">Giao thức này không kết nối được trên mạng này, dù đã ngụy trang. Hãy thử chế độ Thông minh hoặc giao thức khác.</string>
+    <string name="err_selftest">Đường hầm đã mở nhưng tự kiểm tra đầu-cuối thất bại. Vui lòng thử lại.</string>
+    <string name="section_reset">Đặt lại</string>
+    <string name="reset_settings">Khôi phục mọi cài đặt về mặc định</string>
+    <string name="reset_done">Đã khôi phục cài đặt mặc định</string>
+
+    <!-- In-app updater (v1.2.1) -->
+    <!-- 1.2.2: the in-app updater strings (update_available/update_action/
+         update_downloading/update_failed/update_allow_install/update_dismiss)
+         were removed together with the updater itself. Updates now come only
+         from the officially signed GitHub Release page. -->
+
+
+
+    <!-- About: engine/core version (parity with the Windows edition) -->
+    <string name="about_core_version">Phiên bản Engine (core) %1$s</string>
+    <string name="about_patch_level">Bản dựng: %1$s</string>
+    <!-- 1.2.9-r3 (audit F-1 mitigation): is this the build we published? -->
+    <string name="about_signer">Chứng chỉ ký: %1$s</string>
+    <string name="about_signer_ok">Khớp với chứng chỉ Aether chính thức.</string>
+    <string name="about_signer_bad">Bản này được ký bởi người khác, không phải dự án Aether. Ứng dụng VPN nhìn thấy toàn bộ lưu lượng của bạn — hãy cài lại từ trang phát hành chính thức.</string>
+    <string name="about_signer_unpinned">Bản dựng này không nhúng sẵn vân tay chính thức nên không thể kiểm tra tại đây.</string>
+    <string name="about_signer_unknown">Hệ thống không báo cáo chứng chỉ ký cho ứng dụng này.</string>
+    <string name="about_apk_hash">APK SHA-256: %1$s</string>
+    <string name="about_apk_hash_loading">đang tính…</string>
+    <string name="about_verify_hint">So sánh mã băm này với mã được công bố cho bản tải của bạn trên trang phát hành chính thức trước khi tin tưởng bản cập nhật.</string>
+
+    <!-- Engine v1.5.0 features -->
+    <string name="section_zerotrust">Zero Trust (tổ chức)</string>
+    <string name="team_auth_label">Phương thức đăng ký</string>
+    <string name="team_auth_off">Tắt</string>
+    <string name="team_auth_service">Token dịch vụ</string>
+    <string name="team_auth_email">Mã email</string>
+    <string name="team_auth_token">Token đăng ký</string>
+    <string name="team_auth_desc">Tham gia tổ chức Cloudflare Zero Trust thay vì WARP cá nhân. Để tắt khi dùng bình thường.</string>
+    <string name="team_label">Tên nhóm</string>
+    <string name="team_hint">acme</string>
+    <string name="team_help">Chỉ tên — acme nghĩa là acme.cloudflareaccess.com.</string>
+    <string name="access_id_label">ID máy khách</string>
+    <string name="access_secret_label">Mật khẩu máy khách</string>
+    <string name="access_email_label">Email công việc</string>
+    <string name="access_token_label">Token đăng ký</string>
+    <string name="access_secret_help">Lưu mã hóa bằng khóa phần cứng và truyền cho engine ngoài luồng, không bao giờ qua dòng lệnh.</string>
+    <string name="gateway_title">Dùng Gateway của tổ chức</string>
+    <string name="gateway_desc">Gửi HTTP/HTTPS qua proxy lọc của tổ chức bạn. Thêm một chặng và cho phép tổ chức ghi lại hoạt động duyệt web của bạn — tắt trừ khi bắt buộc.</string>
+
+    <string name="section_routes">Quy tắc định tuyến</string>
+    <string name="route_block_label">Không bao giờ kết nối (chặn)</string>
+    <string name="route_block_hint">ads.example.com, port:25</string>
+    <string name="route_direct_label">Bỏ qua đường hầm (trực tiếp)</string>
+    <string name="bypass_iran_title">Bỏ qua các trang Iran</string>
+    <string name="bypass_iran_desc">Các trang Iran (.ir và dải IP Iran) mở trực tiếp, ngoài đường hầm. Tạm dừng khi đang chia sẻ.</string>
+    <string name="block_ads_title">Chặn quảng cáo và trình theo dõi</string>
+    <string name="block_ads_desc">Chặn tên miền quảng cáo và theo dõi (danh sách HaGeZi Light, làm mới hàng tuần qua đường hầm).</string>
+    <string name="route_direct_hint">private, bank.example.com</string>
+    <string name="routes_help">Phân tách bằng dấu phẩy. Hỗ trợ example.com, full:, keyword:, regexp:, 10.0.0.0/8, port:25 và private. Chặn được kiểm tra trước, rồi đến trực tiếp.</string>
+
+    <string name="dns_label">DNS trong đường hầm</string>
+    <string name="dns_hint">1.1.1.1, 1.0.0.1</string>
+    <string name="dns_help">Để trống để dùng mặc định của engine (1.1.1.1, 1.0.0.1). Mục không hợp lệ sẽ bị bỏ qua.</string>
+    <!-- Feature merge: home-screen widget, onboarding, ping, crash report -->
+    <string name="widget_desc">Kết nối hoặc ngắt Aether chỉ với một chạm</string>
+    <string name="widget_toggle_desc">Bật/tắt kết nối</string>
+    <string name="ping_label">Ping</string>
+    <string name="ping_measuring">Đang đo…</string>
+    <string name="ping_unavailable">Không có</string>
+    <string name="ping_hint">Chạm để đo lại</string>
+    <string name="onboarding_skip">Bỏ qua</string>
+    <string name="onboarding_next">Tiếp</string>
+    <string name="onboarding_start">Bắt đầu</string>
+    <string name="onboarding_title_1">Chào mừng đến với Aether</string>
+    <string name="onboarding_body_1">Đường hầm nhanh, an toàn, vượt kiểm duyệt. Một chạm kết nối bạn qua MASQUE, WireGuard hoặc WARP×2.</string>
+    <string name="onboarding_title_2">Chọn giao thức thông minh</string>
+    <string name="onboarding_body_2">Chế độ Thông minh phân tích mạng của bạn và chọn giao thức thực sự hiệu quả, kèm ngụy trang chống DPI khi cần.</string>
+    <string name="onboarding_title_3">Riêng tư từ thiết kế</string>
+    <string name="onboarding_body_3">Không tài khoản, không nhật ký, không trình theo dõi. Android sẽ xin quyền VPN khi bạn kết nối lần đầu; đó là hệ thống giữ quyền kiểm soát cho bạn.</string>
+    <string name="crash_title">Aether đã dừng đột ngột</string>
+    <string name="crash_subtitle">Chi tiết bên dưới do trình xử lý sự cố lưu lại. Bạn có thể sao chép vào báo cáo lỗi.</string>
+    <string name="crash_copy">Sao chép chi tiết</string>
+    <string name="crash_copied">Đã sao chép</string>
+    <string name="crash_dismiss">Bỏ qua</string>
+    <!-- 1.2.4: feature parity -->
+    <string name="section_security">Bảo mật &amp; ổn định</string>
+    <string name="kill_switch_title">Kill Switch</string>
+    <string name="kill_switch_desc">Chặn mọi lưu lượng nếu đường hầm rớt đột ngột, để không có gì lọt ra ngoài VPN</string>
+    <string name="strict_kill_switch_title">Kill Switch nghiêm ngặt</string>
+    <string name="strict_kill_switch_desc">Tiếp tục chặn cả sau khi ngắt kết nối thủ công, cho đến khi bạn gỡ bỏ</string>
+    <string name="state_killswitch">Kill Switch đang hoạt động - lưu lượng bị chặn</string>
+    <string name="ipv6_leak_title">Chống rò rỉ IPv6</string>
+    <string name="ipv6_leak_desc">Định tuyến lưu lượng IPv6 qua đường hầm nữa</string>
+    <string name="smart_reconnect_title">Kết nối lại thông minh</string>
+    <string name="smart_reconnect_desc">Dừng và báo lỗi sau một số lần khởi động lại thất bại giới hạn</string>
+    <string name="reconnect_limit_label">Số lần thử kết nối lại tối đa</string>
+    <string name="section_engine_tuning">Tinh chỉnh engine</string>
+    <string name="fragment_size_label">Khoảng cỡ phân mảnh</string>
+    <string name="fragment_size_hint">16-32</string>
+    <string name="fragment_delay_label">Khoảng trễ phân mảnh (ms)</string>
+    <string name="fragment_delay_hint">2-10</string>
+    <string name="no_data_check_title">Bỏ qua kiểm tra dữ liệu</string>
+    <string name="no_data_check_desc">Bỏ qua probe dữ liệu đầu-cuối của engine sau khi kết nối</string>
+    <string name="tls_groups_label">Nhóm TLS</string>
+    <string name="tls_groups_hint">X25519:P-256</string>
+    <string name="validate_secs_label">Số giây xác thực (0 = mặc định)</string>
+    <string name="reconnect_secs_label">Số giây kết nối lại (0 = mặc định)</string>
+    <string name="secs_hint">0</string>
+    <string name="no_profile_retry_title">Không thử profile khác</string>
+    <string name="no_profile_retry_desc">Không chuyển sang các profile WireGuard dự phòng</string>
+    <string name="core_log_level_label">Mức log của core</string>
+    <string name="blocked_select_apps">Ứng dụng bị chặn (%1$d)</string>
+    <string name="blocked_apps_desc">Ứng dụng bị chặn sẽ không có mạng khi VPN bật. Kích hoạt cầu lọc tích hợp.</string>
+    <!-- 1.2.4: desktop-parity info row under the IP badge -->
+    <string name="meta_protocol">Giao thức</string>
+    <string name="meta_latency">Độ trễ</string>
+
+    <!-- Core 1.7.0 features retained in 1.2.7 -->
+    <string name="route_sniff_title">Khớp quy tắc tên miền sau đường hầm</string>
+    <string name="route_sniff_desc">Đọc tên trang từ bắt tay TLS/HTTP, để các quy tắc tên miền ở trên cũng hoạt động trên Android, nơi engine chỉ nhìn thấy địa chỉ IP.</string>
+    <string name="route_sniff_ms_label">Thời gian chờ tên (ms)</string>
+    <string name="route_sniff_ms_hint">400</string>
+    <string name="section_upstream">Proxy upstream (chuỗi)</string>
+    <string name="upstream_label">Proxy upstream</string>
+    <string name="upstream_hint">socks5://127.0.0.1:1080</string>
+    <string name="upstream_help">Quay số ra ngoài qua proxy đang chạy trên điện thoại này. socks5://host:port truyền mọi giao thức; http://host:port chỉ truyền MASQUE qua HTTP/2, đã được bật sẵn cho bạn. Thông tin đăng nhập có thể kèm dạng user:pass@host:port và được truyền riêng cho engine, không bao giờ qua dòng lệnh. Để trống để kết nối trực tiếp.</string>
+    <string name="reprovision_title">Thay thế danh tính bị từ chối</string>
+    <string name="reprovision_desc">Nếu Cloudflare ngừng chấp nhận danh tính thiết bị đã lưu, tự động đăng ký danh tính mới thay vì giữ đường hầm kết nối được nhưng không truyền dữ liệu.</string>
+    <!-- 1.2.7: the animated ping-strength meter on the latency slide -->
+    <string name="meta_ping_strength">Cường độ ping</string>
+    <string name="ping_quality_excellent">Tuyệt vời</string>
+    <string name="ping_quality_good">Tốt</string>
+    <string name="ping_quality_fair">Tạm được</string>
+    <string name="ping_quality_poor">Kém</string>
+    <string name="ping_quality_measuring">Đang đo</string>
+    <string name="ping_quality_offline">Chưa kết nối</string>
+
+    <!-- 1.2.7: the settings screen, the in-app language switch and the
+         cached-endpoint budget -->
+    <string name="quick_settings_title">Cài đặt đường hầm</string>
+    <string name="quick_settings_subtitle">Kết nối, truyền tải, DNS và proxy upstream</string>
+    <string name="settings_title">Cài đặt</string>
+    <string name="settings_subtitle">Kết nối, ứng dụng, bảo mật và chẩn đoán</string>
+    <string name="settings_locked_hint">Ngắt kết nối để thay đổi cài đặt đường hầm. Chúng được trao cho engine khi khởi động.</string>
+    <string name="action_cancel">Hủy</string>
+
+    <string name="cat_group_tunnel">Đường hầm</string>
+    <string name="cat_group_device">Thiết bị này</string>
+    <string name="cat_group_app">Ứng dụng</string>
+    <string name="cat_group_tuning">Tinh chỉnh</string>
+    <string name="cat_group_antidpi">Chống DPI</string>
+    <string name="cat_group_recovery">Khôi phục</string>
+    <string name="section_core">Lõi</string>
+
+    <string name="cat_connection">Kết nối</string>
+    <string name="cat_connection_desc">Backend mạng, quốc gia thoát, giao thức và quét</string>
+    <string name="cat_transport_desc">Ngụy trang, điểm cuối, MTU và chống DPI</string>
+    <string name="cat_dns_routing">DNS &amp; quy tắc định tuyến</string>
+    <string name="cat_dns_routing_desc">Bộ phân giải trong đường hầm, danh sách chặn và bỏ qua</string>
+    <string name="cat_upstream_desc">Quay số ra ngoài qua proxy đang chạy trên điện thoại này</string>
+    <string name="cat_apps">Ứng dụng &amp; proxy</string>
+    <string name="cat_apps_desc">Chế độ proxy, chia tách đường hầm và ứng dụng bị chặn</string>
+    <string name="cat_security_desc">Kill switch, chống rò rỉ IPv6 và kết nối lại</string>
+    <string name="cat_engine_desc">Phân mảnh, nhóm TLS và mức log của core</string>
+    <string name="cat_zerotrust_desc">Tham gia tổ chức Cloudflare Zero Trust</string>
+    <string name="cat_appearance_desc">Chọn tiếng Anh hoặc tiếng Ba Tư, hoặc theo điện thoại</string>
+
+    <string name="backend_label">Backend mạng</string>
+    <string name="backend_help_aether">Một chặng qua engine Aether/WARP tích hợp. Nhanh nhất.</string>
+    <string name="backend_help_chained">Hai chặng: Aether kết nối trước, rồi Psiphon tạo đường hầm xuyên qua. IP thoát của bạn thành IP của Psiphon, nên các trang chặn địa chỉ Aether/WARP sẽ mở lại được.</string>
+    <string name="exit_country_label">Quốc gia thoát</string>
+    <string name="exit_help_aether">Aether/WARP tự chọn lối thoát anycast.</string>
+    <string name="exit_help_psiphon">Psiphon coi đây là bộ lọc vùng cứng. Nếu không thiết lập được ở đó, ứng dụng sẽ tự thử lại với lối thoát tự động.</string>
+
+    <string name="fast_endpoint_title">Chỉ dùng lại điểm cuối nhanh</string>
+    <string name="fast_endpoint_desc">Kết nối lại nhanh bỏ qua quét với điểm cuối đã dùng tốt lần trước. Khi bật, điểm cuối còn được kiểm tra tốc độ, và điểm chậm sẽ được thay bằng quét mới thay vì giảm một nửa tốc độ tải lên/xuống cả phiên.</string>
+
+    <string name="language_title">Ngôn ngữ</string>
+    <string name="language_desc">Áp dụng cho toàn bộ ứng dụng, gồm thông báo, ô Cài đặt nhanh và widget màn hình chính. Tiếng Ba Tư chuyển bố cục sang phải-trái.</string>
+    <string name="language_system">Theo điện thoại</string>
+    <string name="language_english">English</string>
+    <string name="language_persian">فارسی</string>
+
+    <string name="reset_confirm_title">Đặt lại mọi cài đặt?</string>
+    <string name="reset_confirm_body">Mọi cài đặt trở về mặc định, gồm dải điểm cuối, quy tắc định tuyến và chi tiết đăng ký.</string>
+    <string name="reset_confirm_ok">Đặt lại</string>
+    <!-- =================================================================
+         1.2.9 - Gemini AI features.
+         Every key below MUST also exist in values-fa/strings.xml. A missing
+         Persian entry does not fail the build, it silently ships an English
+         sentence into a right-to-left screen, which is how a localised app
+         rots one string at a time.
+         ================================================================= -->
+    <string name="ai_title">Aether AI</string>
+    <string name="ai_subtitle">Gemini trong ứng dụng: giải thích, tinh chỉnh và trò chuyện</string>
+    <string name="ai_badge">AI</string>
+    <string name="cat_ai">Trợ lý</string>
+    <string name="cat_ai_desc">Giải thích mọi cài đặt, đọc log, đề xuất tinh chỉnh</string>
+
+    <!-- key -->
+    <string name="ai_section_key">Khóa API Gemini</string>
+    <string name="ai_key_label">Khóa API</string>
+    <string name="ai_key_hint">AIza…</string>
+    <string name="ai_key_help">Lấy khóa miễn phí từ Google AI Studio (aistudio.google.com/apikey). Khóa được lưu trên điện thoại này niêm phong bằng khóa phần cứng, chỉ gửi cho Google, và chỉ qua đường hầm. Đặt lại cài đặt ứng dụng không xóa khóa này.</string>
+    <string name="ai_key_show">Hiện</string>
+    <string name="ai_key_hide">Ẩn</string>
+    <string name="ai_key_paste">Dán</string>
+    <string name="ai_key_forget">Quên khóa và danh sách model</string>
+    <string name="ai_key_forgotten">Đã xóa khóa API</string>
+    <string name="ai_test">Kiểm tra kết nối API</string>
+    <string name="ai_test_hint">Kiểm tra khóa và liệt kê các model khóa được dùng</string>
+    <string name="ai_test_running">Đang kiểm tra…</string>
+    <string name="ai_test_ok">Hoạt động — %1$d model khả dụng qua %2$s</string>
+    <string name="ai_test_failed">Không hoạt động: %1$s</string>
+
+    <!-- models -->
+    <string name="ai_section_models">Các model khóa của bạn dùng được</string>
+    <string name="ai_model_label">Model</string>
+    <string name="ai_models_count">%1$d khả dụng</string>
+    <string name="ai_models_empty">Chưa phát hiện model nào. Hãy kết nối rồi chạy kiểm tra API: danh sách đọc từ chính khóa của bạn nên chỉ hiện đúng các model khóa được phép dùng.</string>
+    <string name="ai_models_refresh">Làm mới danh sách model</string>
+
+    <!-- behaviour -->
+    <string name="ai_section_behaviour">Hành vi</string>
+    <string name="ai_auto_optimize">Phân tích log mỗi lần kết nối</string>
+    <string name="ai_auto_optimize_desc">Mặc định tắt. Khi bật, Gemini đọc đoạn trích đã ẩn thông tin của log phiên này sau mỗi lần kết nối thành công và đề xuất cài đặt phù hợp, và chat AI có thể tự đọc log hiện tại mỗi khi bạn hỏi. Địa chỉ và định danh được che trước khi gửi đi.</string>
+    <string name="ai_auto_apply">Tự áp dụng đề xuất</string>
+    <string name="ai_auto_apply_desc">Ghi đề xuất thẳng vào cài đặt thay vì chờ bạn duyệt. Mặc định tắt, vì cài đặt tự thay đổi khó phân biệt với lỗi.</string>
+    <string name="ai_hints">Hiện biểu tượng AI cạnh các tùy chọn</string>
+    <string name="ai_hints_desc">Chạm biểu tượng cạnh bất kỳ cài đặt nào và Gemini sẽ giải thích nó là gì, để làm gì và cách dùng.</string>
+
+    <!-- chat -->
+    <string name="ai_chat_open">Trò chuyện với Gemini</string>
+    <string name="ai_chat_subtitle">Hỏi bất cứ gì, hoặc nói điều bạn muốn đổi</string>
+    <string name="ai_chat_model">Model: %1$s</string>
+    <string name="ai_chat_empty_title">Chào, tôi là Aether AI</string>
+    <string name="ai_chat_empty_body">Tôi có thể giải thích mọi cài đặt trong ứng dụng này, đọc log của phiên này và đề xuất tinh chỉnh, hoặc chỉ trả lời câu hỏi.</string>
+    <string name="ai_chat_suggest_1">Sao kết nối của tôi chậm lúc này?</string>
+    <string name="ai_chat_suggest_2">Nên dùng giao thức nào trên mạng di động?</string>
+    <string name="ai_chat_suggest_3">Giải thích MTU và chọn giúp tôi cái tốt nhất</string>
+    <string name="ai_chat_suggest_4">Làm đường hầm khó bị phát hiện hơn</string>
+    <string name="ai_chat_input_hint">Hỏi Aether AI…</string>
+    <string name="ai_chat_send">Gửi</string>
+    <string name="ai_chat_stop">Dừng</string>
+    <string name="ai_chat_clear">Xóa cuộc trò chuyện</string>
+    <string name="ai_chat_thinking">Đang nghĩ…</string>
+    <string name="ai_chat_copy">Sao chép câu trả lời</string>
+
+    <!-- explain sheet -->
+    <string name="ai_explain_title">Đây là gì?</string>
+    <string name="ai_explain_loading">Đang hỏi Gemini…</string>
+    <string name="ai_explain_failed">%1$s</string>
+    <string name="ai_explain_retry">Thử lại</string>
+
+    <!-- advisor -->
+    <string name="ai_advisor_title">Cố vấn cài đặt</string>
+    <string name="ai_advisor_subtitle">Mạng của bạn đang làm gì, và cài đặt phù hợp</string>
+    <string name="ai_advisor_run">Phân tích phiên này</string>
+    <string name="ai_advisor_running">Đang đọc log và suy nghĩ…</string>
+    <string name="ai_advisor_idle">Gemini đọc đoạn trích đã ẩn thông tin của log phiên này — thông tin đăng nhập đã xóa, địa chỉ công khai đã che — và đề xuất tinh chỉnh. Không có gì thay đổi cho đến khi bạn nhấn Áp dụng.</string>
+    <string name="ai_advisor_failed">Không thể phân tích: %1$s</string>
+    <string name="ai_advisor_dpi">Mạng của bạn dường như đang làm gì</string>
+    <string name="ai_advisor_confidence">Độ tin cậy: %1$s</string>
+    <string name="ai_advisor_no_changes">Không có gì đáng đổi — phiên này trông ổn.</string>
+    <string name="ai_confidence_high">cao</string>
+    <string name="ai_confidence_medium">trung bình</string>
+    <string name="ai_confidence_low">thấp</string>
+
+    <!-- proposals -->
+    <string name="ai_changes_title">Cài đặt đề xuất (%1$d)</string>
+    <string name="ai_apply">Áp dụng</string>
+    <string name="ai_applied">Đã áp dụng</string>
+    <string name="ai_apply_note">Cài đặt đường hầm được trao cho engine khi khởi động, nên các thay đổi có hiệu lực từ lần kết nối tới.</string>
+    <string name="ai_dismiss">Bỏ qua</string>
+
+    <!-- gate -->
+    <string name="ai_gate_no_key">Thêm khóa API Gemini của bạn để dùng các tính năng AI.</string>
+    <string name="ai_gate_no_model">Chưa chọn model nào. Chạy kiểm tra API và một model sẽ được chọn cho bạn.</string>
+    <string name="ai_gate_disconnected">AI cần đường hầm. Hãy kết nối trước: các endpoint AI của Google không truy cập trực tiếp được, và lưu lượng của chính Aether cố ý đi ngoài đường hầm nó tạo.</string>
+    <string name="ai_gate_wrong_mode">Chuyển backend mạng sang Aether → Psiphon. Các endpoint AI của Google từ chối địa chỉ thoát Aether/WARP thuần, đó là lý do AI chỉ chạy ở chế độ chuỗi.</string>
+    <string name="ai_gate_fix_key">Mở cài đặt AI</string>
+    <string name="ai_gate_fix_mode">Mở cài đặt kết nối</string>
+
+    <!-- errors -->
+    <!--
+      1.3.1, issues #31 and #11. Google retired the old "standard" Gemini API keys
+      during 2026: unrestricted ones stopped working on 19 June 2026 and ALL
+      standard keys are rejected from September 2026. Keys created in AI Studio
+      since then are "auth keys" bound to a Cloud service account. A key that used
+      to work and now does not is far more likely to be a retired key than a typo,
+      so the message says so first.
+    -->
+    <string name="ai_error_bad_key">Khóa API của bạn bị từ chối. Google đã khai tử khóa Gemini “chuẩn” cũ vào 2026 — nếu khóa này từng hoạt động, hãy tạo khóa mới trong Google AI Studio và dán vào.</string>
+    <string name="ai_error_rate_limit">Đã chạm giới hạn tốc độ hoặc hạn mức. Chờ một lúc rồi thử lại.</string>
+    <string name="ai_error_no_model">Model đó không khả dụng với khóa của bạn. Làm mới danh sách model.</string>
+    <string name="ai_error_transport">Không tới được Google qua đường hầm.</string>
+    <string name="ai_error_protocol">Không đọc được câu trả lời của Google.</string>
+    <string name="ai_error_blocked">Gemini từ chối trả lời câu đó.</string>
+
+    <!-- small print -->
+    <string name="ai_privacy_title">Những gì rời khỏi thiết bị của bạn</string>
+    <string name="ai_privacy_body">Chỉ những gì yêu cầu cần: câu hỏi của bạn, tên cài đặt bạn hỏi, và giá trị tinh chỉnh hiện tại. Phân tích log bổ sung đoạn trích đã ẩn thông tin của log, đã xóa thông tin đăng nhập và che địa chỉ công khai tới /16. Mọi thứ đi tới Google qua đường hầm, không bao giờ trực tiếp.</string>
+    <string name="ai_scope_title">AI được phép đổi gì</string>
+    <string name="ai_scope_body">Chỉ tinh chỉnh: giao thức, ngụy trang, MTU, phân mảnh, DNS, hành vi kết nối lại và tương tự. AI không bao giờ được đổi backend mạng, proxy upstream, quy tắc định tuyến, ứng dụng nào được đưa vào đường hầm, hay bất kỳ thông tin đăng nhập nào — những thứ đó quyết định lưu lượng nào được bảo vệ, nên do bạn giữ.</string>
+
+    <!-- ===== 1.2.9 AI additions ===================================== -->
+    <string name="ai_error_server">Dịch vụ AI của Google không trả lời được. Lỗi bên phía họ, không phải kết nối của bạn.</string>
+    <string name="ai_error_truncated">Câu trả lời bị cắt trước khi xong. Hãy thử lại.</string>
+    <string name="ai_advisor_unreadable">Model không trả lời đúng định dạng ứng dụng cần, hai lần liên tiếp. Hãy thử lại, hoặc chọn model khác.</string>
+    <string name="ai_advisor_empty_log">Chưa có gì trong log kết nối để phân tích. Hãy kết nối trước, rồi chạy phân tích.</string>
+    <string name="ai_models_none_allowed">Khóa của bạn tới được Google, nhưng không model nào ứng dụng hỗ trợ khả dụng với nó. Các model được hỗ trợ:\n%1$s</string>
+    <string name="ai_models_filtered">Chỉ hiện các model Flash được hỗ trợ</string>
+    <string name="ai_models_help">Chỉ liệt kê các model Flash nhanh, trả lời ổn định với khóa miễn phí. Gemini 3.1 Flash-Lite là mặc định vì có hạn mức miễn phí mỗi ngày cao nhất; các model Flash mới hơn trả lời nhanh hơn nhưng chạm hạn mức ngày sớm hơn. Các model Ảnh, video, âm thanh và Pro bị ẩn.</string>
+    <!-- 1.4.0-r5: per-model guidance in the model picker -->
+    <string name="ai_model_desc_default">Mặc định · hạn mức ngày cao nhất, tốt nhất cho dùng hằng ngày liên tục</string>
+    <string name="ai_model_desc_fast">Rất nhanh · chạm hạn mức miễn phí ngày sớm hơn</string>
+    <string name="ai_model_desc_alt">Dòng Flash-Lite · hạn mức ngày cao (bí danh/bản xem trước)</string>
+    <string name="ai_applied_dialog_title">Đã lưu cho lần kết nối tới</string>
+    <string name="ai_applied_dialog_body">Cài đặt mới đã được lưu, nhưng đường hầm đang chạy với cài đặt cũ. Cài đặt đường hầm được trao cho engine khi khởi động, nên hãy ngắt rồi kết nối lại để có hiệu lực.</string>
+    <string name="ai_applied_dialog_ok">Đã hiểu</string>
+    <string name="ai_explain_ask_chat">Chưa hiểu? Hỏi trợ lý</string>
+    <string name="ai_chat_retry">Thử lại</string>
+    <string name="ai_chat_edit">Sửa</string>
+    <string name="ai_chat_delete">Xóa</string>
+    <string name="ai_chat_edited">đã sửa</string>
+    <string name="ai_chat_cancel">Hủy</string>
+    <string name="ai_chat_edit_title">Sửa tin nhắn</string>
+    <string name="ai_chat_edit_send">Gửi lại</string>
+    <string name="ai_chat_edit_note">Mọi thứ sau tin nhắn này sẽ bị xóa và trợ lý sẽ trả lời câu hỏi đã sửa.</string>
+    <string name="ai_chat_selected">Đã chọn %1$d</string>
+    <string name="ai_chat_select_all">Chọn tất cả</string>
+    <string name="ai_chat_selection_cancel">Hủy chọn</string>
+    <string name="ai_chat_delete_selected">Xóa mục đã chọn</string>
+    <string name="ai_chat_delete_title">Xóa %1$d tin nhắn?</string>
+    <string name="ai_chat_delete_body">Không thể hoàn tác. Các tin nhắn đã xóa sẽ không còn được gửi cho trợ lý làm ngữ cảnh.</string>
+    <string name="ai_chat_delete_confirm">Xóa</string>
+
+    <!-- Tor (1.3.0, engine core 2.0.0) -->
+    <string name="protocol_mim">MASQUE×2</string>
+    <string name="state_tor_bootstrap">Đang dựng mạch Tor…</string>
+    <string name="state_tor_bootstrap_pct">Đang tới mạng Tor… %1$d%%</string>
+    <string name="state_tor_bridges">Tor đang bị chặn — đang thử bridge…</string>
+    <string name="err_tor_blocked">Tor dừng ở %1$d%% và không tới được mạng Tor. Đây là biểu hiện của mạng lọc Tor. Bật bridge trong Cài đặt → Tor, hoặc dùng chế độ Aether → Tor: Tor khi đó được quay số qua đường hầm, nơi nhà mạng không nhìn thấy hay chặn được.</string>
+    <string name="err_tor_no_progress">Engine đã khởi động nhưng Tor không báo tiến triển nào tới mạng Tor. Kiểm tra kết nối đã lên, rồi thử chế độ Aether → Tor, chế độ này dựng Tor trong đường hầm.</string>
+    <string name="err_tor_no_stream">Tor đã tới mạng nhưng không mở được kết nối nào qua nó. Hãy thử lại — hoặc dùng chế độ Aether → Tor nếu lặp lại.</string>
+    <string name="err_tor_bootstrap">Tor không tới được mạng Tor kịp thời. Trên mạng chặn Tor, hãy dùng chế độ Aether → Tor: kết nối khi đó được dựng trong đường hầm, nơi không thể bị chặn.</string>
+    <string name="backend_help_tor">Chỉ Tor, không có đường hầm Aether. Lối thoát của bạn là nút thoát Tor và lưu lượng qua ba relay — chậm nhất nhưng riêng tư nhất trong các chế độ. Tor phải tự tới mạng Tor ở đây, nên dùng bridge khi bị chặn.</string>
+    <string name="backend_help_aether_tor">Hai chặng: Aether kết nối trước, rồi Tor được dựng BÊN TRONG đường hầm đó. Mạng bạn đang dùng chỉ thấy giao thức ngụy trang của Aether, không bao giờ thấy Tor — nên đây là chế độ dùng nơi Tor bị chặn. Lối thoát của bạn là nút thoát Tor.</string>
+    <string name="backend_help_tor_psiphon">Ba chặng: Tor trước, rồi Psiphon quay số qua nó. IP thoát của bạn là của Psiphon, đi từ địa chỉ Tor, nên các trang chặn nút thoát Tor mở lại được trong khi địa chỉ của bạn vẫn ở sau Tor. Chế độ chậm nhất.</string>
+    <string name="exit_help_tor">Tor tự chọn nút thoát, và mỗi mạch một nút mới. Không cài đặt nào ghim nó theo quốc gia được.</string>
+    <string name="section_tor">Tor</string>
+    <string name="tor_bridges_title">Bridge</string>
+    <string name="tor_bridges_desc">Cách Tor tới mạng khi bị chặn.</string>
+    <string name="tor_bridges_not_needed">Không cần ở chế độ này: Tor được quay số qua đường hầm Aether, nên mạng bạn đang dùng không bao giờ thấy nó.</string>
+    <string name="tor_bridges_auto">Tự động</string>
+    <string name="tor_bridges_always">Luôn luôn</string>
+    <string name="tor_bridges_off">Tắt</string>
+    <string name="tor_bridge_lines_title">Dòng bridge riêng</string>
+    <string name="tor_bridge_lines_hint">obfs4 192.0.2.55:38114 &lt;FINGERPRINT&gt; cert=… iat-mode=0</string>
+    <string name="tor_bridge_lines_desc">Mỗi dòng một bridge, đúng định dạng bridges.torproject.org cấp. Để trống để dùng bridge ứng dụng tải cho quốc gia của bạn. Dòng ghi giao thức ứng dụng không có sẽ bị bỏ qua.</string>
+    <string name="tor_group_footer">Tor chỉ truyền TCP — trong mọi ứng dụng, trên mọi nền tảng. Aether trả lời DNS qua TCP trong Tor và loại bỏ UDP khác, nên ứng dụng hỗ trợ QUIC sẽ rớt về TCP. Điều này bình thường và không rò rỉ gì: UDP bị loại không đi đâu cả, càng không vòng qua Tor. Hãy chuẩn bị độ trễ cao hơn rõ rệt, và lần kết nối đầu sẽ lâu — Tor tải danh bạ trước khi dựng mạch.</string>
+
+    <!-- Tor reverse chain (1.3.0) -->
+    <string name="backend_help_tor_aether">Chuỗi ngược: Tor trước, rồi đường hầm Aether dựng BÊN TRONG nó. Lối thoát của bạn là địa chỉ WARP — giống Aether thuần — nhưng mạng bạn đang dùng chỉ thấy Tor, và không thể biết có đường hầm VPN nào tồn tại. Dùng nơi Cloudflare/WARP bị chặn hoặc bóp băng thông nhưng Tor vẫn qua được. Truyền UDP bình thường, khác các chế độ thoát Tor.</string>
+    <string name="protocol_forced_reverse">Cố định MASQUE qua HTTP/2 ở chế độ này. Tor chỉ truyền TCP và các endpoint WireGuard của WARP chỉ trả lời trên UDP, nên engine từ chối WireGuard và WARP×2 ở đây.</string>
+
+    <!-- Tor tuning (1.3.0) -->
+    <string name="tor_country_title">Quốc gia bridge</string>
+    <string name="tor_country_auto">Tự phát hiện</string>
+    <string name="tor_country_desc">Quốc gia mà bridgedb cấp bridge cho. Phát hiện hỏi mạng bạn đang ở đâu, và đó là yêu cầu dễ thất bại nhất ở đây.</string>
+    <string name="tor_direct_secs_title">Độ kiên nhẫn bootstrap</string>
+    <string name="tor_direct_auto">Tự động (75 giây)</string>
+    <string name="tor_direct_secs_value">%1$d giây</string>
+    <string name="tor_direct_secs_desc">Thời gian Tor thử đường trực tiếp trước khi rớt về bridge. Rút ngắn nơi Tor chắc chắn bị chặn.</string>
+    <string name="tor_check_title">Kiểm tra khả năng tới</string>
+    <string name="tor_check_hint">check.torproject.org:443</string>
+    <string name="tor_check_desc">Địa chỉ Tor phải tới được trước khi bootstrap được tính là hoạt động. Chỉ đổi nếu bootstrap cứ thất bại trên Tor trông vẫn ổn — đích mặc định tự nó cũng bị chặn trên một số mạng.</string>
+
+    <!-- Zero Trust e-mail login code (1.3.1, issue #12) -->
+    <string name="zt_code_title">Nhập mã đăng nhập</string>
+    <string name="zt_code_body">Tổ chức của bạn đã gửi mã một lần tới %1$s qua email. Nhập vào đây để hoàn tất tham gia.</string>
+    <string name="zt_code_body_noaddr">Tổ chức của bạn đã gửi cho bạn mã một lần qua email. Nhập vào đây để hoàn tất tham gia.</string>
+    <string name="zt_code_retry">Mã đó không được chấp nhận. Lần thử %1$d / %2$d.</string>
+    <string name="zt_code_label">Mã đăng nhập</string>
+    <plurals name="zt_code_wait">
+        <item quantity="one">Kết nối đang chờ việc này. Nó sẽ bỏ sau %1$d giây.</item>
+        <item quantity="other">Kết nối đang chờ việc này. Nó sẽ bỏ sau %1$d giây.</item>
+    </plurals>
+    <string name="zt_code_send">Gửi mã</string>
+    <string name="zt_code_dismiss">Để sau</string>
+
+    <!-- Zero Trust enrolment token -->
+    <string name="access_token_how">Đăng nhập tại https://&lt;team&gt;.cloudflareaccess.com/warp trong trình duyệt, rồi sao chép giá trị sau token= và dán vào đây. Hoặc chọn Mã email ở trên để đăng nhập trong ứng dụng.</string>
+    <string name="access_token_bad">Đây không giống token. Hãy sao chép toàn bộ giá trị sau token= trên trang đăng ký.</string>
+    <string name="access_token_expired">Token này đã hết hạn. Đăng nhập lại và dán token mới.</string>
+    <plurals name="access_token_ok">
+        <item quantity="one">Token hợp lệ, hết hạn sau %1$d ngày.</item>
+        <item quantity="other">Token hợp lệ, hết hạn sau %1$d ngày.</item>
+    </plurals>
+    <string name="access_token_ok_soon">Token hợp lệ nhưng hết hạn trong chưa đầy một ngày.</string>
+    <string name="access_token_nodate">Token hợp lệ. Nó không mang ngày hết hạn.</string>
+
+    <!-- Which Zero Trust sign-in methods actually work -->
+    <string name="team_auth_email_note">Đăng nhập bên dưới trước khi kết nối, và lần kết nối sẽ chạy không cần bạn. Nếu không, mã sẽ được hỏi trong lúc kết nối: tổ chức gửi email mã và hộp thoại hiện ra. Hãy giữ ứng dụng mở lúc đó — kết nối chờ tối đa năm phút.</string>
+    <string name="team_auth_service_note">Chạy không cần bạn: engine tự đổi client ID và secret lấy token.</string>
+
+    <!-- Free MTU entry (1.3.1, issue #33) -->
+    <string name="mtu_custom_label">Hoặc nhập MTU</string>
+    <string name="mtu_custom_help">Mọi giá trị từ 1280 đến 9000. Hạ xuống nếu một số trang hoặc Telegram đứng hình trên đường hầm vẫn đang lên.</string>
+    <string name="mtu_custom_range">Nhập số từ %1$d đến %2$d.</string>
+
+    <!-- Battery optimisation hint (1.3.1, issue #5) -->
+    <string name="battery_title">Cho phép chạy nền</string>
+    <string name="battery_desc">Android vẫn được phép tạm dừng Aether. Đó là nguyên nhân rớt đường hầm khi tắt màn hình — vẫn báo đã kết nối nhưng không tải gì. Chạm để miễn trừ.</string>
+
+    <!-- Custom ECHConfigList (1.3.1, issue #44) -->
+    <string name="ech_config_label">ECHConfigList (base64, tùy chọn)</string>
+    <string name="ech_config_help">Để trống để engine tự tải. Dán ECHConfigList base64 để dùng thay — hữu ích nơi mạng của bạn chặn việc tải mặc định. Đặt tên miền khác, như v2rayNG làm, cần thay đổi engine và không thể ở đây.</string>
+
+    <!--
+      "About" feature lists (1.3.1).
+
+      These were two hardcoded Kotlin lists in ui/AboutPanel.kt, so the whole
+      About card stayed English no matter what language the app was set to. The
+      upstream list carried a comment saying it was "deliberately English-only,
+      mirroring the upstream README"; that is overruled on request - a Persian
+      user reading an all-English card cannot tell the two projects apart, which
+      is the one thing this card exists to do.
+    -->
+    <string-array name="about_original_features">
+        <item>Tự phát hiện điểm cuối với xác thực mặt phẳng dữ liệu đầu-cuối</item>
+        <item>MASQUE (HTTP/3 &amp; HTTP/2) với phân mảnh ClientHello TLS tùy chọn</item>
+        <item>WireGuard và WireGuard lồng nhau (WARP-in-WARP \"gool\")</item>
+        <item>Ngụy trang lưu lượng cho mạng DPI nặng</item>
+        <item>Tự kết nối lại với kết nối nhanh tới gateway tốt gần nhất</item>
+        <item>Proxy SOCKS5 nội bộ — CLI cho Linux, Windows, macOS và Android (Termux)</item>
+    </string-array>
+
+    <string-array name="about_port_improvements">
+        <item>Thêm giao thức chuỗi Aether → Psiphon — IP thoát nước ngoài thật sau chặng đầu ngụy trang của Aether</item>
+        <item>Chế độ chuỗi sửa địa chỉ thoát Iran mà Aether thuần cấp, và mở các dịch vụ AI (Gemini và các dịch vụ khác) từ chối nó</item>
+        <item>Bộ chọn quốc gia thoát có cờ cho chế độ chuỗi, cộng mặt trước SOCKS hỗ trợ UDP để DNS và QUIC hoạt động qua nó</item>
+        <item>Ứng dụng Android gốc đầy đủ — upstream chỉ có CLI (không có GUI Android hay Windows)</item>
+        <item>VPN toàn hệ thống một chạm qua Android VpnService — không cần cài proxy thủ công</item>
+        <item>Nhúng hev-socks5-tunnel (tun2socks) chạy trong tiến trình trên luồng native</item>
+        <item>Huy hiệu \"IP của bạn / IP máy chủ\" trực tiếp với định vị địa lý đa nhà cung cấp</item>
+        <item>Tự kiểm tra kết nối từng bước với log chẩn đoán bền vững sau sự cố</item>
+        <item>Tự kết nối lại với backoff và timeout kết nối theo từng chế độ quét</item>
+        <item>Điều khiển giao thức, chế độ quét và phiên bản IP trong UI Material 3 (English + فارسی)</item>
+        <item>Ô Cài đặt nhanh — kết nối/ngắt ngay từ thanh thông báo</item>
+        <item>Chia sẻ VPN qua Wi-Fi/hotspot — proxy HTTP + SOCKS5 tích hợp cho laptop &amp; điện thoại khác</item>
+        <item>Cài đặt nâng cao truy cập ngay từ màn hình chính</item>
+        <item>APK phát hành ký theo từng ABI tự động từ GitHub Actions</item>
+        <item>Phiên bản engine hiện trong Giới thiệu, để core đi kèm luôn kiểm chứng được</item>
+        <item>Zero Trust (WARP cho tổ chức), quy tắc định tuyến chia tách và DNS tùy chỉnh trong đường hầm</item>
+    </string-array>
+    <!-- 1.3.1: replaces meta_protocol. The row names the whole path now, not just
+         the engine's transport - see TransportBackend.pipelineLabel. -->
+    <string name="meta_pipeline">Kết nối</string>
+
+    <string name="state_smart_plus_racing">Đang thử nhiều tuyến cùng lúc…</string>
+
+    <string name="protocol_auto_race">Chế độ Thông minh thử hai tuyến cùng lúc ở đây và nhớ tuyến nào hiệu quả trên mạng này, nên lần kết nối tới sẽ nhanh.</string>
+    <string name="protocol_auto_ladder">Chế độ Thông minh thử từng tuyến một trên backend này. Chạy đua cần backend Aether thuần và chọn điểm cuối tự động.</string>
+    <!-- 1.4.0-r5: VPN sharing rewrite -->
+    <string name="share_status_live">Đang chia sẻ · %1$d kết nối</string>
+    <string name="share_off_hint">Bật chia sẻ, chọn chế độ, và các địa chỉ cần nhập trên thiết bị kia sẽ hiện ở đây.</string>
+    <string name="share_mode_title">Chế độ chia sẻ</string>
+    <string name="share_mode_home">Wi‑Fi gia đình</string>
+    <string name="share_mode_home_desc">Điện thoại và các thiết bị trên cùng router</string>
+    <string name="share_mode_mobile">Điểm phát di động</string>
+    <string name="share_mode_mobile_desc">Các thiết bị tham gia hotspot của điện thoại này (dữ liệu di động)</string>
+    <string name="share_mode_detected">● Đã phát hiện mạng</string>
+    <string name="share_mode_not_detected">○ Chưa hoạt động</string>
+    <string name="share_needs_reconnect">Quy tắc định tuyến Trực tiếp (bỏ qua) của bạn đang hoạt động khi phiên này bắt đầu. Để đảm bảo không rò rỉ IP, chia sẻ LAN vẫn đóng: hãy ngắt rồi kết nối lại (các quy tắc tự tạm dừng khi chia sẻ).</string>
+    <string name="share_port_busy">Cổng 10810/10811 đang bị ứng dụng khác dùng trên mạng này. Đóng nó rồi bật lại chia sẻ.</string>
+    <string name="share_wait_home">Kết nối điện thoại này vào Wi‑Fi gia đình. Các địa chỉ sẽ tự hiện ở đây.</string>
+    <string name="share_wait_mobile">Bật điểm phát Wi‑Fi (hoặc chia sẻ qua USB/Bluetooth) trên điện thoại này. Các địa chỉ sẽ tự hiện ở đây.</string>
+    <string name="share_open_hotspot">Mở cài đặt hotspot</string>
+    <string name="share_switch_to_mobile">Dùng chế độ điểm phát di động</string>
+    <string name="share_switch_to_home">Dùng chế độ Wi‑Fi gia đình</string>
+    <string name="share_zero_leak_on">Bảo vệ chống rò rỉ đang hoạt động</string>
+    <string name="share_zero_leak_desc">Mọi thứ thiết bị kia gửi qua chia sẻ chỉ đi qua đường hầm VPN: DNS được phân giải trong đường hầm, UDP được chuyển tiếp qua nó, đích nội bộ/riêng bị chặn, và nếu đường hầm rớt, kết nối sẽ thất bại thay vì đi trực tiếp.</string>
+    <string name="share_direct_paused">Quy tắc Trực tiếp (bỏ qua) của bạn tạm dừng khi chia sẻ, nên không có gì lọt ra ngoài đường hầm.</string>
+    <string name="share_values_home">Nhập trên thiết bị kia (cùng Wi‑Fi)</string>
+    <string name="share_values_mobile">Nhập trên thiết bị kết nối hotspot này</string>
+    <string name="share_ip_label">Địa chỉ IP điện thoại</string>
+    <string name="share_pac_label">URL proxy tự động (PAC) — dễ nhất, fail‑closed</string>
+    <string name="share_copy_all">Sao chép mọi chi tiết</string>
+    <string name="share_copy_all_label">Chi tiết chia sẻ Aether</string>
+    <string name="share_copied_all">Đã sao chép mọi chi tiết</string>
+    <string name="share_steps_title">Cách kết nối</string>
+    <string name="share_step_home_1">Đảm bảo thiết bị kia đang dùng cùng Wi‑Fi với điện thoại này.</string>
+    <string name="share_step_mobile_1">Kết nối thiết bị kia vào hotspot của điện thoại này.</string>
+    <string name="share_step_common_proxy">Trong cài đặt Wi‑Fi / mạng của nó chọn Proxy → Tự động và dán URL PAC (hoặc Thủ công với proxy HTTP). Với ứng dụng và TUN client (v2rayN, NekoBox, sing‑box) dùng địa chỉ SOCKS5 kèm DNS từ xa.</string>
+    <string name="share_step_common_check">Mở trang kiểm tra bên dưới trong trình duyệt: trang chỉ tải khi thiết bị được bảo vệ.</string>
+    <string name="share_check_label">Trang kiểm tra bảo vệ</string>
+    <string name="share_warning_unconfigured">Chỉ lưu lượng gửi tới chia sẻ được bảo vệ. Thiết bị hoặc ứng dụng không được cài dùng nó sẽ đi bằng kết nối riêng — Android không cho ứng dụng ép thiết bị chia sẻ qua VPN.</string>
+    <string name="share_auth_toggle">Yêu cầu tên người dùng &amp; mật khẩu</string>
+    <string name="share_auth_toggle_desc">Tùy chọn. Thiết bị phải đăng nhập trước khi dùng chia sẻ.</string>
+    <string name="share_auth_toggle_desc_home">Tùy chọn — nên dùng trên Wi‑Fi dùng chung hoặc công cộng. Thiết bị phải đăng nhập trước khi dùng chia sẻ.</string>
+    <string name="share_auth_edit">Sửa</string>
+    <string name="share_auth_edit_title">Tên người dùng &amp; mật khẩu chia sẻ</string>
+    <string name="share_auth_bad_user">Tên người dùng: 1–64 ký tự Latin, không dấu cách hay dấu \":\".</string>
+    <string name="share_auth_short_pass">Mật khẩu phải có ít nhất %1$d ký tự Latin.</string>
+    <string name="share_auth_saved">Đã lưu thông tin đăng nhập</string>
+    <string name="share_auth_save">Lưu</string>
+    <string name="share_auth_cancel">Hủy</string>
+    <!-- 1.4.0-r6: VPN sharing -->
+    <string name="share_other_addresses">Cũng tới được trên các liên kết này (dùng cái thiết bị đang kết nối)</string>
+    <string name="share_iface_hotspot">Địa chỉ hotspot Wi‑Fi</string>
+    <string name="share_iface_usb">Địa chỉ chia sẻ USB / Ethernet</string>
+    <string name="share_iface_bt">Địa chỉ chia sẻ Bluetooth</string>
+    <string name="share_iface_wifi">Địa chỉ Wi‑Fi</string>
+    <string name="share_iface_eth">Địa chỉ Ethernet</string>
+    <string name="share_webrtc_title">WebRTC (rò rỉ IP thật trong trình duyệt)</string>
+    <string name="share_webrtc_desc">Trình duyệt được cài dùng proxy vẫn gửi WebRTC trên kết nối riêng, có thể lộ IP thật của thiết bị. Mở trang cài đặt bên dưới trên thiết bị kia: nó kiểm tra WebRTC trực tiếp và khóa một chạm cho Chrome, Edge, Brave và Firefox. Điện thoại: dùng v2rayNG / NekoBox ở chế độ VPN với địa chỉ SOCKS5.</string>
+    <string name="share_setup_label">Trang cài đặt + kiểm tra WebRTC (mở trên thiết bị kia)</string>
+
+    <!-- Zero Trust: sign in first, then connect (1.4.0-r9, issue #12) -->
+    <string name="zt_need_team">Nhập tên nhóm ở trên để đăng nhập hoặc xem thiết bị này đã là thành viên chưa.</string>
+    <string name="zt_checking">Đang kiểm tra tư cách thành viên của thiết bị này…</string>
+    <string name="zt_enrolled">Thiết bị này đã là thành viên của %1$s. Kết nối không cần đăng nhập.</string>
+    <string name="zt_forget">Xóa tư cách thành viên của thiết bị này</string>
+    <string name="zt_forget_desc">Xóa tư cách thành viên đã lưu chỉ cho nhóm này. Lần kết nối tới sẽ tham gia lại. Dùng sau khi tổ chức đã xóa thiết bị này, hoặc để tham gia dưới tên người khác.</string>
+    <string name="zt_forget_title">Xóa tư cách thành viên?</string>
+    <string name="zt_forget_body">Danh tính đã lưu của điện thoại này trong %1$s bị xóa, và lần kết nối tới sẽ tham gia lại tổ chức như thiết bị mới. WARP cá nhân và các nhóm khác không bị ảnh hưởng. Không thể hoàn tác.</string>
+    <string name="zt_forget_ok">Xóa</string>
+    <string name="zt_forget_done">Đã xóa tư cách thành viên. Lần kết nối tới sẽ tham gia lại.</string>
+    <string name="zt_forget_busy">Hãy ngắt kết nối trước: đường hầm đang chạy dùng tư cách thành viên này.</string>
+    <string name="zt_disconnect_first">Ngắt kết nối để đăng nhập hoặc đổi tư cách thành viên.</string>
+    <string name="zt_cancel">Hủy</string>
+    <string name="zt_token_pending">Chưa phải thành viên. Lần kết nối tới sẽ tham gia bằng token đăng ký ở trên.</string>
+    <string name="zt_service_pending">Chưa phải thành viên. Lần kết nối tới sẽ tham gia bằng token dịch vụ ở trên, không cần bạn.</string>
+
+    <string name="zt_signin_none">Chưa đăng nhập. Đăng nhập ngay và lần kết nối sẽ không dừng hỏi mã. Nếu bỏ qua, mã sẽ được hỏi trong lúc kết nối.</string>
+    <string name="zt_signin_other">Lần đăng nhập đã lưu là cho %1$s trong nhóm %2$s, không phải địa chỉ và nhóm ở trên. Nó sẽ không được dùng: hãy đăng nhập lại.</string>
+    <string name="zt_signin_expired">Lần đăng nhập đã hết hạn. Đăng nhập lại trước khi kết nối, hoặc mã sẽ được hỏi trong lúc kết nối.</string>
+    <string name="zt_signin_ready">Đã đăng nhập với %1$s. Lần kết nối tới sẽ đưa thiết bị này vào mà không hỏi mã.</string>
+    <plurals name="zt_signin_left_minutes">
+        <item quantity="one">Lần đăng nhập còn hiệu lực %1$d phút nữa: hãy kết nối trước đó.</item>
+        <item quantity="other">Lần đăng nhập còn hiệu lực %1$d phút nữa: hãy kết nối trước đó.</item>
+    </plurals>
+    <plurals name="zt_signin_left_hours">
+        <item quantity="one">Lần đăng nhập còn hiệu lực %1$d giờ nữa.</item>
+        <item quantity="other">Lần đăng nhập còn hiệu lực %1$d giờ nữa.</item>
+    </plurals>
+    <plurals name="zt_signin_left_days">
+        <item quantity="one">Lần đăng nhập còn hiệu lực %1$d ngày nữa.</item>
+        <item quantity="other">Lần đăng nhập còn hiệu lực %1$d ngày nữa.</item>
+    </plurals>
+    <string name="zt_signin_left_soon">Lần đăng nhập hết hạn trong chưa đầy một phút.</string>
+    <string name="zt_signin_left_nodate">Lần đăng nhập không mang ngày hết hạn.</string>
+    <string name="zt_signin">Đăng nhập</string>
+    <string name="zt_signin_again">Đăng nhập lại</string>
+    <string name="zt_signin_desc">Tổ chức của bạn gửi mã một lần tới địa chỉ email ở trên, bạn nhập vào đây, và kết quả được giữ mã hóa trên điện thoại này cho lần kết nối tới.</string>
+    <string name="zt_signin_need_email">Nhập email công việc ở trên trước.</string>
+    <string name="zt_signout">Quên lần đăng nhập này</string>
+    <string name="zt_signout_desc">Xóa lần đăng nhập đã lưu khỏi điện thoại này. Tư cách thành viên thiết bị đã có không bị ảnh hưởng.</string>
+    <string name="zt_signed_in">Đã đăng nhập. Kết nối ngay để tham gia tổ chức.</string>
+    <string name="zt_signed_out">Đã quên lần đăng nhập.</string>
+
+    <string name="zt_dlg_title">Đăng nhập vào %1$s</string>
+    <string name="zt_dlg_sending">Đang yêu cầu tổ chức gửi mã tới %1$s qua email…</string>
+    <string name="zt_dlg_code_body">Mã một lần đã được gửi tới %1$s qua email. Nhập vào đây để đăng nhập.</string>
+    <string name="zt_dlg_rejected">Mã đó không được chấp nhận. Lần thử %1$d / %2$d.</string>
+    <string name="zt_dlg_exhausted">Mã đó cũng không được chấp nhận. Hãy xin mã mới và thử lại.</string>
+    <string name="zt_dlg_resent">Mã mới đang trên đường tới. Chỉ mã mới nhất có hiệu lực.</string>
+    <string name="zt_dlg_verifying">Đang kiểm tra mã…</string>
+    <string name="zt_dlg_resending">Đang xin mã mới…</string>
+    <string name="zt_dlg_confirm">Đăng nhập</string>
+    <string name="zt_dlg_resend">Gửi mã mới</string>
+    <plurals name="zt_dlg_resend_wait">
+        <item quantity="one">Có thể xin mã mới sau %1$d giây</item>
+        <item quantity="other">Có thể xin mã mới sau %1$d giây</item>
+    </plurals>
+    <string name="zt_dlg_retry">Thử lại</string>
+    <string name="zt_dlg_close">Đóng</string>
+
+    <string name="zt_err_team">Tên nhóm đó không hợp lệ. Chỉ dùng tên, ví dụ acme.</string>
+    <string name="zt_err_email">Địa chỉ email đó chưa đầy đủ.</string>
+    <string name="zt_err_no_otp">Tổ chức này không hỗ trợ đăng nhập bằng mã email. Hãy hỏi quản trị viên, hoặc dùng token dịch vụ hay token đăng ký.</string>
+    <string name="zt_err_refused">Cloudflare từ chối yêu cầu (HTTP %1$d). Kiểm tra tên nhóm, và địa chỉ này có được phép tham gia không.</string>
+    <string name="zt_err_no_nonce">Mã đã được gửi, nhưng câu trả lời của Cloudflare thiếu thứ đăng nhập cần. Hãy thử lại; nếu cứ lặp lại, trang đăng nhập đã thay đổi.</string>
+    <string name="zt_err_network">Không tới được %1$s (%2$s). Kiểm tra kết nối và thử lại. Nếu Cloudflare chỉ tới được qua proxy upstream của bạn, bỏ qua đăng nhập ở đây: mã được hỏi trong lúc kết nối sẽ đi qua proxy đó.</string>
+    <string name="zt_err_expired_on_arrival">Cloudflare cấp token đã hết hạn. Kiểm tra ngày giờ điện thoại đúng, rồi đăng nhập lại.</string>
+    <string name="zt_err_store">Đã đăng nhập, nhưng điện thoại không lưu kết quả an toàn được, nên không có gì được lưu.</string>
+
+    <string name="zt_svc_test">Kiểm tra token dịch vụ</string>
+    <string name="zt_svc_test_desc">Xin tổ chức token đăng ký đúng như engine sẽ làm khi kết nối. Không lưu gì cả.</string>
+    <string name="zt_svc_need_both">Nhập cả client ID và client secret trước.</string>
+    <string name="zt_svc_testing">Đang kiểm tra…</string>
+    <string name="zt_svc_ok">Được chấp nhận: tổ chức đã cấp token đăng ký cho token dịch vụ này.</string>
+    <string name="zt_svc_no_token">Không được chấp nhận (HTTP %1$d). Kiểm tra client ID và secret, và token dịch vụ có được phép đăng ký thiết bị (Service Auth) không.</string>
+</resources>
