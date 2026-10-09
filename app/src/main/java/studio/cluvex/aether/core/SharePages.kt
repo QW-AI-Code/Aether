@@ -126,17 +126,23 @@ object SharePages {
 
     // ----------------------------------------------------------------- pages
     //
+    // 1.4.0-r11: the pages are now trilingual - Vietnamese is the default, with
+    // Persian and English alongside. Every bilingual helper gained a `vi`
+    // argument, and the language switch, CSS, boot script and WebRTC messages
+    // all cover the three languages. Nothing else about the pages changed.
+    //
     // 1.4.0-r10: the setup page (`http://<phone>:10811/`) and the check page
     // (`http://aether.check/`) were redesigned. What changed, and why:
     //
     //  - One dark navy layout for both pages, readable on a phone, a laptop and a
     //    TV browser. Plain CSS with hex colours (no oklch, no grid tricks that old
     //    TV browsers lack) because these pages are opened by ANY guest browser.
-    //  - Bilingual with a switch at the top: Persian (default) and English. The
-    //    choice is kept in the guest browser's localStorage only. Persian is
-    //    right-to-left; every English word, address, port and file name inside a
-    //    Persian sentence is an isolated left-to-right run, so it never scrambles
-    //    the sentence around it.
+    //  - Trilingual with a switch at the top: Vietnamese (default), Persian and
+    //    English. The choice is kept in the guest browser's localStorage only.
+    //    Persian is right-to-left; every English word, address, port and file
+    //    name inside a Persian sentence is an isolated left-to-right run, so it
+    //    never scrambles the sentence around it. Vietnamese and English are
+    //    left-to-right; Vietnamese uses the system font.
     //  - Font: Vazirmatn / Vazir when the guest has it installed, otherwise the
     //    system's own Persian font. Only local() is used: the pages load nothing
     //    from the network (a web font fetch from the setup page would go out of
@@ -164,19 +170,21 @@ object SharePages {
     ): String {
         val protected = via != null
         val chip = if (protected) {
-            stateChip("ok", "محافظت‌شده", "Protected")
+            stateChip("ok", "محافظت‌شده", "Protected", "Được bảo vệ")
         } else {
-            stateChip("warn", "فقط در دسترس", "Reachable only")
+            stateChip("warn", "فقط در دسترس", "Reachable only", "Chỉ mới truy cập được")
         }
         val heading = if (protected) {
             h1(
                 "این مرورگر از ${A} رد می‌شه",
                 "This browser goes through Aether",
+                "Trình duyệt này đang đi qua Aether",
             )
         } else {
             h1(
                 "گوشی در دسترسه، ولی مرورگرت هنوز ازش رد نمی‌شه",
                 "The share is reachable, but this browser isn't using it yet",
+                "Đã thấy được điện thoại, nhưng trình duyệt này chưa dùng chia sẻ",
             )
         }
         val lead = when {
@@ -185,11 +193,15 @@ object SharePages {
                     "اشتراک رد می‌شه. پروکسی رو تنظیم کن و بعد ${code("http://aether.check/")} رو باز کن.",
                 "You opened the phone directly. That proves this device can reach the share, not that this " +
                     "browser uses it. Set the proxy, then open ${code("http://aether.check/")}.",
+                "Bạn đã mở trang này trực tiếp từ điện thoại. Điều đó chỉ chứng tỏ thiết bị này với tới " +
+                    "được chia sẻ, chứ chưa có nghĩa trình duyệt đang dùng nó. Hãy cài đặt proxy, rồi mở " +
+                    "${code("http://aether.check/")}.",
                 "lead",
             )
             onDevice -> para(
                 "این مرورگر روی خود گوشی داره از پروکسی ${A} استفاده می‌کنه.",
                 "This browser is using the Aether proxy on the phone itself.",
+                "Trình duyệt này đang dùng proxy Aether ngay trên chính điện thoại.",
                 "lead",
             )
             else -> para(
@@ -197,17 +209,20 @@ object SharePages {
                     "${ltr("VPN")} گوشی می‌رن بیرون، نه از اینترنت خودت.",
                 "This browser's pages go through the Aether share (via ${esc(via.orEmpty())}) and leave " +
                     "through the phone's VPN tunnel, not your own connection.",
+                "Các trang của trình duyệt này đi qua chia sẻ Aether (qua ${esc(via.orEmpty())}) rồi ra " +
+                    "ngoài bằng tunnel VPN của điện thoại, chứ không dùng mạng của chính bạn.",
                 "lead",
             )
         }
         val setupLink = if (protected) {
             ""
         } else {
-            """<p class="actions"><a class="btn" href="/">${bi("راهنمای راه‌اندازی", "Setup guide")}</a></p>"""
+            """<p class="actions"><a class="btn" href="/">${bi("راهنمای راه‌اندازی", "Setup guide", "Hướng dẫn cài đặt")}</a></p>"""
         }
         return page(
             "بررسی اشتراک Aether",
             "Aether share check",
+            "Kiểm tra chia sẻ Aether",
             """
             <section class="hero">
               $chip
@@ -237,8 +252,8 @@ object SharePages {
         val h = esc(host)
         val pac = "http://$h:$httpPort/proxy.pac"
         val modeChip = when (mode) {
-            ShareLeakGuard.Mode.HOME_WIFI -> stateChip("info", "حالت: وای‌فای خونه", "Mode: home Wi-Fi")
-            ShareLeakGuard.Mode.MOBILE_HOTSPOT -> stateChip("info", "حالت: هات‌اسپات گوشی", "Mode: phone hotspot")
+            ShareLeakGuard.Mode.HOME_WIFI -> stateChip("info", "حالت: وای‌فای خونه", "Mode: home Wi-Fi", "Chế độ: Wi-Fi nhà")
+            ShareLeakGuard.Mode.MOBILE_HOTSPOT -> stateChip("info", "حالت: هات‌اسپات گوشی", "Mode: phone hotspot", "Chế độ: điểm phát sóng")
             null -> ""
         }
         val authNote = when (authRequired) {
@@ -248,6 +263,8 @@ object SharePages {
                     "نشون نمی‌ده.",
                 "Share authentication is on. Take the username and password from the Share card in the app; " +
                     "this page never shows the password.",
+                "Xác thực chia sẻ đang bật. Lấy tên đăng nhập và mật khẩu từ thẻ «Chia sẻ» trong app; " +
+                    "trang này không bao giờ hiển thị mật khẩu.",
             )
             false -> note(
                 "warn",
@@ -255,41 +272,48 @@ object SharePages {
                     "تو شبکهٔ خونه مشکلی نیست، ولی تو وای‌فای عمومی از کارت «اشتراک» روشنش کن.",
                 "Share authentication is off: any device on this network can use your VPN. Fine at home; on " +
                     "public Wi-Fi turn it on from the Share card.",
+                "Xác thực chia sẻ đang tắt, nghĩa là mọi thiết bị trong cùng mạng đều có thể dùng VPN của " +
+                    "bạn. Ở mạng nhà thì không sao, nhưng trên Wi-Fi công cộng hãy bật nó từ thẻ «Chia sẻ».",
             )
             null -> ""
         }
         return page(
             "اشتراک VPN در Aether",
             "Aether VPN share",
+            "Chia sẻ VPN trên Aether",
             """
             <section class="hero">
-              ${stateChip("ok", "اشتراک روشنه", "Sharing is on")} $modeChip
-              ${h1("اینترنت ${ltr("VPN")} گوشی، روی بقیهٔ دستگاه‌ها", "Share this phone's VPN with your other devices")}
+              ${stateChip("ok", "اشتراک روشنه", "Sharing is on", "Đang chia sẻ")} $modeChip
+              ${h1("اینترنت ${ltr("VPN")} گوشی، روی بقیهٔ دستگاه‌ها", "Share this phone's VPN with your other devices", "Chia sẻ VPN của điện thoại cho các thiết bị khác")}
               ${para(
                 "این صفحه از خود گوشی باز شده، پس این دستگاه به گوشی می‌رسه. حالا فقط پروکسی رو تنظیم کن تا " +
                     "اینترنتش از تونل ${ltr("VPN")} گوشی رد بشه.",
                 "This page came straight from the phone, so this device can reach it. Set the proxy below and " +
                     "its traffic will leave through the phone's VPN tunnel.",
+                "Trang này được mở trực tiếp từ điện thoại, nên thiết bị này với tới được nó. Giờ chỉ cần " +
+                    "cài đặt proxy bên dưới, lưu lượng mạng sẽ ra ngoài qua tunnel VPN của điện thoại.",
                 "lead",
               )}
             </section>
 
             <section aria-labelledby="s-addr">
-              ${h2("s-addr", "آدرس‌ها", "Addresses")}
+              ${h2("s-addr", "آدرس‌ها", "Addresses", "Địa chỉ")}
               ${para(
                 "ساده‌ترین راه آدرس ${ltr("PAC")} ـه: یه بار واردش کن، بقیه‌ش خودکاره. اگه ${ltr("VPN")} گوشی " +
                     "قطع بشه، این دستگاه هم آفلاین می‌شه و آی‌پی واقعیت لو نمی‌ره.",
                 "PAC is the easiest: enter it once and the rest is automatic. If the phone's VPN drops, this " +
                     "device goes offline instead of leaking your real IP.",
+                "Cách dễ nhất là dùng địa chỉ PAC: nhập một lần là xong, phần còn lại tự động. Nếu VPN " +
+                    "trên điện thoại bị ngắt, thiết bị này sẽ mất mạng theo chứ không làm lộ IP thật của bạn.",
                 "sub",
               )}
               <div class="rows">
-                ${addrRow(bi("پروکسی خودکار (${ltr("PAC")})", "Automatic proxy (PAC)"), pac, recommended = true)}
-                ${addrRow(bi("پروکسی ${ltr("HTTP")}", "HTTP proxy"), "$h:$httpPort")}
+                ${addrRow(bi("پروکسی خودکار (${ltr("PAC")})", "Automatic proxy (PAC)", "Proxy tự động (PAC)"), pac, recommended = true)}
+                ${addrRow(bi("پروکسی ${ltr("HTTP")}", "HTTP proxy", "Proxy HTTP"), "$h:$httpPort")}
                 ${addrRow(
-                  bi("پروکسی ${ltr("SOCKS5")}", "SOCKS5 proxy"),
+                  bi("پروکسی ${ltr("SOCKS5")}", "SOCKS5 proxy", "Proxy SOCKS5"),
                   "$h:$socksPort",
-                  hint = bi("گزینهٔ ${ltr("Remote DNS")} رو روشن کن", "Turn Remote DNS on"),
+                  hint = bi("گزینهٔ ${ltr("Remote DNS")} رو روشن کن", "Turn Remote DNS on", "Hãy bật Remote DNS"),
                 )}
               </div>
               $authNote
@@ -299,17 +323,19 @@ object SharePages {
             ${modeSection(mode)}
 
             <section aria-labelledby="s-test">
-              ${h2("s-test", "تست نهایی", "Final check")}
+              ${h2("s-test", "تست نهایی", "Final check", "Kiểm tra cuối cùng")}
               ${para(
                 "بعد از تنظیم پروکسی، ${code("http://aether.check/")} رو باز کن. این آدرس فقط وقتی باز می‌شه که " +
                     "واقعاً از اشتراک رد بشی؛ اگه باز نشد، پروکسی هنوز درست تنظیم نشده.",
                 "After setting the proxy, open ${code("http://aether.check/")}. It only loads when you really " +
                     "go through the share; if it does not open, the proxy is not set yet.",
+                "Sau khi cài đặt proxy, hãy mở ${code("http://aether.check/")}. Địa chỉ này chỉ mở được khi " +
+                    "bạn thực sự đi qua chia sẻ; nếu không mở được, nghĩa là proxy chưa được cài đúng.",
                 "sub",
               )}
               <p class="actions">
-                <a class="btn" href="http://${ShareLeakGuard.CHECK_HOST}/">${bi("باز کردن ${ltr("aether.check")}", "Open aether.check")}</a>
-                <a class="btn ghost" href="/check">${bi("تست دسترسی از همین‌جا", "Test reachability from here")}</a>
+                <a class="btn" href="http://${ShareLeakGuard.CHECK_HOST}/">${bi("باز کردن ${ltr("aether.check")}", "Open aether.check", "Mở aether.check")}</a>
+                <a class="btn ghost" href="/check">${bi("تست دسترسی از همین‌جا", "Test reachability from here", "Kiểm tra kết nối ngay tại đây")}</a>
               </p>
             </section>
 
@@ -327,37 +353,38 @@ object SharePages {
 
     private fun code(text: String): String = """<code dir="ltr">$text</code>"""
 
-    /** Both languages side by side; CSS shows the active one. */
-    private fun bi(fa: String, en: String): String =
-        """<span class="fa">$fa</span><span class="en" dir="ltr">$en</span>"""
+    /** All three languages side by side; CSS shows the active one. */
+    private fun bi(fa: String, en: String, vi: String): String =
+        """<span class="fa">$fa</span><span class="en" dir="ltr">$en</span><span class="vi" dir="ltr">$vi</span>"""
 
-    private fun para(fa: String, en: String, cls: String = ""): String =
-        """<p class="fa $cls">$fa</p><p class="en $cls" dir="ltr">$en</p>"""
+    private fun para(fa: String, en: String, vi: String, cls: String = ""): String =
+        """<p class="fa $cls">$fa</p><p class="en $cls" dir="ltr">$en</p><p class="vi $cls" dir="ltr">$vi</p>"""
 
-    private fun h1(fa: String, en: String): String =
-        """<h1><span class="fa">$fa</span><span class="en" dir="ltr">$en</span></h1>"""
+    private fun h1(fa: String, en: String, vi: String): String =
+        """<h1><span class="fa">$fa</span><span class="en" dir="ltr">$en</span><span class="vi" dir="ltr">$vi</span></h1>"""
 
-    private fun h2(id: String, fa: String, en: String): String =
-        """<h2 id="$id"><span class="fa">$fa</span><span class="en" dir="ltr">$en</span></h2>"""
+    private fun h2(id: String, fa: String, en: String, vi: String): String =
+        """<h2 id="$id"><span class="fa">$fa</span><span class="en" dir="ltr">$en</span><span class="vi" dir="ltr">$vi</span></h2>"""
 
-    private fun stateChip(kind: String, fa: String, en: String): String =
-        """<span class="chip $kind"><i aria-hidden="true"></i>${bi(fa, en)}</span>"""
+    private fun stateChip(kind: String, fa: String, en: String, vi: String): String =
+        """<span class="chip $kind"><i aria-hidden="true"></i>${bi(fa, en, vi)}</span>"""
 
-    private fun note(kind: String, fa: String, en: String): String =
-        """<div class="note $kind">${para(fa, en)}</div>"""
+    private fun note(kind: String, fa: String, en: String, vi: String): String =
+        """<div class="note $kind">${para(fa, en, vi)}</div>"""
 
-    private fun steps(fa: List<String>, en: List<String>): String =
+    private fun steps(fa: List<String>, en: List<String>, vi: List<String>): String =
         """<ol class="steps fa">${fa.joinToString("") { "<li>$it</li>" }}</ol>""" +
-            """<ol class="steps en" dir="ltr">${en.joinToString("") { "<li>$it</li>" }}</ol>"""
+            """<ol class="steps en" dir="ltr">${en.joinToString("") { "<li>$it</li>" }}</ol>""" +
+            """<ol class="steps vi" dir="ltr">${vi.joinToString("") { "<li>$it</li>" }}</ol>"""
 
     private fun addrRow(label: String, value: String, recommended: Boolean = false, hint: String = ""): String {
-        val badge = if (recommended) """<span class="badge">${bi("پیشنهادی", "Recommended")}</span>""" else ""
+        val badge = if (recommended) """<span class="badge">${bi("پیشنهادی", "Recommended", "Khuyên dùng")}</span>""" else ""
         val hintLine = if (hint.isEmpty()) "" else """<span class="hint">$hint</span>"""
         return """
             <div class="row">
               <div class="k">$label $badge</div>
               <div class="v"><code dir="ltr">$value</code>$hintLine</div>
-              <button type="button" class="copy" data-copy="$value">${bi("کپی", "Copy")}</button>
+              <button type="button" class="copy" data-copy="$value">${bi("کپی", "Copy", "Sao chép")}</button>
             </div>
         """
     }
@@ -367,7 +394,7 @@ object SharePages {
         if (ip.isEmpty()) return ""
         return """
             <div class="exit">
-              <span class="k">${bi("آی‌پی خروجی تونل", "Tunnel exit IP")}</span>
+              <span class="k">${bi("آی‌پی خروجی تونل", "Tunnel exit IP", "IP đầu ra của tunnel")}</span>
               <code dir="ltr">$ip</code>
             </div>
         """
@@ -378,10 +405,11 @@ object SharePages {
         val pacFa = "آدرس ${ltr("PAC")}"
         return """
         <section aria-labelledby="s-dev">
-          ${h2("s-dev", "تنظیم روی هر دستگاه", "Set it up on each device")}
+          ${h2("s-dev", "تنظیم روی هر دستگاه", "Set it up on each device", "Cài đặt trên từng thiết bị")}
           ${para(
             "دستگاهت رو باز کن و قدم‌ها رو برو. هر جا ${pacFa} خواست، همون آدرس بالا رو بچسبون.",
             "Open your device and follow the steps. Wherever it asks for a PAC or script address, paste the one above.",
+            "Mở thiết bị của bạn và làm theo từng bước. Chỗ nào yêu cầu địa chỉ PAC, hãy dán địa chỉ ở trên vào.",
             "sub",
           )}
           <div class="rows acc">
@@ -397,6 +425,11 @@ object SharePages {
                 "Under Automatic proxy setup, turn on Use setup script.",
                 "Paste the PAC address into Script address and press Save.",
               ),
+              listOf(
+                "Mở Settings → Network &amp; Internet → Proxy.",
+                "Trong mục Automatic proxy setup, bật Use setup script.",
+                "Dán địa chỉ PAC vào ô Script address rồi nhấn Save.",
+              ),
             )}
             ${device(
               "macOS",
@@ -409,6 +442,11 @@ object SharePages {
                 "System Settings → Wi-Fi → Details → Proxies.",
                 "Turn on Automatic proxy configuration and paste the PAC address.",
                 "Press OK and restart the browser once.",
+              ),
+              listOf(
+                "Mở System Settings → Wi-Fi → Details → Proxies.",
+                "Bật Automatic proxy configuration rồi dán địa chỉ PAC vào.",
+                "Nhấn OK, sau đó tắt rồi mở lại trình duyệt.",
               ),
             )}
             ${device(
@@ -425,6 +463,12 @@ object SharePages {
                 "That covers the browser and some apps. For every app, run v2rayNG or NekoBox with the SOCKS5 " +
                   "address in VPN mode.",
               ),
+              listOf(
+                "Trong cài đặt Wi-Fi, chạm vào mạng đang kết nối (hoặc biểu tượng bánh răng) rồi mở mục Proxy.",
+                "Chọn Proxy Auto-Config rồi dán địa chỉ PAC vào.",
+                "Cách này chỉ áp dụng cho trình duyệt và một số app. Để áp dụng cho mọi app, hãy chạy v2rayNG " +
+                  "hoặc NekoBox với địa chỉ SOCKS5 ở chế độ VPN.",
+              ),
             )}
             ${device(
               "iPhone / iPad",
@@ -437,6 +481,11 @@ object SharePages {
                 "Settings → Wi-Fi → the (i) button next to the network.",
                 "At the bottom: Configure Proxy → Automatic.",
                 "Paste the PAC address into URL and tap Save.",
+              ),
+              listOf(
+                "Mở Settings → Wi-Fi → nút (i) cạnh tên mạng.",
+                "Kéo xuống dưới cùng: Configure Proxy → Automatic.",
+                "Dán địa chỉ PAC vào ô URL rồi nhấn Save.",
               ),
             )}
             ${device(
@@ -451,6 +500,11 @@ object SharePages {
                 "Pick Automatic proxy configuration URL and paste the PAC address.",
                 "If you use SOCKS5 instead, also tick Proxy DNS when using SOCKS v5.",
               ),
+              listOf(
+                "Mở Settings → Network Settings (ở cuối trang) → Settings….",
+                "Chọn Automatic proxy configuration URL rồi dán địa chỉ PAC vào.",
+                "Nếu dùng SOCKS5, hãy tích thêm ô Proxy DNS when using SOCKS v5.",
+              ),
             )}
             ${device(
               "TV / " + "کل دستگاه",
@@ -464,19 +518,32 @@ object SharePages {
                 "Create a SOCKS5 profile with the address above and set routing to Global (no bypass).",
                 "Start it in VPN mode. Then everything, WebRTC and UDP included, goes through the tunnel.",
               ),
+              listOf(
+                "Trên TV, điện thoại khách hoặc laptop, cài v2rayNG, NekoBox hoặc sing-box.",
+                "Tạo một cấu hình SOCKS5 với địa chỉ ở trên, đặt Routing thành Global (không loại trừ).",
+                "Bật ở chế độ VPN. Khi đó mọi thứ, kể cả WebRTC và UDP, đều đi qua tunnel.",
+              ),
               enTitle = "TV / whole device",
+              viTitle = "TV / toàn bộ thiết bị",
             )}
           </div>
         </section>
         """
     }
 
-    private fun device(title: String, fa: List<String>, en: List<String>, enTitle: String = title): String {
-        val t = if (enTitle == title) ltr(esc(title)) else bi(esc(title), esc(enTitle))
+    private fun device(
+        title: String,
+        fa: List<String>,
+        en: List<String>,
+        vi: List<String>,
+        enTitle: String = title,
+        viTitle: String = title,
+    ): String {
+        val t = if (enTitle == title && viTitle == title) ltr(esc(title)) else bi(esc(title), esc(enTitle), esc(viTitle))
         return """
             <details class="item">
               <summary><span class="name">$t</span><i class="chev" aria-hidden="true"></i></summary>
-              <div class="body">${steps(fa, en)}</div>
+              <div class="body">${steps(fa, en, vi)}</div>
             </details>
         """
     }
@@ -484,25 +551,27 @@ object SharePages {
     /** r10: guidance for both share modes; the current one is opened and marked. */
     private fun modeSection(mode: ShareLeakGuard.Mode?): String {
         fun current(m: ShareLeakGuard.Mode) =
-            if (mode == m) """<span class="badge cur">${bi("حالت فعلی", "Current")}</span>""" else ""
+            if (mode == m) """<span class="badge cur">${bi("حالت فعلی", "Current", "Đang dùng")}</span>""" else ""
         fun openAttr(m: ShareLeakGuard.Mode) = if (mode == m) " open" else ""
         val wifi = ShareLeakGuard.Mode.HOME_WIFI
         val hotspot = ShareLeakGuard.Mode.MOBILE_HOTSPOT
         return """
         <section aria-labelledby="s-mode">
-          ${h2("s-mode", "وای‌فای خونه یا هات‌اسپات؟", "Home Wi-Fi or hotspot?")}
+          ${h2("s-mode", "وای‌فای خونه یا هات‌اسپات؟", "Home Wi-Fi or hotspot?", "Wi-Fi nhà hay điểm phát sóng?")}
           ${para(
             "اشتراک دو حالت داره و تو برنامه، از کارت «اشتراک» عوضش می‌کنی. راهنمای هر دو اینجاست.",
             "Sharing has two modes, switched from the Share card in the app. Both are explained here.",
+            "Chia sẻ có hai chế độ, chuyển đổi từ thẻ «Chia sẻ» trong app. Hướng dẫn cho cả hai đều có ở đây.",
             "sub",
           )}
           <div class="rows acc">
             <details class="item"${openAttr(wifi)}>
-              <summary><span class="name">${bi("وای‌فای خونه", "Home Wi-Fi")}</span>${current(wifi)}<i class="chev" aria-hidden="true"></i></summary>
+              <summary><span class="name">${bi("وای‌فای خونه", "Home Wi-Fi", "Wi-Fi nhà")}</span>${current(wifi)}<i class="chev" aria-hidden="true"></i></summary>
               <div class="body">
                 ${para(
                   "گوشی و این دستگاه هر دو به یه مودم وصلن و گوشی ${ltr("VPN")} رو با بقیه شریک می‌شه.",
                   "The phone and this device share one router, and the phone shares its VPN with the rest.",
+                  "Điện thoại và thiết bị này cùng kết nối một router, và điện thoại chia sẻ VPN của nó cho các thiết bị còn lại.",
                   "sub",
                 )}
                 ${steps(
@@ -523,6 +592,15 @@ object SharePages {
                     "The phone's address can change when the router restarts; if it suddenly stops, take the " +
                       "new address from the Share card.",
                   ),
+                  listOf(
+                    "Trong Aether, đặt thẻ «Chia sẻ» thành Wi-Fi nhà rồi bật lên.",
+                    "Kết nối thiết bị này vào cùng Wi-Fi với điện thoại. Đừng dùng mạng Guest: các thiết bị " +
+                      "ở đó thường không nhìn thấy nhau.",
+                    "Nhập địa chỉ PAC lấy từ thẻ «Chia sẻ» (hoặc từ trang ${code("http://&lt;phone&gt;:10811/")}) " +
+                      "vào cài đặt proxy.",
+                    "Địa chỉ của điện thoại có thể đổi khi router khởi động lại; nếu đột nhiên mất kết nối, " +
+                      "hãy lấy địa chỉ mới từ thẻ «Chia sẻ».",
+                  ),
                 )}
                 ${note(
                   "warn",
@@ -530,15 +608,19 @@ object SharePages {
                     "مستقیم از مودم می‌ره بیرون و اصلاً به گوشی نمی‌رسه؛ برای همین قفل ${ltr("WebRTC")} لازمه.",
                   "On public Wi-Fi (cafés, campus, hotels) turn share authentication on. In this mode WebRTC " +
                     "goes straight out of the router and never reaches the phone, so the WebRTC lock is needed.",
+                  "Trên Wi-Fi công cộng (quán cà phê, trường học, khách sạn) nhất định phải bật «mật khẩu " +
+                    "chia sẻ». Ở chế độ này, WebRTC đi thẳng ra ngoài qua router mà không bao giờ tới điện " +
+                    "thoại, vì vậy cần cài khóa WebRTC.",
                 )}
               </div>
             </details>
             <details class="item"${openAttr(hotspot)}>
-              <summary><span class="name">${bi("هات‌اسپات گوشی", "Phone hotspot")}</span>${current(hotspot)}<i class="chev" aria-hidden="true"></i></summary>
+              <summary><span class="name">${bi("هات‌اسپات گوشی", "Phone hotspot", "Điểm phát sóng")}</span>${current(hotspot)}<i class="chev" aria-hidden="true"></i></summary>
               <div class="body">
                 ${para(
                   "گوشی با دیتای موبایل به اینترنت وصله و خودش هات‌اسپات (یا ${ltr("USB")} و بلوتوث) می‌ده.",
                   "The phone is online over mobile data and is itself the hotspot (or USB / Bluetooth tether).",
+                  "Điện thoại vào mạng bằng dữ liệu di động và tự phát sóng (hoặc chia sẻ qua USB / Bluetooth).",
                   "sub",
                 )}
                 ${steps(
@@ -554,6 +636,12 @@ object SharePages {
                     "Each link has its own address; take the one from the Share card that matches how you are connected.",
                     "Toggling the hotspot off and on re-binds the share by itself; nothing to do.",
                   ),
+                  listOf(
+                    "Bật điểm phát sóng trên điện thoại, rồi trong Aether đặt thẻ «Chia sẻ» thành Điểm phát sóng di động.",
+                    "Kết nối thiết bị này vào điểm phát sóng. Dùng cáp USB hoặc Bluetooth cũng được.",
+                    "Mỗi kiểu kết nối có địa chỉ riêng; hãy lấy địa chỉ từ thẻ «Chia sẻ» khớp với kiểu bạn đang dùng.",
+                    "Tắt rồi bật lại điểm phát sóng thì chia sẻ sẽ tự kết nối lại; bạn không cần làm gì thêm.",
+                  ),
                 )}
                 ${note(
                   "warn",
@@ -562,6 +650,9 @@ object SharePages {
                     "${ltr("NekoBox")} رو تو حالت ${ltr("VPN")} بزن.",
                   "Here WebRTC goes through Android's own tethering NAT, which an unrooted app cannot filter. " +
                     "Install the WebRTC lock below, or run v2rayNG / NekoBox in VPN mode on the guest device.",
+                  "Ở đây WebRTC đi qua NAT chia sẻ mạng của chính Android, mà app không root thì không thể " +
+                    "lọc được. Vì vậy hãy cài khóa WebRTC bên dưới, hoặc chạy v2rayNG / NekoBox ở chế độ VPN " +
+                    "trên thiết bị khách.",
                 )}
               </div>
             </details>
@@ -572,10 +663,10 @@ object SharePages {
 
     private fun webRtcSection(exitIp: String?): String = """
         <section aria-labelledby="s-rtc">
-          ${h2("s-rtc", "نشت ${ltr("WebRTC")}", "WebRTC leak")}
+          ${h2("s-rtc", "نشت ${ltr("WebRTC")}", "WebRTC leak", "Rò rỉ WebRTC")}
           <div id="rtc" class="box wait" role="status" aria-live="polite">
             <i aria-hidden="true"></i>
-            <div class="msg">${bi("داریم ${ltr("WebRTC")} رو تست می‌کنیم…", "Testing WebRTC…")}</div>
+            <div class="msg">${bi("داریم ${ltr("WebRTC")} رو تست می‌کنیم…", "Testing WebRTC…", "Đang kiểm tra WebRTC…")}</div>
           </div>
           ${lockSection()}
         </section>
@@ -588,6 +679,8 @@ object SharePages {
             "کنی. قفل مناسب رو یه بار نصب کن، مرورگر رو کامل ببند و باز کن، بعد این صفحه رو رفرش کن.",
           "Browsers send WebRTC outside a proxy unless told not to. Install the lock once on this computer, " +
             "fully restart the browser, and reload this page.",
+          "Trình duyệt gửi WebRTC (dùng cho gọi video v.v.) ra ngoài proxy trừ khi bạn khóa nó lại. Hãy " +
+            "cài file khóa phù hợp một lần, tắt hẳn rồi mở lại trình duyệt, sau đó tải lại trang này.",
           "sub",
         )}
         <div class="rows">
@@ -596,6 +689,7 @@ object SharePages {
             PATH_WINDOWS, "aether-webrtc-lock.reg",
             "دوبار روش کلیک کن و ${ltr("Yes")} رو بزن.",
             "Double-click it and accept.",
+            "Nhấp đúp vào file rồi chọn Yes.",
           )}
           ${lockRow(
             "Firefox",
@@ -604,18 +698,22 @@ object SharePages {
               "(تو مک: ${code("Firefox.app/Contents/Resources/distribution")}).",
             "Put it in a folder named ${code("distribution")} next to ${code("firefox.exe")} " +
               "(macOS: ${code("Firefox.app/Contents/Resources/distribution")}).",
+            "Đặt file vào thư mục tên ${code("distribution")} ngay cạnh ${code("firefox.exe")} " +
+              "(trên macOS: ${code("Firefox.app/Contents/Resources/distribution")}).",
           )}
           ${lockRow(
             "macOS · Chrome, Edge, Brave",
             PATH_MACOS, "aether-webrtc-lock-macos.sh",
             "تو ترمینال بزن: ${code("sh aether-webrtc-lock-macos.sh")}",
             "In Terminal: ${code("sh aether-webrtc-lock-macos.sh")}",
+            "Trong Terminal, chạy: ${code("sh aether-webrtc-lock-macos.sh")}",
           )}
           ${lockRow(
             "Linux · Chrome, Chromium, Brave, Edge",
             PATH_LINUX, "aether-webrtc-lock-linux.sh",
             "تو ترمینال بزن: ${code("sudo sh aether-webrtc-lock-linux.sh")}",
             "In a terminal: ${code("sudo sh aether-webrtc-lock-linux.sh")}",
+            "Trong terminal, chạy: ${code("sudo sh aether-webrtc-lock-linux.sh")}",
           )}
         </div>
         ${para(
@@ -625,15 +723,18 @@ object SharePages {
           "No install: the official WebRTC Network Limiter extension, option \"Use my proxy server\". On phones or a " +
             "whole device, v2rayNG or NekoBox in VPN mode with the SOCKS5 address and Global routing sends " +
             "everything, WebRTC included, through the tunnel.",
+          "Không muốn cài gì? Hãy cài tiện ích chính thức WebRTC Network Limiter rồi chọn \"Use my proxy " +
+            "server\". Trên điện thoại hoặc cả thiết bị, v2rayNG hoặc NekoBox ở chế độ VPN với địa chỉ " +
+            "SOCKS5 và định tuyến Global sẽ đưa mọi thứ, kể cả WebRTC, đi qua tunnel.",
           "sub tail",
         )}
     """
 
-    private fun lockRow(title: String, path: String, file: String, fa: String, en: String): String = """
+    private fun lockRow(title: String, path: String, file: String, fa: String, en: String, vi: String): String = """
         <div class="row">
           <div class="k">${ltr(esc(title))}</div>
-          <div class="v">${bi(fa, en)}</div>
-          <a class="dl" href="$path" download="$file">${bi("دانلود", "Download")}</a>
+          <div class="v">${bi(fa, en, vi)}</div>
+          <a class="dl" href="$path" download="$file">${bi("دانلود", "Download", "Tải xuống")}</a>
         </div>
     """
 
@@ -668,9 +769,9 @@ object SharePages {
         return sb.toString()
     }
 
-    private fun page(titleFa: String, titleEn: String, body: String): String = """
+    private fun page(titleFa: String, titleEn: String, titleVi: String, body: String): String = """
         <!doctype html>
-        <html lang="fa" dir="rtl" data-lang="fa" data-title-fa="$titleFa" data-title-en="$titleEn">
+        <html lang="vi" dir="ltr" data-lang="vi" data-title-fa="$titleFa" data-title-en="$titleEn" data-title-vi="$titleVi">
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -678,7 +779,7 @@ object SharePages {
         <meta name="referrer" content="no-referrer">
         <meta name="color-scheme" content="dark">
         <meta name="theme-color" content="#0a1026">
-        <title>$titleFa</title>
+        <title>$titleVi</title>
         $LANG_BOOT
         <style>$CSS</style>
         </head>
@@ -688,10 +789,11 @@ object SharePages {
             <div class="brand">
               <span class="mark" aria-hidden="true"></span>
               <span class="bn" dir="ltr">Aether</span>
-              <span class="bs">${bi("اشتراک VPN", "VPN share")}</span>
+              <span class="bs">${bi("اشتراک VPN", "VPN share", "Chia sẻ VPN")}</span>
             </div>
-            <div class="lang" role="group" aria-label="Language / زبان">
-              <button type="button" data-set-lang="fa" aria-pressed="true" lang="fa">فارسی</button>
+            <div class="lang" role="group" aria-label="Ngôn ngữ / Language / زبان">
+              <button type="button" data-set-lang="vi" aria-pressed="true" lang="vi">Tiếng Việt</button>
+              <button type="button" data-set-lang="fa" aria-pressed="false" lang="fa">فارسی</button>
               <button type="button" data-set-lang="en" aria-pressed="false" lang="en">English</button>
             </div>
           </header>
@@ -704,6 +806,8 @@ object SharePages {
                 "فقط با دو سرور ${ltr("STUN")} عمومی (گوگل و کلادفلر) حرف می‌زنه.",
               "This page never shows the share password and loads nothing from the internet. The WebRTC test " +
                 "only talks to two public STUN servers (Google and Cloudflare).",
+              "Trang này không bao giờ hiển thị mật khẩu chia sẻ và không tải bất cứ thứ gì từ internet. " +
+                "Bài kiểm tra WebRTC chỉ liên lạc với hai máy chủ STUN công cộng (Google và Cloudflare).",
             )}
           </footer>
         </div>
@@ -711,15 +815,19 @@ object SharePages {
         </body></html>
     """.trimIndent()
 
-    /** Runs before first paint so an English reader never sees the Persian flash. */
+    /** Runs before first paint so a stored language never flashes the Vietnamese default. */
     private val LANG_BOOT = """
         <script>
         (function () {
           try {
-            if (localStorage.getItem('aether-lang') === 'en') {
-              var r = document.documentElement;
+            var l = localStorage.getItem('aether-lang');
+            var r = document.documentElement;
+            if (l === 'fa') {
+              r.setAttribute('data-lang', 'fa'); r.lang = 'fa'; r.dir = 'rtl';
+            } else if (l === 'en') {
               r.setAttribute('data-lang', 'en'); r.lang = 'en'; r.dir = 'ltr';
             }
+            /* Anything else (including nothing stored yet) keeps the Vietnamese default. */
           } catch (e) {}
         })();
         </script>
@@ -739,8 +847,9 @@ object SharePages {
         body{margin:0;color:var(--tx);line-height:1.8;font-size:16px;
           font-family:AetherFa,Vazirmatn,Vazir,"Segoe UI",Tahoma,"SF Arabic","Geeza Pro","Noto Sans Arabic UI","Noto Sans Arabic","Noto Naskh Arabic",system-ui,sans-serif;
           background:radial-gradient(1200px 520px at 50% -180px,#15225280,transparent 70%),var(--bg);min-height:100vh}
-        html[data-lang=en] body{line-height:1.65}
-        html[data-lang=fa] .en,html[data-lang=en] .fa{display:none!important}
+        html[data-lang=en] body,html[data-lang=vi] body{line-height:1.65}
+        html[data-lang=vi] body{font-family:system-ui,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+        html[data-lang=fa] .en,html[data-lang=fa] .vi,html[data-lang=en] .fa,html[data-lang=en] .vi,html[data-lang=vi] .fa,html[data-lang=vi] .en{display:none!important}
         .ltr{direction:ltr;unicode-bidi:isolate}
         code{direction:ltr;unicode-bidi:isolate;display:inline-block;font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Roboto Mono",monospace;
           font-size:.9em;background:var(--s1);border:1px solid var(--line);border-radius:6px;padding:0 6px;line-height:1.7;word-break:break-all;color:var(--ac2)}
@@ -756,7 +865,7 @@ object SharePages {
         .bs{color:var(--dim);font-size:14px;white-space:nowrap}
         .lang{display:inline-flex;flex:none;border:1px solid var(--line2);border-radius:999px;padding:3px;background:var(--bg2)}
         .lang button{font:inherit;font-size:14px;line-height:1;border:0;background:transparent;color:var(--mut);padding:8px 14px;border-radius:999px;cursor:pointer;transition:background .25s cubic-bezier(.22,1,.36,1),color .25s}
-        .lang button[lang=en]{font-family:system-ui,"Segoe UI",Roboto,sans-serif}
+        .lang button[lang=en],.lang button[lang=vi]{font-family:system-ui,"Segoe UI",Roboto,sans-serif}
         .lang button[aria-pressed=true]{background:var(--s2);color:var(--tx);box-shadow:inset 0 0 0 1px var(--line2)}
         .lang button:hover{color:var(--tx)}
         .hero{padding:34px 0 30px}
@@ -863,7 +972,8 @@ object SharePages {
             }
             if (save) { try { localStorage.setItem('aether-lang', l); } catch (e) {} }
           }
-          setLang(root.getAttribute('data-lang') === 'en' ? 'en' : 'fa', false);
+          var dl = root.getAttribute('data-lang');
+          setLang(dl === 'fa' ? 'fa' : dl === 'en' ? 'en' : 'vi', false);
           for (var i = 0; i < buttons.length; i++) {
             buttons[i].addEventListener('click', function () { setLang(this.getAttribute('data-set-lang'), true); });
           }
@@ -883,8 +993,8 @@ object SharePages {
               var saved = b.innerHTML;
               function flag(ok) {
                 b.classList.add('done');
-                b.innerHTML = ok ? '<span class="fa">کپی شد</span><span class="en">Copied</span>'
-                                 : '<span class="fa">دستی کپی کن</span><span class="en">Copy by hand</span>';
+                b.innerHTML = ok ? '<span class="fa">کپی شد</span><span class="en">Copied</span><span class="vi">Đã sao chép</span>'
+                                 : '<span class="fa">دستی کپی کن</span><span class="en">Copy by hand</span><span class="vi">Sao chép thủ công</span>';
                 setTimeout(function () { b.classList.remove('done'); b.innerHTML = saved; }, 1600);
               }
               if (navigator.clipboard && window.isSecureContext) {
@@ -911,15 +1021,16 @@ object SharePages {
           function ips(list) {
             return list.map(function (ip) { return '<b dir="ltr" class="ltr">' + esc(ip) + '</b>'; }).join(', ');
           }
-          function show(cls, en, fa) {
+          function show(cls, en, fa, vi) {
             box.className = 'box ' + cls;
             box.innerHTML = '<i aria-hidden="true"></i><div class="msg"><span class="fa">' + fa +
-              '</span><span class="en" dir="ltr">' + en + '</span></div>';
+              '</span><span class="en" dir="ltr">' + en + '</span><span class="vi">' + vi + '</span></div>';
           }
           var W = '<span class="ltr" dir="ltr">WebRTC</span>';
           if (!window.RTCPeerConnection) {
             show('ok', 'WebRTC is not available in this browser, so it cannot reveal your IP.',
-              W + ' تو این مرورگر نیست، پس نمی‌تونه آی‌پیت رو لو بده.');
+              W + ' تو این مرورگر نیست، پس نمی‌تونه آی‌پیت رو لو بده.',
+              'Trình duyệt này không có WebRTC nên không thể làm lộ IP của bạn.');
             return;
           }
           function isV6(ip) { return ip.indexOf(':') >= 0; }
@@ -942,7 +1053,8 @@ object SharePages {
             pc = new RTCPeerConnection({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }] });
           } catch (e) {
             show('ok', 'WebRTC is blocked in this browser, so it cannot reveal your IP.',
-              W + ' تو این مرورگر بسته‌ست، پس نمی‌تونه آی‌پیت رو لو بده.');
+              W + ' تو این مرورگر بسته‌ست، پس نمی‌تونه آی‌پیت رو لو بده.',
+              'WebRTC đã bị chặn trong trình duyệt này nên không thể làm lộ IP của bạn.');
             return;
           }
           function done() {
@@ -955,20 +1067,26 @@ object SharePages {
             var exitTag = '<b dir="ltr" class="ltr">' + esc(exitIp) + '</b>';
             if (all.length === 0) {
               show('ok', 'No WebRTC leak: WebRTC cannot reveal any public IP from this browser.',
-                'نشتی نیست: ' + W + ' هیچ آی‌پی عمومی‌ای از این مرورگر لو نمی‌ده.');
+                'نشتی نیست: ' + W + ' هیچ آی‌پی عمومی‌ای از این مرورگر لو نمی‌ده.',
+                'Không rò rỉ WebRTC: WebRTC không thể làm lộ bất kỳ IP công cộng nào từ trình duyệt này.');
             } else if (exitIp && leaks.length > 0) {
               show('bad', 'WebRTC LEAK: this browser reveals ' + ips(leaks) + ' (not the tunnel exit ' + exitTag +
                 '). Install the lock below and restart the browser.',
                 'نشت ' + W + '! این مرورگر آی‌پی ' + ips(leaks) + ' رو لو می‌ده (نه آی‌پی خروجی تونل). ' +
-                'قفل پایین رو نصب کن و مرورگر رو کامل ببند و باز کن.');
+                'قفل پایین رو نصب کن و مرورگر رو کامل ببند و باز کن.',
+                'RÒ RỈ WebRTC: trình duyệt này đang làm lộ ' + ips(leaks) + ' (không phải IP đầu ra của tunnel ' +
+                exitTag + '). Hãy cài file khóa bên dưới rồi khởi động lại trình duyệt.');
             } else if (exitIp && sameFamily.length > 0) {
               show('ok', 'WebRTC goes through the tunnel: it only sees the exit ' + exitTag + '.',
-                W + ' هم از تونل رد می‌شه و فقط آی‌پی خروجی ' + exitTag + ' رو می‌بینه.');
+                W + ' هم از تونل رد می‌شه و فقط آی‌پی خروجی ' + exitTag + ' رو می‌بینه.',
+                'WebRTC đang đi qua tunnel: nó chỉ thấy IP đầu ra ' + exitTag + '.');
             } else {
               show('warn', 'WebRTC reveals ' + ips(all) + '. If that is not the exit IP shown in Aether, it is a ' +
                 'leak: install the lock below.',
                 W + ' این آدرس رو نشون می‌ده: ' + ips(all) + '. اگه با آی‌پی خروجی توی برنامهٔ ' +
-                '<span class="ltr" dir="ltr">Aether</span> یکی نیست، یعنی نشت داره؛ قفل پایین رو نصب کن.');
+                '<span class="ltr" dir="ltr">Aether</span> یکی نیست، یعنی نشت داره؛ قفل پایین رو نصب کن.',
+                'WebRTC đang hiển thị địa chỉ ' + ips(all) + '. Nếu đó không phải IP đầu ra hiển thị trong app ' +
+                'Aether thì đây là rò rỉ: hãy cài file khóa bên dưới.');
             }
           }
           pc.onicecandidate = function (e) {
