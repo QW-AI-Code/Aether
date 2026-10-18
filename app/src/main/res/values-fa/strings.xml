@@ -832,4 +832,24 @@
     <string name="announcements_desc">تازه‌های این نسخه و راهنمای اتصال، هر زمان که خواستید</string>
     <string name="announcements_version">نسخهٔ %1$s</string>
     <string name="announcements_footer">همهٔ پیام‌های به‌روزرسانی اینجا بایگانی می‌شوند. برای خواندن دوباره روی هر کدام بزنید.</string>
+<<<<<<< Updated upstream
+=======
+    <!-- Export / import of the tunnel settings -->
+    <string name="backup_title">خروجی و ورودی تنظیمات</string>
+    <string name="backup_nav_desc">ذخیرهٔ تنظیمات در یک فایل یا بازگردانی آن</string>
+    <string name="backup_export">گرفتن خروجی تنظیمات در فایل</string>
+    <string name="backup_export_desc">محل ذخیرهٔ یک فایل کوچک JSON را انتخاب کنید</string>
+    <string name="backup_import">وارد کردن تنظیمات از فایل</string>
+    <string name="backup_import_desc">تنظیمات فعلی را با تنظیمات داخل فایل جایگزین می‌کند</string>
+    <string name="backup_locked">برای وارد کردن تنظیمات ابتدا اتصال را قطع کنید.</string>
+    <string name="backup_footer">فایل فقط تنظیمات تونل را دارد. هرگز رمز، توکن، ورود Zero Trust، پروکسی بالادستی، کانفیگ‌های دلخواه یا کلید هوش مصنوعی در آن نیست.</string>
+    <string name="backup_exported">تنظیمات ذخیره شد</string>
+    <string name="backup_export_failed">ذخیرهٔ فایل ناموفق بود</string>
+    <string name="backup_imported">تنظیمات وارد شد</string>
+    <string name="backup_err_invalid">این فایل، فایل تنظیمات معتبر Aether نیست</string>
+    <string name="backup_err_newer">این فایل با نسخهٔ جدیدتری از Aether ساخته شده است</string>
+    <string name="backup_confirm_title">این تنظیمات وارد شود؟</string>
+    <string name="backup_confirm_body">تنظیمات فعلی شما جایگزین می‌شود. ورود Zero Trust و پروکسی بالادستی این گوشی حفظ می‌شود. فقط فایل کسانی را وارد کنید که به آن‌ها اعتماد دارید: یک فایل تنظیمات می‌تواند سرورهای DNS، نقطه‌های اتصال و مسیرها را عوض کند.</string>
+    <string name="backup_confirm_ok">وارد کردن</string>
+>>>>>>> Stashed changes
 </resources>

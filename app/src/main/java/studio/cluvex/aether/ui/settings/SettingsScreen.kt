@@ -24,6 +24,10 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Route
+<<<<<<< Updated upstream
+=======
+import androidx.compose.material.icons.rounded.Save
+>>>>>>> Stashed changes
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Tune
@@ -152,6 +156,12 @@ enum class SettingsRoute {
 
     /** 1.5.0: archive of the "What's new" announcements (پیام‌ها و اطلاعیه‌ها). */
     ANNOUNCEMENTS,
+<<<<<<< Updated upstream
+=======
+
+    /** Export the tunnel settings to a file / import them from one. */
+    BACKUP,
+>>>>>>> Stashed changes
 }
 
 /**
@@ -239,6 +249,10 @@ fun SettingsHost(
         SettingsRoute.APPEARANCE -> AppearancePage(back, modifier)
         SettingsRoute.CUSTOM_CONFIGS -> CustomConfigsPage(editable, back, modifier)
         SettingsRoute.ANNOUNCEMENTS -> AnnouncementsPage(back, modifier)
+<<<<<<< Updated upstream
+=======
+        SettingsRoute.BACKUP -> BackupPage(profile, editable, onProfileChange, back, modifier)
+>>>>>>> Stashed changes
         SettingsRoute.DIAGNOSTICS -> PanelPage(stringResource(R.string.diag_title), back, modifier) {
             DiagnosticsPanel(startExpanded = true)
         }
@@ -420,6 +434,13 @@ private fun SettingsHomePage(
                     value = languageLabel(LanguagePrefs.read(context)),
                     onClick = { onOpen(SettingsRoute.APPEARANCE) },
                     aiTopic = AiTopic.LANGUAGE,
+                )
+                RowDivider()
+                SettingsNavRow(
+                    title = stringResource(R.string.backup_title),
+                    summary = stringResource(R.string.backup_nav_desc),
+                    icon = Icons.Rounded.Save,
+                    onClick = { onOpen(SettingsRoute.BACKUP) },
                 )
                 RowDivider()
                 SettingsNavRow(

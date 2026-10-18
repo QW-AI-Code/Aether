@@ -1,12 +1,14 @@
 package studio.cluvex.aether.data
 
 import android.content.Context
+import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
@@ -101,9 +103,15 @@ class ProfileStore(private val context: Context) {
      */
     private val secrets = SecretStore(context)
 
-    val profile: Flow<ConnectionProfile> = context.dataStore.data.map { prefs ->
+    val profile: Flow<ConnectionProfile> = context.dataStore.data.map { prefs -> fromPrefs(prefs) }
+
+    /** The stored preferences as they are now (the secrets are not in here, see [secrets]). */
+    internal suspend fun snapshot(): Preferences = context.dataStore.data.first()
+
+    /** Body of [profile], unchanged, as a function so the settings import validates a file the same way. */
+    internal fun fromPrefs(prefs: Preferences): ConnectionProfile {
         val d = ConnectionProfile()
-        ConnectionProfile(
+        return ConnectionProfile(
             // fromStoredName migrates the retired backend names (see
             // TransportBackend): the single-hop PSIPHON of 1.2.6 becomes the
             // chained mode, so a saved profile keeps the exit the user picked,

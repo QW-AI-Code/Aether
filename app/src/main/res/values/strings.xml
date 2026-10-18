@@ -862,4 +862,24 @@
     <string name="announcements_desc">What\'s new in this version and the connection guide, any time</string>
     <string name="announcements_version">Version %1$s</string>
     <string name="announcements_footer">Every update message is kept here. Tap one to read it again.</string>
+<<<<<<< Updated upstream
+=======
+    <!-- Export / import of the tunnel settings -->
+    <string name="backup_title">Export &amp; import settings</string>
+    <string name="backup_nav_desc">Save your settings to a file, or restore them</string>
+    <string name="backup_export">Export settings to a file</string>
+    <string name="backup_export_desc">Choose where to save a small JSON file</string>
+    <string name="backup_import">Import settings from a file</string>
+    <string name="backup_import_desc">Replaces the current settings with the ones in a file</string>
+    <string name="backup_locked">Disconnect first to import settings.</string>
+    <string name="backup_footer">The file holds your tunnel settings only. It never contains passwords, tokens, the Zero Trust sign-in, your upstream proxy, custom configs or the AI key.</string>
+    <string name="backup_exported">Settings saved</string>
+    <string name="backup_export_failed">Could not save the file</string>
+    <string name="backup_imported">Settings imported</string>
+    <string name="backup_err_invalid">This is not a valid Aether settings file</string>
+    <string name="backup_err_newer">This file was made by a newer version of Aether</string>
+    <string name="backup_confirm_title">Import these settings?</string>
+    <string name="backup_confirm_body">Your current settings will be replaced. The Zero Trust sign-in and the upstream proxy on this phone are kept. Only import files from people you trust: a settings file can change DNS servers, endpoints and routes.</string>
+    <string name="backup_confirm_ok">Import</string>
+>>>>>>> Stashed changes
 </resources>
