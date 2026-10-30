@@ -6,6 +6,8 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import studio.cluvex.aether.model.ConnectionProfile
@@ -38,6 +40,7 @@ class ProfileStore(private val context: Context) {
         val scan = stringPreferencesKey("scan")
         val ip = stringPreferencesKey("ip")
         val quick = booleanPreferencesKey("quick")
+        val verifyConnection = booleanPreferencesKey("verifyConnection")
         val h2 = booleanPreferencesKey("h2")
         val share = booleanPreferencesKey("share")
         // Added in 1.2.0
@@ -55,6 +58,8 @@ class ProfileStore(private val context: Context) {
         val splitApps = stringPreferencesKey("splitApps")
         // Added in 1.2.3 (engine v1.5.0)
         val dns = stringPreferencesKey("dns")
+        val gameMode = booleanPreferencesKey("gameMode")
+        val gameDns = stringPreferencesKey("gameDns")
         val team = stringPreferencesKey("team")
         val teamAuth = stringPreferencesKey("teamAuth")
         val accessId = stringPreferencesKey("accessId")
@@ -78,6 +83,25 @@ class ProfileStore(private val context: Context) {
         // Added in 1.5.0 (engine core 2.3.0)
         val tlsCiphers = stringPreferencesKey("tlsCiphers")
         val disableGrease = booleanPreferencesKey("disableGrease")
+        val tlsVerify = booleanPreferencesKey("tlsVerify")
+        val apiAddress = stringPreferencesKey("apiAddress")
+        // Core 2.4.0 TLS / API options
+        val masqueSni = stringPreferencesKey("masqueSni")
+        val apiSni = stringPreferencesKey("apiSni")
+        val apiHost = stringPreferencesKey("apiHost")
+        val tls13Ciphers = stringPreferencesKey("tls13Ciphers")
+        val tlsKeyShares = stringPreferencesKey("tlsKeyShares")
+        val tlsSigalgs = stringPreferencesKey("tlsSigalgs")
+        val tlsCertCompression = stringPreferencesKey("tlsCertCompression")
+        val tlsAlps = stringPreferencesKey("tlsAlps")
+        val tlsTrustAnchors = stringPreferencesKey("tlsTrustAnchors")
+        val tlsServerPadding = stringPreferencesKey("tlsServerPadding")
+        val enableGreaseSigalgs = booleanPreferencesKey("enableGreaseSigalgs")
+        val enableEchGrease = booleanPreferencesKey("enableEchGrease")
+        val disableOcspStapling = booleanPreferencesKey("disableOcspStapling")
+        val disableSct = booleanPreferencesKey("disableSct")
+        val disableSessionTicket = booleanPreferencesKey("disableSessionTicket")
+        val disableExtensionPermutation = booleanPreferencesKey("disableExtensionPermutation")
         val goolMode = stringPreferencesKey("goolMode")
         val validateSecs = intPreferencesKey("validateSecs")
         val reconnectSecs = intPreferencesKey("reconnectSecs")
@@ -124,6 +148,7 @@ class ProfileStore(private val context: Context) {
             ipVersion = prefs[Keys.ip]
                 ?.let { runCatching { IpVersion.valueOf(it) }.getOrNull() } ?: IpVersion.V4,
             quickReconnect = prefs[Keys.quick] ?: true,
+            verifyConnection = prefs[Keys.verifyConnection] ?: true,
             masqueHttp2 = prefs[Keys.h2] ?: false,
             lanShare = prefs[Keys.share] ?: false,
             noize = prefs[Keys.noize]
@@ -148,6 +173,8 @@ class ProfileStore(private val context: Context) {
             splitApps = prefs[Keys.splitApps]
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
             dnsServers = prefs[Keys.dns] ?: "",
+            gameMode = prefs[Keys.gameMode] ?: false,
+            gameDnsServers = prefs[Keys.gameDns] ?: "",
             team = prefs[Keys.team] ?: "",
             teamAuth = prefs[Keys.teamAuth]
                 ?.let { runCatching { TeamAuth.valueOf(it) }.getOrNull() } ?: TeamAuth.OFF,
@@ -175,6 +202,24 @@ class ProfileStore(private val context: Context) {
             // to the engine defaults, i.e. exactly what those profiles launched with.
             tlsCiphers = prefs[Keys.tlsCiphers] ?: "",
             disableGrease = prefs[Keys.disableGrease] ?: false,
+            tlsVerify = prefs[Keys.tlsVerify] ?: false,
+            apiAddress = prefs[Keys.apiAddress] ?: "",
+            masqueSni = prefs[Keys.masqueSni] ?: "",
+            apiSni = prefs[Keys.apiSni] ?: "",
+            apiHost = prefs[Keys.apiHost] ?: "",
+            tls13Ciphers = prefs[Keys.tls13Ciphers] ?: "",
+            tlsKeyShares = prefs[Keys.tlsKeyShares] ?: "",
+            tlsSigalgs = prefs[Keys.tlsSigalgs] ?: "",
+            tlsCertCompression = prefs[Keys.tlsCertCompression] ?: "",
+            tlsAlps = prefs[Keys.tlsAlps] ?: "",
+            tlsTrustAnchors = prefs[Keys.tlsTrustAnchors] ?: "",
+            tlsServerPadding = prefs[Keys.tlsServerPadding] ?: "",
+            enableGreaseSigalgs = prefs[Keys.enableGreaseSigalgs] ?: false,
+            enableEchGrease = prefs[Keys.enableEchGrease] ?: false,
+            disableOcspStapling = prefs[Keys.disableOcspStapling] ?: false,
+            disableSct = prefs[Keys.disableSct] ?: false,
+            disableSessionTicket = prefs[Keys.disableSessionTicket] ?: false,
+            disableExtensionPermutation = prefs[Keys.disableExtensionPermutation] ?: false,
             goolMode = prefs[Keys.goolMode]
                 ?.let { runCatching { GoolMode.valueOf(it) }.getOrNull() } ?: GoolMode.MODERN,
             validateSecs = prefs[Keys.validateSecs] ?: 0,
@@ -198,7 +243,7 @@ class ProfileStore(private val context: Context) {
             // written. See ConnectionProfile.fastEndpointOnly for why.
             fastEndpointOnly = prefs[Keys.fastEndpointOnly] ?: false,
         )
-    }
+    }.flowOn(Dispatchers.IO)
 
     suspend fun save(profile: ConnectionProfile) {
         context.dataStore.edit { prefs ->
@@ -213,6 +258,7 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.scan] = profile.scanMode.name
             prefs[Keys.ip] = profile.ipVersion.name
             prefs[Keys.quick] = profile.quickReconnect
+            prefs[Keys.verifyConnection] = profile.verifyConnection
             prefs[Keys.h2] = profile.masqueHttp2
             prefs[Keys.share] = profile.lanShare
             prefs[Keys.noize] = profile.noize.name
@@ -228,6 +274,8 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.split] = profile.splitMode.name
             prefs[Keys.splitApps] = profile.splitApps.joinToString(",")
             prefs[Keys.dns] = profile.dnsServers
+            prefs[Keys.gameMode] = profile.gameMode
+            prefs[Keys.gameDns] = profile.gameDnsServers
             prefs[Keys.team] = profile.team
             prefs[Keys.teamAuth] = profile.teamAuth.name
             prefs[Keys.accessId] = profile.accessClientId
@@ -248,6 +296,24 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.tlsGroups] = profile.tlsGroups
             prefs[Keys.tlsCiphers] = profile.tlsCiphers
             prefs[Keys.disableGrease] = profile.disableGrease
+            prefs[Keys.tlsVerify] = profile.tlsVerify
+            prefs[Keys.apiAddress] = profile.apiAddress
+            prefs[Keys.masqueSni] = profile.masqueSni
+            prefs[Keys.apiSni] = profile.apiSni
+            prefs[Keys.apiHost] = profile.apiHost
+            prefs[Keys.tls13Ciphers] = profile.tls13Ciphers
+            prefs[Keys.tlsKeyShares] = profile.tlsKeyShares
+            prefs[Keys.tlsSigalgs] = profile.tlsSigalgs
+            prefs[Keys.tlsCertCompression] = profile.tlsCertCompression
+            prefs[Keys.tlsAlps] = profile.tlsAlps
+            prefs[Keys.tlsTrustAnchors] = profile.tlsTrustAnchors
+            prefs[Keys.tlsServerPadding] = profile.tlsServerPadding
+            prefs[Keys.enableGreaseSigalgs] = profile.enableGreaseSigalgs
+            prefs[Keys.enableEchGrease] = profile.enableEchGrease
+            prefs[Keys.disableOcspStapling] = profile.disableOcspStapling
+            prefs[Keys.disableSct] = profile.disableSct
+            prefs[Keys.disableSessionTicket] = profile.disableSessionTicket
+            prefs[Keys.disableExtensionPermutation] = profile.disableExtensionPermutation
             prefs[Keys.goolMode] = profile.goolMode.name
             prefs[Keys.validateSecs] = profile.validateSecs
             prefs[Keys.reconnectSecs] = profile.reconnectSecs

@@ -1,3 +1,5 @@
+> **1.6.0:** [Release notes](.github/release-notes.md) · [Detailed notes](docs/RELEASE_1.6.0.md) · [Changelog](CHANGELOG.md)
+
 <p align="center">
   <img src="docs/ads.png" alt="Aether — Freedom, in one tap" width="100%">
 </p>
@@ -14,8 +16,8 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-1.5.0-8B5CF6?style=flat-square">
-  <img alt="engine core" src="https://img.shields.io/badge/engine%20core-2.3.0-22D3EE?style=flat-square">
+  <img alt="version" src="https://img.shields.io/badge/version-1.6.0-8B5CF6?style=flat-square">
+  <img alt="engine core" src="https://img.shields.io/badge/engine%20core-2.4.0-22D3EE?style=flat-square">
   <img alt="min Android" src="https://img.shields.io/badge/Android-8.0%2B-3DDC84?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-AGPL--3.0-F59E0B?style=flat-square">
 </p>
@@ -27,7 +29,9 @@
 - [Overview](#overview)
 - [Features](#features)
 - [Connection modes](#connection-modes)
+- [What is new in 1.6.0](#what-is-new-in-160)
 - [Custom configs (V2Ray / Xray / NapsternetV)](#custom-configs-v2ray--xray--napsternetv)
+- [Clean-IP scan settings](#clean-ip-scan-settings)
 - [Getting started](#getting-started)
 - [Settings guide](#settings-guide)
 - [Quick Settings tile and widget](#quick-settings-tile-and-widget)
@@ -63,7 +67,7 @@ NapsternetV configs run in a bundled Xray-core, alone or chained with the engine
 - **Six engine modes:** Aether, `Aether → Psiphon`, Tor, `Aether → Tor`,
   `Tor → Psiphon`, `Tor → Aether`.
 - **Custom configs:** VLESS, VMess, Trojan, Shadowsocks, SOCKS, WireGuard and
-  NapsternetV (`.npvt`), alone or in 14 chains with the engine.
+  NapsternetV (`.npvt` / NPVS), alone or in 14 chains with the engine, organised in named tabs.
 - **Smart protocol selection** that measures the network, races two routes on
   plain Aether and remembers what worked on each network.
 - **Full engine options:** protocol (Smart / MASQUE / WireGuard / Gool / MASQUE×2),
@@ -90,6 +94,59 @@ NapsternetV configs run in a bundled Xray-core, alone or chained with the engine
 | **Tor → Psiphon** | phone → Tor → Psiphon | Psiphon exit with Tor in front |
 | **Tor → Aether** | phone → Tor → WARP | WARP exit reached through Tor |
 
+## What is new in 1.6.0
+
+App version **1.6.0** (version code 19), engine core **2.4.0**.
+
+**Configs and tabs**
+
+- **One import flow** for links and files, including hosted config lists (stored
+  encrypted, refreshed atomically; a failed download or parse keeps the previous data).
+- **Named tabs:** *All*, automatic *V2Ray* / *Npvt* tabs and your own tabs with
+  counters, rename (pencil) and move; deleting a tab never deletes its configs.
+- **New table:** ping and status beside the name, a menu on every server, a visible
+  scrollbar, successful pings sorted ascending and green / amber / red ping colours.
+  The *Highest latency first* switch now sits directly under *Health-check interval*.
+- **NPVS v5** (authenticated compact envelopes) next to NPVT1, with the author's
+  expiry and mobile-only rules. Other NPVS generations and device-bound files are refused.
+- **Open files from other apps:** a separate import screen validates the file, asks
+  for a password and destination tab, and needs your confirmation. It never starts a VPN.
+- **Certificate pinning:** a separate leaf-pinning Xray executable; if it is missing
+  a pinned config fails closed instead of ignoring the pin.
+
+**Connection and chains**
+
+- **Auto-select** in the running VPN service: 1 / 3 / 5 / 10 / 30 / 60 minutes,
+  fresh successful results only, 50 ms / 20 % hysteresis. Switching reconnects briefly.
+- **Real delay** uses the v2rayNG default HTTPS 204 target, validates the certificate
+  and refuses error, redirect and captive-portal answers.
+- **Connection verification** is a switch for the six ordinary modes, separate from the
+  custom-config verification; start-up and liveness checks stay active.
+- **Config → Aether / Aether → Config** repaired (TCP-aware carrier, real exit port,
+  SNI-safe routing); the home screen shows the real exit.
+- **Speed test, presets and connection sounds**, engine core 2.4.0 TLS / API options.
+
+**Profiles (save, import and export)**
+
+- **Profile management.** Save your current settings as a new profile with one tap, switch between profiles whenever you like, import settings from a file, and export the selected profile in a non-confidential form to share it with friends. The exported file leaves out your sensitive data, so you can hand it over without worrying about leaking private information.
+
+**Clean-IP scan**
+
+- **New Clean-IP scan.** The app now finds a clean IP by itself; no separate IP-scanner app is needed. For configs hosted on Cloudflare (for example BPB panels), when a V2Ray server's ping rises or the server stops working, tap the magnifier icon, or open the three-dot menu and choose *Clean IP*, next to that server to start a scan. Once a clean IP and port are found, the app replaces the address automatically and updates the server. The *Scan clean IPs of this tab* button scans every server of the tab one after another. **Important:** scan speed depends on your network. Always scan with the VPN turned off. If a message says no suitable IP was found, repeat the scan a few more times. In the *Clean IP* settings you can change the scan depth or enter your own IP range.
+- **Clean-IP result cards stay on screen until you tap the X.**
+
+**Display and sound**
+
+- **Home screen animations** switch: turns off the blue glow around the connect button and the other
+  moving home-screen effects on weaker phones (the connect button still spins while connecting).
+- **Connection sounds** switch: turns the short cue on connect and disconnect on or off; silent mode is respected.
+
+**Assistant and polish**
+
+- Gemini uses the active session's final endpoint and never sees the private config vault.
+- The onboarding pager is gone; the *What's new* dialog and *Messages & announcements* remain.
+- A stable-key tab strip fixes the tab-index crash.
+
 ## Custom configs (V2Ray / Xray / NapsternetV)
 
 Open **Settings → Custom configs** and switch the section on. With it off (the
@@ -98,9 +155,9 @@ default), every session uses the engine modes above.
 ### Importing
 
 - **Paste from clipboard:** one or many links, links inside a longer text (for
-  example a Telegram message), a base64 subscription, an `https://` subscription
+  example a Telegram message), a base64 hosted config list, an `https://` hosted config list
   URL or a full Xray JSON config.
-- **Pick a file:** `.npvt`, `.txt`, `.json` or a QR image.
+- **Pick a file:** `.npvt`, `.npvs`, `.txt`, `.json` or a QR image. Files opened from other apps go through a confirmation screen.
 - **Scan a QR code** with the camera, or **read a QR code from an image**.
 
 Supported protocols: VLESS (including REALITY and XTLS Vision), VMess, Trojan,
@@ -242,34 +299,22 @@ Details: [docs/ZERO_TRUST.md](docs/ZERO_TRUST.md),
 
 ## Security audit
 
-The 1.5.0 audit scores **92 / 100** (ten weighted areas, same scale as 1.4.0); full
-report in English and Persian: [docs/SECURITY_AUDIT_1.5.0.md](docs/SECURITY_AUDIT_1.5.0.md).
+**1.6.0 — 76 / 100** (full 0–100 static audit, eight weighted areas; no dynamic phone test and no
+live `cargo audit` were possible). The table is in [.github/release-notes.md](.github/release-notes.md)
+(English and Persian). The previous review, 1.5.0 — 92 / 100
+([docs/SECURITY_AUDIT_1.5.0.md](docs/SECURITY_AUDIT_1.5.0.md)), used a looser method, so the two
+numbers are not directly comparable. Highlights:
 
-| Area | Score |
-| --- | ---: |
-| Secrets & key management | 95 |
-| Cryptography, TLS & MitM resistance | 96 |
-| Data-leak risk (DNS, IPv6, WebRTC, tunnel bypass) | 90 |
-| LAN sharing surface | 86 |
-| Local storage at rest | 93 |
-| Permissions & OS configuration | 97 |
-| Logging & diagnostics | 97 |
-| Code quality & network configuration | 88 |
-| On-device exposure (screen, clipboard) | 95 |
-| Supply chain & build integrity | 80 |
-
-- **DNS, IPv6, WebRTC:** DNS servers and `::/0` are routed into the tunnel (IPv6
-  protection is on by default and forced in chains); Tor modes carry DNS over TCP and
-  drop UDP; WebRTC STUN leaves through the tunnel exit. Proxy mode and apps excluded
-  by split tunnelling bypass the tunnel by design.
-- **Fixed in 1.5.0:** the ping probe's trust-everything TLS check was removed; Xray
-  log lines no longer reveal the server or UUID of a locked NPVT config; subscription
-  downloads go through the tunnel while connected; *Copy link* is marked sensitive.
-- **Open:** the local SOCKS ports on `127.0.0.1` used by chains have no password;
-  LAN sharing has no password by default; R8 is off.
-- Static review plus host tests; a packet capture on a phone is still recommended.
-  For the strongest kill switch, enable Android's *Always-on VPN* and *Block
-  connections without VPN*.
+- **Unchanged:** permissions, `allowBackup="false"`, cleartext traffic denied, system CA anchors only.
+- **Improved (applied by CI at build time; the committed `Cargo.lock` still lists 0.11.17 / 0.23.43):** `quinn-proto` 0.11.18 and `rustls` 0.23.46; strict `cargo audit` in CI
+  (unresolved vulnerabilities fail the build); complete Gradle Wrapper with distribution checksum.
+- **Watch items:** the Clean-IP scanner probes candidate IPs with a trust-all TLS context
+  (by design, validated afterwards through a real-proxy ping); `ConfigImportActivity` is
+  exported with a broad MIME filter (it validates, asks and never connects); local chain
+  SOCKS ports and LAN sharing have no password by default; R8 is off; the signing key
+  in the repository guarantees updatability, not authenticity.
+- No packet capture on a phone was done. For the strongest kill switch enable Android's
+  *Always-on VPN* and *Block connections without VPN*.
 
 ## Updates and app signing
 
@@ -301,17 +346,18 @@ authenticity. See [docs/SIGNING.md](docs/SIGNING.md) and
 2. Every push to `main` builds and tests the app. For a release, push a tag:
 
    ```bash
-   git tag v1.5.0
-   git push origin v1.5.0
+   git tag v1.6.0
+   git push origin v1.6.0
    ```
 
-3. The release contains three APKs; its text comes from `.github/release-notes.md`.
+3. The release contains up to four APKs; its text comes from `.github/release-notes.md`.
 
 | File | For |
 |------|-----|
-| `Aether-1.5.0-arm64-v8a.apk` | Almost all modern phones (64-bit ARM) |
-| `Aether-1.5.0-armeabi-v7a.apk` | Older 32-bit phones |
-| `Aether-1.5.0-universal.apk` | Any ARM phone — choose this if unsure |
+| `Aether-1.6.0-arm64-v8a.apk` | Almost all modern phones (64-bit ARM) |
+| `Aether-1.6.0-armeabi-v7a.apk` | Older 32-bit phones |
+| `Aether-1.6.0-universal.apk` | Any ARM phone — choose this if unsure |
+| `Aether-1.6.0-x86_64.apk` | x86_64 devices and emulators |
 
 ### Native components
 
@@ -320,8 +366,8 @@ authenticity. See [docs/SIGNING.md](docs/SIGNING.md) and
   Aether engine (`native/aether`, with Tor) with `cargo-ndk`, and installs
   Xray-core as `libxray.so` from the official release, verified by SHA-256.
 - CI refuses an APK that lacks any native component for an included ABI.
-- `scripts/sync-core.sh` upgrades the engine core and re-applies the app's engine
-  patches (`patches/`).
+- `scripts/sync-core.sh` is an inert stub: the automatic core update from GitHub was
+  removed in 1.6.0; the vendored engine (`native/aether`, core 2.4.0) only changes with a release.
 
 ### Locally
 
@@ -358,4 +404,10 @@ The full history is in [CHANGELOG.md](CHANGELOG.md).
 
 Third-party licences: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 Released under **AGPL-3.0**. See [LICENSE](LICENSE).
----
+
+## Clean-IP scan settings
+
+Settings has a dedicated scan-depth and manual real-ping limit page, shared by
+single-server and current-tab group scans. The active server row shows progress;
+a bottom result card reports the old/new endpoint and confirmed ping and stays until you close it with the X button. Locked or
+stale configs are not overwritten. See [scanner settings and runtime limits](docs/CLEAN_IP_SCANNER.md).

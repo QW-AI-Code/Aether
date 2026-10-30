@@ -60,13 +60,17 @@ share the tunnel with your network; nothing authenticates the callers.
 | --- | --- | --- |
 | MASQUE | `--masque` (default) | QUIC/HTTP-3 on UDP 443, or HTTP/2 on TCP 443 |
 | WireGuard | `--wg` | WireGuard on UDP 2408 and documented fallbacks |
-| WARP-in-WARP | `--gool` | a WireGuard tunnel inside another one |
+| WireGuard over MASQUE (gool) | `--gool` | a WireGuard tunnel inside a MASQUE one |
+| WARP-in-WARP (classic gool) | `--gool-classic` | a WireGuard tunnel inside another one |
 | MASQUE-in-MASQUE | `--mim` | a MASQUE tunnel inside another one |
 
 MASQUE is the default because it looks like ordinary HTTPS traffic and Cloudflare
 treats it as the primary protocol. Use WireGuard when UDP QUIC is throttled but
-plain UDP still passes. `--gool` adds a second hop for networks that recognise a
-single WARP handshake; it costs latency, so reach for it last.
+plain UDP still passes. `--gool` adds a second hop: your network sees only the
+MASQUE tunnel, and the WireGuard hop inside it is dialled from inside WARP, so
+Cloudflare gives it a different exit than your own address would get.
+`--gool-classic` nests WireGuard in WireGuard instead. Both cost latency, so reach
+for them last.
 
 MASQUE has two carriers. HTTP/3 over QUIC is the default. If UDP 443 is blocked
 outright, `--h2` moves the same tunnel onto TCP 443, which survives networks that
@@ -78,11 +82,11 @@ aether --masque --h2
 
 ### MASQUE-in-MASQUE
 
-`--mim` runs a second MASQUE tunnel inside the first one, the way `--gool` nests
-WireGuard. The outer hop is dialled from your network; the inner hop is dialled
-from inside it, so Cloudflare sees the outer edge's address rather than yours and
-gives the inner tunnel a different exit. Use it when a single tunnel keeps coming
-out in the country you are trying to leave.
+`--mim` runs a second MASQUE tunnel inside the first one, the way `--gool` runs a
+WireGuard one inside it. The outer hop is dialled from your network; the inner
+hop is dialled from inside it, so Cloudflare sees the outer edge's address rather
+than yours and gives the inner tunnel a different exit. Use it when a single
+tunnel keeps coming out in the country you are trying to leave.
 
 Both hops use the same carrier: HTTP/3 inside HTTP/3 by default, or HTTP/2 inside
 HTTP/2 with `--h2`. The inner hop gets its own identity file, named
@@ -121,7 +125,7 @@ Cloudflare answers on many edge addresses and a filtered network usually blocks
 some of them, so Aether does not ship a single fixed address. It sweeps the
 documented ranges, verifies candidates, and keeps the one that carries real
 traffic. A handshake alone is not enough: a candidate has to pass an end-to-end
-data check before the proxy opens.
+data check before the proxy starts serving.
 
 | Mode | Behaviour |
 | --- | --- |
@@ -141,11 +145,20 @@ The last working endpoint is saved, and `--quick-reconnect` reuses it without a
 new sweep. An endpoint that just failed is held on a cooldown so the next attempt
 does not land on it again.
 
-### Choosing the WARP-in-WARP hops yourself
+### Choosing the gool hops yourself
 
-`--peer` names one endpoint and warp-in-warp needs two, so each hop has its own
-setting. Name both and no scan runs at all; name one and the scan finds the
-other:
+`--gool` scans for one hop only, the MASQUE gateway, which `--peer` names as it
+does for MASQUE. The WireGuard hop inside the tunnel is not scanned for: it is
+the endpoint the gool identity's registration names, then a few known ones, on
+port 2408, unless `--gool-peer` names another:
+
+```sh
+aether --gool --peer 162.159.196.1:443 --gool-peer 162.159.192.1:2408
+```
+
+The classic gool, warp-in-warp, needs two WireGuard endpoints and `--peer` names
+one, so each hop has its own setting. Name both and no scan runs at all; name
+one and the scan finds the other:
 
 ```sh
 aether --gool --wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408
@@ -161,14 +174,15 @@ different addresses — a second tunnel leaving through the edge it arrived on
 gains nothing — and a scan run for one hop leaves the other's address out of
 the sweep.
 
-Naming a hop is enough to select warp-in-warp, so `--gool` alongside it is
-optional, and `--wg-peer` names the outer hop. An endpoint you named is kept
-across reconnects rather than swapped for a scanned one, so a hop that stops
-answering is retried instead of replaced. `--wiw-scan` scans for both, ignoring
-an endpoint left in the environment.
+Naming a hop is enough to select the classic gool, so `--gool` or
+`--gool-classic` alongside it is optional. With `--gool-classic`, `--wg-peer`
+names the outer hop too. An endpoint you named is kept across reconnects rather
+than swapped for a scanned one, so a hop that stops answering is retried instead
+of replaced. `--wiw-scan` scans for both, ignoring an endpoint left in the
+environment.
 
-Nothing here is asked at startup. `--gool` on its own scans for both hops and
-prints a line above the scan mode question naming the alternative.
+Nothing here is asked at startup. `--gool-classic` on its own scans for both
+hops and prints a line above the scan mode question naming the alternative.
 
 ## Obfuscation
 
@@ -186,9 +200,10 @@ reshape them so the opening exchange does not match a known pattern.
 aether --noize aggressive
 ```
 
-One extra applies to MASQUE only: `--fragment` splits the TLS ClientHello on the
-HTTP/2 carrier, which defeats inspectors that read the SNI from a single packet.
-`--fragment-size` and `--fragment-delay` tune it.
+One extra concerns the TLS ClientHello: `--fragment` splits it on MASQUE's HTTP/2
+carrier, which defeats inspectors that read the SNI from a single packet, and on
+the calls to the WARP API, whatever the transport. `--fragment-size` and
+`--fragment-delay` tune both. Without `--fragment`, both go whole.
 
 ## TLS
 
@@ -198,22 +213,87 @@ All four send Chrome's ClientHello as BoringSSL writes it: TLS 1.3 and 1.2, Chro
 cipher suites, GREASE values (RFC 8701), the extensions in a new order on every
 handshake, signed certificate timestamps and OCSP asked for. They offer `h2` then
 `http/1.1`, as Chrome does, but `h3` over QUIC, which carries TLS 1.3 alone; the
-HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked.
-Zero Trust sign-in, the Tor bridge and relay lists and the exit-location lookup keep
-a TLS of their own. Three options change the fingerprint of all four:
+HTTP/2 carrier speaks HTTP/2, which Cloudflare picks. Certificates are not checked,
+except the MASQUE gateway's with `--team` or `--tls-verify`, which must match one of
+Aether's pins. Zero Trust sign-in, the Tor bridge and relay lists and the
+exit-location lookup keep a TLS of their own. Sixteen options change the fingerprint
+of all four:
 
-- `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones,
-  which stay as they are: names separated by `:`, as BoringSSL reads a cipher
-  string. HTTP/3 lists none. Without it they are Chrome's, from Chrome's own rule
+- `--tls-ciphers` sets the TLS 1.2 cipher suites, listed after the TLS 1.3 ones:
+  names separated by `:`, as BoringSSL reads a cipher string. HTTP/3 lists none.
+  Without it they are Chrome's, from Chrome's own rule
   `ALL:!aPSK:!ECDSA+SHA1:!3DES`, in Chrome's order: AES-GCM first on hardware with
   AES instructions, ChaCha20 first elsewhere.
-- `--tls-groups` sets the groups, in order, the first one getting a key share
-  (default `P-256:X25519:P-384`).
+- `--tls13-ciphers` sets the TLS 1.3 cipher suites, in order: their standard names
+  separated by `:`, from `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384` and
+  `TLS_CHACHA20_POLY1305_SHA256`, each once. Without it they go in Chrome's order,
+  AES-GCM first on hardware with AES instructions and ChaCha20 first elsewhere.
+  BoringSSL always lists them before the TLS 1.2 suites.
+- `--tls-groups` sets the groups, in order (default `P-256:X25519:P-384`).
+- `--tls-key-shares` sets the groups the ClientHello sends key shares for, in
+  order: each one of the groups, in their order, and named once, e.g.
+  `X25519MLKEM768:X25519:P-256` with
+  `--tls-groups X25519MLKEM768:X25519:P-256:P-384:P-521`, as Firefox sends them.
+  Without it they are BoringSSL's choice, as Chrome's: the first group, and the
+  first one of the other kind, post-quantum or not.
 - `--disable-grease` leaves out the GREASE values, which all four otherwise put in
   the cipher suites, the extensions, the groups, the key shares and the versions.
+- `--enable-grease-sigalgs` puts a GREASE value first among the signature
+  algorithms as well, as Chrome does; BoringSSL leaves it out by default. It
+  goes with `--disable-grease` or without it.
+- `--tls-sigalgs` sets the signature algorithms the ClientHello lists, in order,
+  and so the ones the server may sign the handshake with: BoringSSL's names
+  separated by `:`, such as `ecdsa_secp256r1_sha256`, `rsa_pss_rsae_sha256`,
+  `rsa_pkcs1_sha1`, `ed25519` or `mldsa65`, each once. Without it they are
+  BoringSSL's: Chrome's eight, then `rsa_pkcs1_sha1`.
+- `--tls-cert-compression` offers certificate compression (RFC 8879), in order,
+  of `zlib`, `brotli` and `zstd`, separated by `:`: `brotli` as Chrome offers it,
+  `zlib:brotli:zstd` as Firefox does. A certificate the server sends compressed
+  with one of them is decompressed, and must come to the length the server gave.
+  Without it none is offered.
+- `--tls-alps new` or `--tls-alps old` offers application settings (ALPS) for
+  HTTP/2 and HTTP/3, with no settings of the client's, as Chrome does: `new` under
+  the codepoint Chrome sends now (0x44cd), `old` under the one it sent before
+  (0x4469), as Chrome 120 does. HTTP/1.1 gets none. Without it none is offered.
+- `--tls-trust-anchors` asks for a certificate from the trust anchors it names
+  (draft-ietf-tls-trust-anchor-ids): their IDs, relative OIDs in dotted decimal
+  such as `11129.9.1`, separated by `:`, in order, as Chrome asks for its own. It
+  changes no certificate check.
+- `--tls-server-padding <n>` asks the server for `n` bytes of padding in its
+  handshake, from 0 to 65535, as Chrome asks for 6000 (BoringSSL's server_padding
+  extension). A server that does not know it ignores it.
+- `--enable-ech-grease` sends a GREASE encrypted_client_hello, which looks like
+  ECH and hides nothing, when there is no ECH config to offer, as Chrome and
+  Firefox do. With `--ech`, the config goes instead.
+- `--disable-ocsp-stapling` and `--disable-sct` leave out the requests for OCSP
+  (status_request) and for signed certificate timestamps, which all four
+  otherwise send, as Chrome does.
+- `--disable-session-ticket` leaves out the session_ticket extension, which all
+  four otherwise send, as Chrome does.
+- `--disable-extension-permutation` keeps the extensions in BoringSSL's one order,
+  the same on every handshake, as Firefox's, Python's and Go's are; otherwise they
+  go in a new order each time, as Chrome's.
 
-A cipher or group name BoringSSL does not know stops the core as it starts, with
-the option named.
+A value these options do not take stops the core as it starts, with the option
+named: a cipher, group or signature algorithm BoringSSL does not know, key shares
+that do not follow the groups, a name given twice, an ALPS codepoint other than
+`new` and `old`, a trust anchor ID that is not dotted decimal, a padding over
+65535.
+
+Some of what other clients send, BoringSSL cannot: delegated_credentials,
+record_size_limit, signature_algorithms_cert, encrypt_then_mac, post_handshake_auth
+and more than one point format. It always sends psk_key_exchange_modes with TLS
+1.3, a key share of its own for each group, and its own order of the extensions.
+
+The MASQUE handshakes, on both carriers, put `www.cloudflare.com` in their
+ClientHello as the server name; `--masque-sni <name>` puts another one there, such
+as `consumer-masque.cloudflareclient.com`, the one the WARP client sends. Only the
+TLS name changes: the HTTP host, the `:authority` of the CONNECT request, stays
+`cloudflareaccess.com`. The name goes into every MASQUE handshake: the scans and
+checks of gateways, the tunnel, and both hops of MASQUE-in-MASQUE. With `--ech` it is
+the name inside the encrypted ClientHello, and the one in the clear is the config's
+public name. A value that is no domain name, an IP address among them, stops the
+core as it starts.
 
 `--ech auto` fetches an Encrypted Client Hello config and hides the server name
 altogether, when the network permits it, on the MASQUE handshakes, on both
@@ -257,6 +337,11 @@ Cloudflare emails a one-time code and Aether asks for it. The code can be typed
 into a terminal or fed on standard input, which is how the desktop and Android
 clients answer it. You get three attempts. The resulting token is cached for the
 life of the process, so a reconnect does not ask again.
+
+Over MASQUE, `--team` holds the gateway's certificate to Aether's pins, as
+`--tls-verify` does, so a middlebox cannot stand in for the gateway with a
+certificate of its own and see the traffic inside the tunnel. `AETHER_TLS_VERIFY=0`
+turns the check off.
 
 `--gateway` sends HTTP and HTTPS through the organization's Gateway proxy so its
 filtering and logging apply. It is off by default because it adds a hop inside
@@ -399,7 +484,8 @@ The other way round: Tor is bootstrapped first, and the tunnel is then dialled
 through it, so the WARP edge is reached from a Tor exit and the network you are on
 never sees WARP at all. The proxy on `127.0.0.1:1819` comes out of WARP as usual.
 Tor carries TCP only, and WARP's WireGuard endpoints answer on UDP alone, so this
-mode runs MASQUE over HTTP/2 and refuses WireGuard and `gool`. If you want
+mode runs MASQUE over HTTP/2, the outer hop of `gool` too, and refuses WireGuard and
+the classic gool (`--gool-classic`). If you want
 WireGuard in the path, put Tor inside the tunnel with `--tor` instead, where the
 WireGuard tunnel carries Tor directly. This mode also needs Tor reachable before
 anything else works, so on a network that blocks Tor, give it bridges.
@@ -487,7 +573,7 @@ The mark is a decimal or `0x` number and needs root or `CAP_NET_ADMIN`; Aether s
 at startup if it cannot set it, rather than send unmarked traffic. It only works on
 Linux and Android. The calls to the WARP API and the DoH lookup of the ECH config
 are marked as well, but the system resolver looks a name up outside the mark:
-without `--upstream`, `--enroll-address` then takes an IP address only (see
+without `--upstream`, `--api-address` then takes an IP address only (see
 [Where the WARP API is asked](#where-the-warp-api-is-asked)), and a DoH URL of
 `--ech-dns` should name an IP address, or give one with `@address=`. The same
 setting is available as `AETHER_MARK`.
@@ -544,19 +630,60 @@ not discard an identity.
 ### Where the WARP API is asked
 
 Registering a device, enrolling its MASQUE key and refreshing a profile are calls
-to the WARP API, `api.cloudflareclient.com`, made as described under TLS above.
-`--enroll-address` sends them to another address, an IP address or a domain name,
-on port 443 unless a port follows it, an IPv6 address then in brackets:
-`188.114.97.6`, `188.114.97.6:2053`, `[2606:4700::1]:8443`. Only the connection goes
-there: the API's name stays the server name of the ClientHello and the HTTP host,
-which carries no port. A name is looked up first, by the proxy with `--upstream`
-and by the system resolver otherwise; with `--mark` and no `--upstream` only an IP
-address is taken, since that lookup would leave outside the mark and loop back into
-the tunnel. With `--ech` the API's name goes only inside the encrypted ClientHello,
-and an IP address for `--enroll-address` keeps it out of the DNS lookup as well.
+to the WARP API, made as described under TLS above. Three options say how they go,
+and each one left out follows the one before it:
+
+- `--api-host` is the HTTP host, the `Host` header or the HTTP/2 `:authority`, which
+  carries no port. It is `api.devices.cloudflare.com` by default: the name the
+  Cloudflare One client calls since its 2026.6.0, on addresses of its own,
+  162.159.137.105 and 162.159.138.105.
+- `--api-sni` is the server name of the ClientHello, the `--api-host` name by
+  default. With `--ech` it goes only inside the encrypted ClientHello.
+- `--api-address` is where the connection goes: an IP address or a domain name, on
+  port 443 unless a port follows it, an IPv6 address then in brackets, such as
+  `162.159.137.105`, `188.114.97.6:2053` or `[2606:4700:7::a29f:8969]:443`. It is the
+  `--api-sni` name on port 443 by default.
+
+Cloudflare answers 403 to a call whose server name and host differ, even between
+its own names, which is why the server name follows the host. Set `--api-sni` apart
+only for a front of your own that takes another name.
+
+With neither `--api-sni` nor `--api-host`, an attempt that `api.devices.cloudflare.com`
+does not serve goes by `api.cloudflareclient.com` next: the name the WARP clients
+called before, on Cloudflare's shared addresses, which serves the same API to the
+same requests. An attempt counts as not served when it gets no answer, or a refusal
+of another server than the API, such as an error page of the edge or of a
+middlebox; a success, or a refusal of the API itself, keeps the call on that name,
+where a busy API is asked again. The address follows the name unless
+`--api-address` is given, and the name the API answers by goes first for the rest
+of the run, with the other one still behind it.
+
+With `--api-address` alone, the calls also go by the new name first, then by the
+old one. A front of your own that knows only `api.cloudflareclient.com` keeps
+working through that fallback; `--api-host api.cloudflareclient.com` sends every
+call by the old name, as before 2.3.7.
+
+With none of the three options, a call that neither name serves has one more way:
+the name that goes first, on a Cloudflare edge of its own, 104.24.4.6 and then
+104.18.0.6, for a network that blocks the API's own addresses, or answers in their
+place, but lets an edge through. As on the other ways, its ClientHello goes out in
+pieces only with `--fragment`. Once an edge has answered, the later calls of the run
+go there first.
+
+A domain name in `--api-address`, or the server name in its place, is looked up
+first, by the proxy with `--upstream` and by the system resolver otherwise. With
+`--mark` and no `--upstream` only an IP address is taken, since that lookup would
+leave outside the mark and loop back into the tunnel. An IP address for
+`--api-address` also keeps the name out of the DNS lookup, which matters with
+`--ech`.
+
+Each call, and each attempt of it, goes over a TCP connection and a TLS handshake
+of its own, which carries no other request; so does each request of the Zero Trust
+sign-in.
 
 ```sh
-aether --register all --ech auto --enroll-address 141.101.113.10
+aether --register all --api-address 162.159.137.105
+aether --register all --api-host api.cloudflareclient.com
 ```
 
 ## Using Aether as a library
@@ -610,6 +737,7 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_QUICK_RECONNECT` | reuse the saved endpoint |
 | `AETHER_MASQUE_HTTP2`, `AETHER_MASQUE_H2_PEER` | HTTP/2 carrier; `--h3` sets it to `0` |
 | `AETHER_QUIC_V2` | `0` turns off the QUIC v2 opener (on by default) |
+| `AETHER_MASQUE_SNI` | server name of the MASQUE ClientHello (default `www.cloudflare.com`); the HTTP host stays |
 | `AETHER_ECH` | `auto` or a base64 config, for MASQUE and the WARP API |
 | `AETHER_ECH_DNS` | resolver `--ech auto` asks (`udp://`, `tcp://` or `https://`) |
 | `AETHER_ECH_DOMAIN` | domain whose ECH config `--ech auto` takes |
@@ -635,9 +763,24 @@ Every flag has an equivalent variable. Flags win when both are set.
 | `AETHER_TCP_KEEPALIVE_SECS`, `AETHER_TCP_CONNECT_SECS` | keep-alive and connect timeout inside the tunnel |
 | `AETHER_REPROVISION` | replace an identity Cloudflare refuses |
 | `AETHER_CONFIG`, `AETHER_WG_CONFIG`, `AETHER_MASQUE_CONFIG` | identity paths |
-| `AETHER_ENROLL_ADDRESS` | where the calls to the WARP API go |
+| `AETHER_API_ADDRESS` | where the calls to the WARP API go |
+| `AETHER_API_SNI` | the server name of those calls |
+| `AETHER_API_HOST` | the HTTP host of those calls |
 | `AETHER_TLS_GROUPS` | TLS groups (see TLS) |
+| `AETHER_TLS_KEY_SHARES` | the groups with a key share (see TLS) |
 | `AETHER_TLS_CIPHERS` | TLS 1.2 cipher suites (see TLS) |
+| `AETHER_TLS13_CIPHERS` | TLS 1.3 cipher suites (see TLS) |
 | `AETHER_DISABLE_GREASE` | `1` leaves GREASE out (see TLS) |
+| `AETHER_ENABLE_GREASE_SIGALGS` | `1` puts GREASE among the signature algorithms (see TLS) |
+| `AETHER_TLS_SIGALGS` | the signature algorithms (see TLS) |
+| `AETHER_TLS_CERT_COMPRESSION` | the certificate compression offered (see TLS) |
+| `AETHER_TLS_ALPS` | `new` or `old`: ALPS offered (see TLS) |
+| `AETHER_TLS_TRUST_ANCHORS` | the trust anchor IDs asked for (see TLS) |
+| `AETHER_TLS_SERVER_PADDING` | the padding asked of the server (see TLS) |
+| `AETHER_ENABLE_ECH_GREASE` | `1` sends a GREASE ECH (see TLS) |
+| `AETHER_DISABLE_OCSP_STAPLING` | `1` leaves the OCSP request out (see TLS) |
+| `AETHER_DISABLE_SCT` | `1` leaves the SCT request out (see TLS) |
+| `AETHER_DISABLE_SESSION_TICKET` | `1` leaves session_ticket out (see TLS) |
+| `AETHER_DISABLE_EXTENSION_PERMUTATION` | `1` keeps one order of the extensions (see TLS) |
 | `AETHER_PERF_PROFILE` | `low`, `medium`, `high` |
 | `AETHER_LOG_LEVEL` | `error` to `trace` |

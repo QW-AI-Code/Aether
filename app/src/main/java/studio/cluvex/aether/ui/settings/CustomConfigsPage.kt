@@ -4,19 +4,31 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.ui.ai.AiTopicIcon
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FileOpen
 import androidx.compose.material.icons.rounded.Image
 import androidx.compose.material.icons.rounded.Info
@@ -25,24 +37,30 @@ import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Route
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.VpnKey
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,11 +79,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import studio.cluvex.aether.R
+import studio.cluvex.aether.custom.ConfigCatalog
+import studio.cluvex.aether.custom.tabServerNumbers
 import studio.cluvex.aether.custom.ChainMode
 import studio.cluvex.aether.custom.ConfigFormat
 import studio.cluvex.aether.custom.ConfigImporter
 import studio.cluvex.aether.custom.ConfigParser
 import studio.cluvex.aether.custom.ConfigPing
+import studio.cluvex.aether.custom.ConfigSpeedTest
 import studio.cluvex.aether.custom.ConfigPingStore
 import studio.cluvex.aether.custom.ConfigSource
 import studio.cluvex.aether.custom.CustomConfig
@@ -80,6 +101,7 @@ import androidx.compose.ui.unit.sp
 /** An import that stopped at a NapsternetV password prompt, and how to retry it. */
 private class PendingImport(
     val wrong: Boolean,
+    val destination: String?,
     val retry: suspend (String?) -> List<CustomConfig>,
 )
 
@@ -104,6 +126,9 @@ internal fun CustomConfigsPage(
     val st by CustomConfigStore.state.collectAsState()
     val pings by ConfigPingStore.results.collectAsState()
     val testingAll by ConfigPingStore.testingAll.collectAsState()
+    var speedFor by remember { mutableStateOf<CustomConfig?>(null) }
+    val scanState by studio.cluvex.aether.scanner.CleanIpScanManager.state.collectAsState()
+    var pingSort by rememberSaveable { mutableStateOf(ConfigCatalog.PingSort.ASC) }
 
     var busy by remember { mutableStateOf(false) }
     var pasteOpen by remember { mutableStateOf(false) }
@@ -113,6 +138,24 @@ internal fun CustomConfigsPage(
     var renaming by remember { mutableStateOf<CustomConfig?>(null) }
     var deleting by remember { mutableStateOf<CustomConfig?>(null) }
     var confirmDeleteAll by remember { mutableStateOf(false) }
+    val selectedTab = st.activeTab
+    fun selectTab(key: String) {
+        try { CustomConfigStore.setActiveTab(context, key) }
+        catch (e: RuntimeException) { Toast.makeText(context, e.message, Toast.LENGTH_SHORT).show() }
+    }
+    var importDestination by rememberSaveable { mutableStateOf<String?>(null) }
+    var addMenu by remember { mutableStateOf(false) }
+    var actionsForSubscription by remember { mutableStateOf<CustomConfigStore.Subscription?>(null) }
+    var moveSubscription by remember { mutableStateOf<CustomConfigStore.Subscription?>(null) }
+    var deleteSubscription by remember { mutableStateOf<CustomConfigStore.Subscription?>(null) }
+    var deletingTab by remember { mutableStateOf<String?>(null) }
+    var groupEditor by remember { mutableStateOf(false) }
+    var groupToEdit by remember { mutableStateOf<CustomConfigStore.Group?>(null) }
+    var moveConfig by remember { mutableStateOf<CustomConfig?>(null) }
+    var automaticTabEditor by remember { mutableStateOf<String?>(null) }
+    var automaticTabNaming by remember { mutableStateOf<String?>(null) }
+    var subscriptionPassword by remember { mutableStateOf<CustomConfigStore.Subscription?>(null) }
+
 
     val importedMsg = stringResource(R.string.cc_imported)
     val failedMsg = stringResource(R.string.cc_import_failed)
@@ -121,23 +164,52 @@ internal fun CustomConfigsPage(
 
     fun toast(text: String) = Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
 
-    fun runImport(password: String? = null, task: suspend (String?) -> List<CustomConfig>) {
+    fun runImport(password: String? = null, destination: String? = importDestination, task: suspend (String?) -> List<CustomConfig>) {
         busy = true
         scope.launch {
             try {
                 val list = task(password)
-                withContext(Dispatchers.IO) { CustomConfigStore.add(context, list) }
+                withContext(Dispatchers.IO) { CustomConfigStore.add(context, list.map { it.copy(groupId = destination) }) }
                 toast(String.format(importedMsg, list.size))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: NpvtPasswordException) {
-                pending = PendingImport(e.wrong, task)
+                pending = PendingImport(e.wrong, destination, task)
             } catch (e: Exception) {
                 toast(String.format(failedMsg, e.message ?: e.javaClass.simpleName))
             } finally {
                 busy = false
             }
         }
+    }
+
+    fun refresh(sub: CustomConfigStore.Subscription, password: String? = null) {
+        busy = true
+        scope.launch {
+            try {
+                withContext(Dispatchers.IO) {
+                    CustomConfigStore.refreshSubscription(context, sub, password = password)
+                }
+                toast(context.getString(R.string.cc_sub_updated))
+            } catch (e: CancellationException) { throw e
+            } catch (e: NpvtPasswordException) { subscriptionPassword = sub
+            } catch (e: Exception) { toast(String.format(failedMsg, e.message ?: e.javaClass.simpleName))
+            } finally { busy = false }
+        }
+    }
+
+    fun importText(text: String, source: ConfigSource) {
+        val input = ConfigParser.cleanInput(text)
+        if (input.lines().size == 1 && (input.startsWith("https://") || input.startsWith("http://"))) {
+            val existing = st.subscriptions.firstOrNull { it.url == input }
+            val name = runCatching { java.net.URI(input).host }.getOrNull() ?: "Subscription"
+            if (existing != null && existing.groupId != importDestination) {
+                try { CustomConfigStore.moveSubscription(context, existing.id, importDestination) }
+                catch (e: IllegalArgumentException) { toast(e.message.orEmpty()); return }
+            }
+            refresh(existing?.copy(groupId = importDestination) ?: CustomConfigStore.Subscription(
+                java.util.UUID.randomUUID().toString(), name, input, groupId = importDestination))
+        } else runImport { p -> ConfigImporter.fromText(context, input, source, p) }
     }
 
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -151,7 +223,7 @@ internal fun CustomConfigsPage(
         if (text.isNullOrBlank()) {
             if (result.originalIntent != null) toast(noQrMsg)
         } else {
-            runImport { p -> ConfigImporter.fromText(context, text, ConfigSource.QR, p) }
+            importText(text, ConfigSource.QR)
         }
     }
     val scanPrompt = stringResource(R.string.cc_scan_prompt)
@@ -159,9 +231,23 @@ internal fun CustomConfigsPage(
     val active = st.active
     val chainName = active?.chainLabel ?: stringResource(R.string.cc_config_word)
 
-    SettingsScaffold(stringResource(R.string.cc_title), onBack, modifier) {
+    val tabs = ConfigCatalog.tabs(st, stringResource(R.string.cc_tab_all))
+    val effectiveTab = selectedTab
+    val visibleRows = ConfigCatalog.rows(st, effectiveTab, pings = pings, pingSort = pingSort)
+    val visibleConfigs = visibleRows.mapNotNull { it.config }
+    // Server numbers (S1, S2, ...) are dense and per tab: a tab with N servers always
+    // shows S1..SN. They follow the stored order, never the row position, so sorting
+    // by ping moves a row but keeps its S-number; deleting a server closes the gap.
+    val serverNumbers = remember(st.configs, effectiveTab, visibleConfigs.map { it.id }) {
+        val inTab = visibleConfigs.map { it.id }.toSet()
+        tabServerNumbers(st.configs.map { it.id }.filter { it in inTab })
+    }
+
+    Box(modifier.fillMaxSize()) {
+    SettingsScaffold(stringResource(R.string.cc_title), onBack, Modifier.fillMaxSize()) {
         if (!editable) {
             settingsSection {
+            GroupCaption(stringResource(R.string.cc_title), aiTopic = AiTopic.CUSTOM_CONFIGS)
                 SettingsGroup {
                     SettingsNoticeRow(
                         text = stringResource(R.string.settings_locked_hint),
@@ -174,7 +260,7 @@ internal fun CustomConfigsPage(
         settingsSection {
             SettingsGroup {
                 SettingsSwitchRow(
-                    title = stringResource(R.string.cc_enable),
+                    title = stringResource(R.string.cc_enable), aiTopic = AiTopic.CUSTOM_CONFIGS,
                     summary = if (active == null) {
                         stringResource(R.string.cc_enable_need)
                     } else {
@@ -187,7 +273,7 @@ internal fun CustomConfigsPage(
                 )
                 RowDivider()
                 SettingsChoiceRow(
-                    title = stringResource(R.string.cc_chain_title),
+                    title = stringResource(R.string.cc_chain_title), aiTopic = AiTopic.CUSTOM_CHAIN,
                     summary = stringResource(R.string.cc_chain_desc),
                     icon = Icons.Rounded.Route,
                     options = ChainMode.entries.toList(),
@@ -202,99 +288,97 @@ internal fun CustomConfigsPage(
         }
 
         settingsSection {
-            GroupCaption(stringResource(R.string.cc_group_import))
             SettingsGroup {
-                SettingsActionRow(
-                    title = stringResource(R.string.cc_import_paste),
-                    summary = stringResource(R.string.cc_import_paste_desc),
-                    icon = Icons.Rounded.Link,
-                    enabled = !busy,
-                    onClick = { pasteOpen = true },
+                SettingsSwitchRow(
+                    title = stringResource(R.string.cc_verify), aiTopic = AiTopic.CUSTOM_VERIFY,
+                    summary = stringResource(R.string.cc_verify_desc),
+                    icon = Icons.Rounded.Info, checked = st.verifyConnection, enabled = editable,
+                    onCheckedChange = { CustomConfigStore.setVerify(context, it) },
+                )
+                // 1.6.0: same inset divider as the Enable/Chain card above.
+                RowDivider()
+                SettingsSwitchRow(
+                    title = stringResource(R.string.cc_auto), aiTopic = AiTopic.CUSTOM_PING,
+                    summary = stringResource(R.string.cc_auto_desc),
+                    icon = Icons.Rounded.Speed, checked = st.autoSelect, enabled = editable,
+                    onCheckedChange = { CustomConfigStore.setAutoSelect(context, it) },
                 )
                 RowDivider()
-                SettingsActionRow(
-                    title = stringResource(R.string.cc_import_file),
-                    summary = stringResource(R.string.cc_import_file_desc),
-                    icon = Icons.Rounded.FileOpen,
-                    enabled = !busy,
-                    onClick = { runCatching { pickFile.launch(arrayOf("*/*")) } },
+                SettingsChoiceRow(
+                    title = stringResource(R.string.cc_health_interval), aiTopic = AiTopic.CUSTOM_PING, icon = Icons.Rounded.Speed,
+                    options = listOf(60L, 180L, 300L, 600L, 1800L, 3600L),
+                    selected = st.healthIntervalSeconds,
+                    label = { "${it / 60} min" }, enabled = editable,
+                    onSelect = { CustomConfigStore.setHealthInterval(context, it) },
                 )
-                RowDivider()
-                SettingsActionRow(
-                    title = stringResource(R.string.cc_import_camera),
-                    summary = stringResource(R.string.cc_import_camera_desc),
-                    icon = Icons.Rounded.QrCodeScanner,
-                    enabled = !busy,
-                    onClick = {
-                        runCatching {
-                            scanQr.launch(
-                                ScanOptions()
-                                    .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-                                    .setPrompt(scanPrompt)
-                                    .setBeepEnabled(false)
-                                    // Portrait only: the stock capture screen is
-                                    // landscape and rotated with the sensor.
-                                    .setOrientationLocked(true)
-                                    .setCaptureActivity(PortraitCaptureActivity::class.java),
-                            )
-                        }
-                    },
-                )
-                RowDivider()
-                SettingsActionRow(
-                    title = stringResource(R.string.cc_import_image),
-                    summary = stringResource(R.string.cc_import_image_desc),
-                    icon = Icons.Rounded.Image,
-                    enabled = !busy,
-                    onClick = { runCatching { pickImage.launch("image/*") } },
-                )
+                if (st.configs.isNotEmpty()) {
+                    RowDivider()
+                    SettingsSwitchRow(aiTopic = AiTopic.CUSTOM_PING, title = stringResource(R.string.cc_sort_ping_desc),
+                        summary = stringResource(R.string.cc_sort_ping_desc_summary),
+                        icon = Icons.Rounded.Speed,
+                        checked = pingSort == ConfigCatalog.PingSort.DESC,
+                        onCheckedChange = { pingSort = if (it) ConfigCatalog.PingSort.DESC else ConfigCatalog.PingSort.ASC })
+                }
             }
         }
-
         settingsSection {
-            GroupCaption(stringResource(R.string.cc_group_saved, st.configs.size))
             SettingsGroup {
-                if (st.configs.isEmpty()) {
-                    SettingsNoticeRow(
-                        text = stringResource(R.string.cc_empty),
-                        icon = Icons.Rounded.Info,
-                    )
-                } else {
-                    st.configs.forEachIndexed { index, cfg ->
-                        if (index > 0) RowDivider()
-                        ConfigRow(
-                            config = cfg,
-                            selected = cfg.id == st.activeId,
-                            enabled = editable,
-                            ping = pings[cfg.id] ?: ConfigPing.Report(),
-                            onSelect = { CustomConfigStore.select(context, cfg.id) },
-                            onMore = { actionsFor = cfg },
-                        )
+                Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(enabled = !testingAll && !scanState.running && visibleConfigs.isNotEmpty() && !busy,
+                        onClick = { scope.launch { ConfigPingStore.testAll(context, visibleConfigs) } },
+                        modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(50)) {
+                        if (testingAll) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Icon(Icons.Rounded.Refresh, null, Modifier.size(18.dp))
+                        Text(stringResource(R.string.cc_ping_all_short), Modifier.padding(start = 6.dp))
+                    }
+                    Button(enabled = editable && !busy, onClick = {
+                        importDestination = ConfigCatalog.groupFor(effectiveTab)
+                        addMenu = true
+                    }, modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        shape = RoundedCornerShape(50),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                            contentColor = MaterialTheme.colorScheme.onPrimary)) {
+                        Icon(Icons.Rounded.Add, null, Modifier.size(18.dp))
+                        Text(stringResource(R.string.cc_add_config), Modifier.padding(start = 6.dp))
                     }
                 }
-            }
-            GroupFooter(stringResource(R.string.cc_saved_footer))
-        }
-
-        // Real delay for the whole list. Its own section so the saved-configs
-        // card stays a list of configs and nothing else.
-        if (st.configs.isNotEmpty()) {
-            settingsSection {
-                SettingsGroup {
-                    SettingsActionRow(
-                        title = stringResource(R.string.cc_ping_all),
-                        summary = stringResource(
-                            if (testingAll) R.string.cc_ping_running else R.string.cc_ping_all_desc,
-                        ),
-                        icon = Icons.Rounded.Speed,
-                        enabled = !testingAll,
-                        onClick = {
-                            val all = st.configs
-                            scope.launch { ConfigPingStore.testAll(context, all) }
-                        },
-                    )
+                OutlinedButton(enabled = if (scanState.running) true else editable && !busy && !testingAll &&
+                    visibleConfigs.any { studio.cluvex.aether.scanner.CleanIpScanManager.supported(it) },
+                    onClick = {
+                        if (scanState.running) studio.cluvex.aether.scanner.CleanIpScanManager.stop()
+                        else studio.cluvex.aether.scanner.CleanIpScanManager.scanServers(context, visibleConfigs)
+                    }, modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+                    Text(stringResource(if (scanState.running) R.string.cip_stop else R.string.cip_scan_all))
                 }
-                GroupFooter(stringResource(R.string.cc_ping_footer))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), horizontalArrangement = Arrangement.End) {
+                    AiTopicIcon(AiTopic.CLEAN_IP_SCANNER)
+                }
+                if (scanState.running) Text(stringResource(R.string.cip_group_progress,
+                    (scanState.completed + 1).coerceAtMost(scanState.total), scanState.total),
+                    modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall)
+                else CleanIpScanNotice(scanState.message.takeIf {
+                    scanState.messageConfigs == st.configs && scanState.messageTab == effectiveTab
+                }.orEmpty(), scanState.applied)
+                ConfigTabStrip(tabs, effectiveTab, enabled = !busy, editable = editable && !busy,
+                    onSelect = { selectTab(it) }, onRename = { tab ->
+                        if (tab.editable) {
+                            groupToEdit = st.groups.firstOrNull { ConfigCatalog.customKey(it.id) == tab.key }
+                            groupEditor = true
+                        } else automaticTabEditor = tab.key
+                    }, onNew = { groupToEdit = null; groupEditor = true })
+                key(effectiveTab) {
+                    ConfigDataTable(visibleRows, st.activeId, pings, editable && !busy, testingAll,
+                        onSelect = { CustomConfigStore.select(context, it.id) },
+                        onConfigMenu = { actionsFor = it }, onSubscriptionMenu = { actionsForSubscription = it },
+                        serverNumbers = serverNumbers, scanning = scanState.running,
+                        scanTargetId = scanState.targetId, scanProgress = scanState.progress,
+                        scanValidating = scanState.validating,
+                        onScanIp = { studio.cluvex.aether.scanner.CleanIpScanManager.scanServer(context, it) })
+                }
             }
         }
 
@@ -304,6 +388,7 @@ internal fun CustomConfigsPage(
             settingsSection {
                 SettingsGroup {
                     SettingsActionRow(
+                        aiTopic = AiTopic.CUSTOM_CONFIGS,
                         title = stringResource(R.string.cc_delete_all),
                         icon = Icons.Rounded.DeleteSweep,
                         destructive = true,
@@ -315,26 +400,201 @@ internal fun CustomConfigsPage(
         }
     }
 
+        scanState.pending.firstOrNull()?.let { event ->
+            CleanIpScanResultCard(event.report, serverNumbers[event.report.configId],
+                onDismiss = { studio.cluvex.aether.scanner.CleanIpScanManager.dismissResult(event.id) },
+                modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth()
+                    .navigationBarsPadding().padding(16.dp))
+        }
+    }
+
     // ------------------------------------------------------------ dialogs
+
+    if (addMenu) ConfigDialog(onDismissRequest = { addMenu = false },
+        title = { Text(stringResource(R.string.cc_add_config)) },
+        text = { Column {
+            // 1.6.0: SettingsMenuAction owns the spacing (outer gap + 56 dp min row +
+            // inner padding); the caller no longer stacks a second layer on top.
+            SettingsMenuAction(onClick = { addMenu = false; pasteOpen = true }) { Text(stringResource(R.string.cc_import_paste), Modifier.fillMaxWidth(), fontWeight = FontWeight.SemiBold) }
+            SettingsMenuAction(onClick = { addMenu = false; runCatching { pickFile.launch(arrayOf("*/*")) } }) {
+                Text(stringResource(R.string.cc_import_file), Modifier.fillMaxWidth(), fontWeight = FontWeight.SemiBold)
+            }
+            SettingsMenuAction(onClick = { addMenu = false; runCatching { scanQr.launch(ScanOptions()
+                .setDesiredBarcodeFormats(ScanOptions.QR_CODE).setPrompt(scanPrompt).setBeepEnabled(false)
+                .setOrientationLocked(true).setCaptureActivity(PortraitCaptureActivity::class.java)) } }) {
+                Text(stringResource(R.string.cc_import_camera), Modifier.fillMaxWidth(), fontWeight = FontWeight.SemiBold)
+            }
+            SettingsMenuAction(onClick = { addMenu = false; runCatching { pickImage.launch("image/*") } }) {
+                Text(stringResource(R.string.cc_import_image), Modifier.fillMaxWidth(), fontWeight = FontWeight.SemiBold)
+            }
+        } }, confirmButton = { TextButton(onClick = { addMenu = false }) { Text(stringResource(R.string.action_cancel)) } })
+    actionsForSubscription?.let { sub ->
+        ConfigDialog(onDismissRequest = { actionsForSubscription = null }, title = { Text(sub.name) },
+            text = { Column {
+                SettingsMenuAction(enabled = editable && !busy, onClick = { actionsForSubscription = null; refresh(sub) }) {
+                    Text(stringResource(R.string.cc_sub_update))
+                }
+                SettingsMenuAction(enabled = editable && !busy, onClick = { actionsForSubscription = null; moveSubscription = sub }) {
+                    Text(stringResource(R.string.cc_move_group))
+                }
+                SettingsMenuAction(enabled = editable && !busy, onClick = { actionsForSubscription = null; deleteSubscription = sub }) {
+                    Text(stringResource(R.string.cc_action_delete))
+                }
+            } }, confirmButton = { TextButton(onClick = { actionsForSubscription = null }) { Text(stringResource(R.string.action_cancel)) } })
+    }
+    moveSubscription?.let { sub ->
+        fun moveTo(group: String?) {
+            try { CustomConfigStore.moveSubscription(context, sub.id, group); moveSubscription = null }
+            catch (e: IllegalArgumentException) { toast(e.message.orEmpty()) }
+        }
+        ConfigDialog(onDismissRequest = { moveSubscription = null }, title = { Text(stringResource(R.string.cc_move_group)) },
+            text = { Column {
+                SettingsMenuAction(onClick = { moveTo(null) }) { Text(stringResource(R.string.cc_ungrouped)) }
+                st.groups.forEach { g -> SettingsMenuAction(onClick = { moveTo(g.id) }) { Text(g.name) } }
+            } }, confirmButton = { TextButton(onClick = { moveSubscription = null }) { Text(stringResource(R.string.action_cancel)) } })
+    }
+    deleteSubscription?.let { sub ->
+        ConfigDialog(onDismissRequest = { deleteSubscription = null }, title = { Text(stringResource(R.string.cc_action_delete)) },
+            text = { Text(stringResource(R.string.cc_sub_delete_confirm, sub.name)) },
+            confirmButton = { TextButton(onClick = {
+                CustomConfigStore.deleteSubscription(context, sub.id); deleteSubscription = null
+            }) { Text(stringResource(R.string.cc_action_delete)) } },
+            dismissButton = { TextButton(onClick = { deleteSubscription = null }) { Text(stringResource(R.string.action_cancel)) } })
+    }
+
+    automaticTabEditor?.let { tabKey ->
+        ConfigDialog(onDismissRequest = { automaticTabEditor = null },
+            title = { Text(tabs.firstOrNull { it.key == tabKey }?.name.orEmpty()) },
+            text = { Column {
+                SettingsMenuAction(enabled = editable && !busy, onClick = {
+                    importDestination = null; automaticTabEditor = null; addMenu = true
+                }) { Icon(Icons.Rounded.Add, null); Text(stringResource(R.string.cc_add_config)) }
+                SettingsMenuAction(enabled = editable && !busy, onClick = {
+                    automaticTabEditor = null; automaticTabNaming = tabKey
+                }) { Text(stringResource(R.string.cc_action_rename)) }
+                if (tabKey != ConfigCatalog.ALL) SettingsMenuAction(enabled = editable && !busy, onClick = {
+                    automaticTabEditor = null; deletingTab = tabKey
+                }) { Text(stringResource(R.string.cc_action_delete), color = MaterialTheme.colorScheme.error) }
+            } },
+            confirmButton = { TextButton(onClick = { automaticTabEditor = null }) {
+                Text(stringResource(R.string.action_cancel))
+            } })
+    }
+    automaticTabNaming?.let { tabKey ->
+        var name by remember(tabKey) { mutableStateOf(tabs.firstOrNull { it.key == tabKey }?.name.orEmpty()) }
+        ConfigDialog(onDismissRequest = { automaticTabNaming = null },
+            title = { Text(stringResource(R.string.cc_action_rename)) },
+            text = { OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                label = { Text(stringResource(R.string.cc_group_name)) }) },
+            confirmButton = { TextButton(enabled = editable && !busy && name.isNotBlank(), onClick = {
+                CustomConfigStore.renameAutomaticTab(context, tabKey, name); automaticTabNaming = null
+            }) { Text(stringResource(R.string.cc_group_save)) } },
+            dismissButton = { TextButton(onClick = { automaticTabNaming = null }) {
+                Text(stringResource(R.string.action_cancel))
+            } })
+    }
+    if (groupEditor) {
+        var name by remember(groupToEdit) { mutableStateOf(groupToEdit?.name.orEmpty()) }
+        var error by remember { mutableStateOf<String?>(null) }
+        ConfigDialog(onDismissRequest = { groupEditor = false },
+            title = { Text(stringResource(if (groupToEdit == null) R.string.cc_group_new else R.string.cc_group_edit)) },
+            text = { Column {
+                OutlinedTextField(value = name, onValueChange = { name = it }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    label = { Text(stringResource(R.string.cc_group_name)) })
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            } },
+            confirmButton = { TextButton(enabled = name.isNotBlank(), onClick = {
+                try {
+                    val next = CustomConfigStore.putGroup(context, groupToEdit?.id, name)
+                    selectTab(ConfigCatalog.customKey(groupToEdit?.id ?: next.groups.last().id))
+                    groupEditor = false
+                }
+                catch (e: IllegalArgumentException) { error = e.message }
+            }) { Text(stringResource(R.string.cc_group_save)) } },
+            dismissButton = { Column {
+                groupToEdit?.let { group -> TextButton(enabled = editable && !busy, onClick = {
+                    importDestination = group.id; groupEditor = false; addMenu = true
+                }) { Icon(Icons.Rounded.Add, null); Text(stringResource(R.string.cc_add_config)) } }
+                Row {
+                groupToEdit?.let { group -> TextButton(onClick = {
+                    deletingTab = ConfigCatalog.customKey(group.id); groupEditor = false
+                }) { Text(stringResource(R.string.cc_action_delete)) } }
+                TextButton(onClick = { groupEditor = false }) { Text(stringResource(R.string.action_cancel)) }
+                }
+            } })
+    }
+    deletingTab?.let { tabKey ->
+        val tab = tabs.firstOrNull { it.key == tabKey }
+        ConfigDialog(onDismissRequest = { deletingTab = null },
+            title = { Text(stringResource(R.string.cc_delete_tab_title)) },
+            text = { Text(stringResource(R.string.cc_delete_tab_confirm, tab?.name.orEmpty())) },
+            confirmButton = { TextButton(enabled = editable && !busy, onClick = {
+                deletingTab = null; busy = true
+                scope.launch {
+                    try {
+                        withContext(Dispatchers.IO) { CustomConfigStore.deleteTab(context, tabKey) }
+                    } catch (e: CancellationException) { throw e
+                    } catch (e: Exception) { toast(String.format(failedMsg, e.javaClass.simpleName))
+                    } finally { busy = false }
+                }
+            }) { Text(stringResource(R.string.cc_action_delete), color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deletingTab = null }) { Text(stringResource(R.string.action_cancel)) } })
+    }
+    moveConfig?.let { cfg ->
+        ConfigDialog(onDismissRequest = { moveConfig = null },
+            title = { Text(stringResource(R.string.cc_move_group)) },
+            text = { Column {
+                SettingsMenuAction(onClick = { CustomConfigStore.move(context, cfg.id, null); moveConfig = null }) {
+                    Text(stringResource(R.string.cc_ungrouped))
+                }
+                st.groups.forEach { group -> SettingsMenuAction(onClick = {
+                    CustomConfigStore.move(context, cfg.id, group.id); moveConfig = null
+                }) { Text(group.name) } }
+            } }, confirmButton = { TextButton(onClick = { moveConfig = null }) {
+                Text(stringResource(R.string.action_cancel))
+            } })
+    }
+    subscriptionPassword?.let { sub ->
+        var password by remember(sub.id) { mutableStateOf("") }
+        ConfigDialog(onDismissRequest = { subscriptionPassword = null },
+            title = { Text(stringResource(R.string.cc_password_title)) },
+            text = { LtrOutlinedTextField(value = password, onValueChange = { password = it },
+                visualTransformation = PasswordVisualTransformation()) },
+            confirmButton = { TextButton(enabled = password.isNotBlank(), onClick = {
+                subscriptionPassword = null; refresh(sub, password)
+            }) { Text(stringResource(R.string.cc_import_action)) } },
+            dismissButton = { TextButton(onClick = { subscriptionPassword = null }) {
+                Text(stringResource(R.string.action_cancel))
+            } })
+    }
 
     if (pasteOpen) {
         var text by remember { mutableStateOf("") }
         var pasteCount by remember { mutableIntStateOf(0) }
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { pasteOpen = false },
-            title = { Text(stringResource(R.string.cc_import_paste)) },
+            title = { Text(stringResource(R.string.cc_import_paste), Modifier.fillMaxWidth(), fontWeight = FontWeight.SemiBold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface,
+                        tonalElevation = 2.dp) {
                     LtrOutlinedTextField(
                         value = text,
                         onValueChange = { text = it },
                         singleLine = false,
                         placeholder = { Text(stringResource(R.string.cc_paste_hint)) },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 260.dp),
+                        // 1.6.0: 6 dp keeps the field clear of the 18 dp corner radius;
+                        // the old 12 dp inset only shrank the typing area.
+                        modifier = Modifier.fillMaxWidth().padding(6.dp).heightIn(min = 120.dp, max = 260.dp),
                         // The field is focused while this dialog is open; without
                         // the key a pasted value would never reach it.
                         replaceKey = pasteCount,
                     )
+                    }
                     TextButton(onClick = {
                         val clip = clipboardText(context)
                         if (clip.isNullOrBlank()) {
@@ -355,20 +615,19 @@ internal fun CustomConfigsPage(
                     onClick = {
                         pasteOpen = false
                         val input = text
-                        runImport { p -> ConfigImporter.fromText(context, input, ConfigSource.LINK, p) }
+                        importText(input, ConfigSource.LINK)
                     },
                 ) { Text(stringResource(R.string.cc_import_action)) }
             },
             dismissButton = {
                 TextButton(onClick = { pasteOpen = false }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 
     pending?.let { p ->
         var password by remember(p) { mutableStateOf("") }
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { pending = null },
             title = { Text(stringResource(R.string.cc_password_title)) },
             text = {
@@ -390,19 +649,19 @@ internal fun CustomConfigsPage(
                     enabled = password.isNotEmpty(),
                     onClick = {
                         pending = null
-                        runImport(password, p.retry)
+                        runImport(password, p.destination, p.retry)
                     },
                 ) { Text(stringResource(R.string.cc_import_action)) }
             },
             dismissButton = {
                 TextButton(onClick = { pending = null }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 
+
     actionsFor?.let { cfg ->
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { actionsFor = null },
             title = { Text(cfg.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
             text = {
@@ -422,33 +681,47 @@ internal fun CustomConfigsPage(
                             modifier = Modifier.padding(top = 6.dp),
                         )
                     }
-                    TextButton(
+                    SettingsMenuAction(
                         enabled = editable && cfg.id != st.activeId,
-                        onClick = { CustomConfigStore.select(context, cfg.id); actionsFor = null },
+                        onClick = { CustomConfigStore.select(context, cfg.id); CustomConfigStore.setEnabled(context, true); actionsFor = null },
                     ) { Text(stringResource(R.string.cc_action_use)) }
-                    TextButton(
+                    SettingsMenuAction(
                         onClick = {
                             actionsFor = null
                             scope.launch { ConfigPingStore.test(context, cfg) }
                         },
                     ) { Text(stringResource(R.string.cc_ping_one)) }
-                    TextButton(
+                    if (studio.cluvex.aether.scanner.CleanIpScanManager.supported(cfg)) {
+                        SettingsMenuAction(enabled = editable && !busy && !testingAll && !scanState.running,
+                            onClick = { actionsFor = null; studio.cluvex.aether.scanner.CleanIpScanManager.scanServer(context, cfg) }) {
+                            Text(stringResource(R.string.cip_server_shortcut))
+                        }
+                    }
+                    SettingsMenuAction(enabled = editable,
+                        onClick = { speedFor = cfg; actionsFor = null }) {
+                        Text(stringResource(R.string.cc_speed_test))
+                    }
+                    SettingsMenuAction(enabled = editable,
+                        onClick = { moveConfig = cfg; actionsFor = null }) {
+                        Text(stringResource(R.string.cc_move_group))
+                    }
+                    SettingsMenuAction(
                         enabled = editable && !cfg.locked && cfg.raw.isNotBlank(),
                         onClick = { editing = cfg; actionsFor = null },
                     ) { Text(stringResource(R.string.cc_action_edit)) }
-                    TextButton(
+                    SettingsMenuAction(
                         enabled = editable,
                         onClick = { renaming = cfg; actionsFor = null },
                     ) { Text(stringResource(R.string.cc_action_rename)) }
                     if (!cfg.locked && cfg.raw.isNotBlank()) {
-                        TextButton(onClick = {
+                        SettingsMenuAction(onClick = {
                             // Holds the server's credentials: flagged sensitive so the
                             // system clipboard preview and keyboards do not show it.
                             studio.cluvex.aether.ui.components.copySensitive(context, cfg.raw, "config")
                             actionsFor = null
                         }) { Text(stringResource(R.string.cc_action_copy)) }
                     }
-                    TextButton(
+                    SettingsMenuAction(
                         enabled = editable,
                         onClick = { deleting = cfg; actionsFor = null },
                     ) { Text(stringResource(R.string.cc_action_delete), color = MaterialTheme.colorScheme.error) }
@@ -457,17 +730,29 @@ internal fun CustomConfigsPage(
             confirmButton = {
                 TextButton(onClick = { actionsFor = null }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
+    }
+
+    speedFor?.let { cfg ->
+        ConfigDialog(onDismissRequest = { speedFor = null },
+            title = { Text(stringResource(R.string.cc_speed_test)) },
+            text = { Text(stringResource(R.string.cc_speed_consent)) },
+            confirmButton = { TextButton(onClick = {
+                speedFor = null
+                scope.launch { ConfigSpeedTest.measure(context, cfg) }
+            }) { Text(stringResource(R.string.cc_speed_start)) } },
+            dismissButton = { TextButton(onClick = { speedFor = null }) {
+                Text(stringResource(R.string.action_cancel))
+            } })
     }
 
     editing?.let { cfg ->
         var raw by remember(cfg.id) { mutableStateOf(cfg.raw) }
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { editing = null },
             title = { Text(stringResource(R.string.cc_edit_title)) },
             text = {
-                Column(Modifier.verticalScroll(rememberScrollState())) {
+                Column {
                     LtrOutlinedTextField(
                         value = raw,
                         onValueChange = { raw = it },
@@ -498,13 +783,12 @@ internal fun CustomConfigsPage(
             dismissButton = {
                 TextButton(onClick = { editing = null }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 
     renaming?.let { cfg ->
         var name by remember(cfg.id) { mutableStateOf(cfg.name) }
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { renaming = null },
             title = { Text(stringResource(R.string.cc_action_rename)) },
             text = {
@@ -528,12 +812,11 @@ internal fun CustomConfigsPage(
             dismissButton = {
                 TextButton(onClick = { renaming = null }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 
     deleting?.let { cfg ->
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { deleting = null },
             title = { Text(stringResource(R.string.cc_delete_title)) },
             text = { Text(stringResource(R.string.cc_delete_body, cfg.name)) },
@@ -546,12 +829,11 @@ internal fun CustomConfigsPage(
             dismissButton = {
                 TextButton(onClick = { deleting = null }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 
     if (confirmDeleteAll) {
-        AlertDialog(
+        ConfigDialog(
             onDismissRequest = { confirmDeleteAll = false },
             title = { Text(stringResource(R.string.cc_delete_all)) },
             text = { Text(stringResource(R.string.cc_delete_all_body)) },
@@ -564,7 +846,6 @@ internal fun CustomConfigsPage(
             dismissButton = {
                 TextButton(onClick = { confirmDeleteAll = false }) { Text(stringResource(R.string.action_cancel)) }
             },
-            containerColor = MaterialTheme.colorScheme.surfaceVariant,
         )
     }
 }
@@ -580,8 +861,6 @@ private fun hopsLabel(mode: ChainMode): String = when (mode.hops) {
 @Composable
 internal fun customConfigsValue(): String {
     val st by CustomConfigStore.state.collectAsState()
-    val pings by ConfigPingStore.results.collectAsState()
-    val testingAll by ConfigPingStore.testingAll.collectAsState()
     val sel = st.selection
     return sel?.mode?.label(sel.config.chainLabel) ?: stringResource(R.string.cc_off)
 }
@@ -633,110 +912,3 @@ private fun clipboardText(context: android.content.Context): String? {
     return text.ifBlank { null }
 }
 
-/** The ms badge / verdict shown on a config's card. */
-@Composable
-private fun PingBadge(report: ConfigPing.Report) {
-    when (report.status) {
-        ConfigPing.PingStatus.UNTESTED -> Unit
-        ConfigPing.PingStatus.TESTING -> CircularProgressIndicator(
-            strokeWidth = 2.dp,
-            modifier = Modifier.padding(end = 4.dp).heightIn(max = 16.dp).widthIn(max = 16.dp),
-        )
-        else -> {
-            val (label, tint) = when (report.status) {
-                ConfigPing.PingStatus.OK -> stringResource(R.string.cc_ping_ms, report.ms) to pingColor(report.ms)
-                ConfigPing.PingStatus.OFFLINE ->
-                    stringResource(R.string.cc_ping_offline) to MaterialTheme.colorScheme.error
-                ConfigPing.PingStatus.BLOCKED ->
-                    stringResource(R.string.cc_ping_blocked) to Color(0xFFF59E0B)
-                ConfigPing.PingStatus.NO_REPLY ->
-                    stringResource(R.string.cc_ping_noreply) to Color(0xFFF59E0B)
-                ConfigPing.PingStatus.INVALID ->
-                    stringResource(R.string.cc_ping_invalid) to MaterialTheme.colorScheme.error
-                else -> stringResource(R.string.cc_ping_nonet) to OnDarkDim
-            }
-            Column(horizontalAlignment = Alignment.End, modifier = Modifier.padding(end = 2.dp)) {
-                Text(label, style = MaterialTheme.typography.labelMedium, color = tint, maxLines = 1)
-                if (!report.ok && report.status != ConfigPing.PingStatus.NO_NETWORK) {
-                    // The number every other client prints for a dead config, so a
-                    // screenshot from here means the same thing as one from v2rayNG.
-                    Text(
-                        stringResource(R.string.cc_ping_ms, ConfigPing.FAILED_MS),
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                        color = OnDarkDim,
-                        maxLines = 1,
-                    )
-                }
-            }
-        }
-    }
-}
-
-/** Green / amber / red for a latency, on the same thresholds the rest of the app uses. */
-private fun pingColor(ms: Long): Color = when {
-    ms in 1..299 -> Color(0xFF22C55E)
-    ms in 300..799 -> Color(0xFFF59E0B)
-    else -> Color(0xFFEF4444)
-}
-
-@Composable
-private fun ConfigRow(
-    config: CustomConfig,
-    selected: Boolean,
-    enabled: Boolean,
-    ping: ConfigPing.Report,
-    onSelect: () -> Unit,
-    onMore: () -> Unit,
-) {
-    val detail = buildList {
-        add(if (config.format == ConfigFormat.NPVT) "${config.protocol.short} \u00b7 npvt" else config.protocol.short)
-        if (config.locked) add(stringResource(R.string.cc_locked)) else if (config.server.isNotBlank()) add(config.server)
-        if (config.isExpired()) add(stringResource(R.string.cc_badge_expired))
-        if (config.mobileOnly) add(stringResource(R.string.cc_badge_mobile))
-    }.joinToString(" \u00b7 ")
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(enabled = enabled, role = Role.RadioButton, onClick = onSelect)
-            .padding(start = 8.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(
-            selected = selected,
-            onClick = null,
-            enabled = enabled,
-            colors = RadioButtonDefaults.colors(selectedColor = MaterialTheme.colorScheme.primary),
-            modifier = Modifier.padding(horizontal = 8.dp),
-        )
-        Column(modifier = Modifier.weight(1f).padding(vertical = 6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (config.locked) {
-                    Icon(
-                        Icons.Rounded.Lock,
-                        contentDescription = null,
-                        tint = OnDarkDim,
-                        modifier = Modifier.padding(end = 4.dp).heightIn(max = 16.dp),
-                    )
-                }
-                Text(
-                    config.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            Text(
-                detail,
-                style = MaterialTheme.typography.bodySmall,
-                color = OnDarkDim,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        PingBadge(ping)
-        IconButton(onClick = onMore) {
-            Icon(Icons.Rounded.MoreVert, contentDescription = stringResource(R.string.cc_more))
-        }
-    }
-}

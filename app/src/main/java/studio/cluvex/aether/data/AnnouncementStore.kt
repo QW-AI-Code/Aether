@@ -35,9 +35,16 @@ class AnnouncementStore(context: Context) {
     /** True when this launch is a first run after install or after an upgrade. */
     fun isFirstLaunchOfThisVersion(): Boolean = lastLaunchedVersion != currentVersion
 
+    /** True only before the first-ever launch has been recorded. */
+    fun isFreshInstall(): Boolean = lastLaunchedVersion == null
+
     /** Whether the announcement should open automatically right now. */
     fun shouldShowOnLaunch(): Boolean =
         shouldShow(currentVersion = currentVersion, suppressedVersion = suppressedVersion)
+
+    /** One-time post-install support prompt state. */
+    val supportPromptShown: Boolean
+        get() = prefs.getBoolean(KEY_SUPPORT_SHOWN, false)
 
     /** Records this launch; call once the decision for this launch has been made. */
     fun markLaunched() {
@@ -54,10 +61,24 @@ class AnnouncementStore(context: Context) {
         edit.apply()
     }
 
+    /** True once the user ticked "دیگر نمایش نده" on the core-creator note. */
+    val supportSuppressed: Boolean
+        get() = prefs.getBoolean(KEY_SUPPORT_SUPPRESSED, false)
+
+    fun suppressSupportPrompt() {
+        prefs.edit().putBoolean(KEY_SUPPORT_SUPPRESSED, true).apply()
+    }
+
+    fun markSupportPromptShown() {
+        prefs.edit().putBoolean(KEY_SUPPORT_SHOWN, true).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "aether_announcements"
         private const val KEY_LAST_LAUNCHED = "last_launched_version"
         private const val KEY_SUPPRESSED = "suppressed_version"
+        private const val KEY_SUPPORT_SUPPRESSED = "support_prompt_suppressed"
+        private const val KEY_SUPPORT_SHOWN = "support_prompt_shown"
 
         /**
          * The identity of "this version". versionName AND versionCode, so a

@@ -79,6 +79,8 @@ data class CustomConfig(
     /** NapsternetV lock: the author allowed only mobile data for this config. */
     val mobileOnly: Boolean = false,
     val addedAt: Long = 0L,
+    val groupId: String? = null,
+    val subscriptionId: String? = null,
 ) {
     /** The hop name in a chain label: `VLESS`, `Trojan`, ... or `Npvt` for a NapsternetV config. */
     val chainLabel: String

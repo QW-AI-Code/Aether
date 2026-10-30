@@ -32,6 +32,7 @@ class AetherApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        studio.cluvex.aether.core.ConnectionSounds.attach(this)
 
         // Wire the persistent diagnostics log FIRST, so anything logged during
         // startup (and any crash) is written to disk and survives process death.

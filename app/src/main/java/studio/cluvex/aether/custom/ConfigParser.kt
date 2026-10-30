@@ -132,6 +132,7 @@ object ConfigParser {
         // than a download that returns a web page.
         if (looksLikeMtProto(text)) throw ConfigImportException(MTPROTO_UNSUPPORTED)
         if (NpvtCodec.looksLike(text)) return parseNpvt(text, source, npvtTables(), npvtPassword, now)
+        if (NpvoCodec.looksLike(text)) return parseNpvo(text, source, npvtPassword, now)
         if (text.startsWith("{") || text.startsWith("[")) return parseJson(text, source, now)
 
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }
@@ -140,7 +141,7 @@ object ConfigParser {
             // A subscription body: the whole text is base64 of a list of links.
             val decoded = decodeLoose(text.filterNot { it.isWhitespace() })
             if (decoded != null && decoded != text && (LINK_SCHEMES.any { decoded.contains(it, ignoreCase = true) } ||
-                    NpvtCodec.looksLike(decoded) || decoded.trimStart().startsWith("{"))
+                    NpvtCodec.looksLike(decoded) || NpvoCodec.looksLike(decoded) || decoded.trimStart().startsWith("{"))
             ) {
                 return parse(decoded, source, npvtTables, npvtPassword, now)
             }
@@ -511,6 +512,12 @@ object ConfigParser {
                     put("tlsSettings", buildJsonObject {
                         if (sni.isNotEmpty()) put("serverName", sni)
                         put("allowInsecure", insecure)
+                        v("pinnedPeerCertSha256").takeIf { it.isNotEmpty() }?.let { pin ->
+                            require(pin.split(',').all { token -> token.trim().replace(":", "").matches(Regex("[0-9a-fA-F]{64}")) }) {
+                                "invalid TLS certificate pin"
+                            }
+                            put("pinnedPeerCertSha256", pin)
+                        }
                         v("fp", "fingerprint").takeIf { it.isNotEmpty() }?.let { put("fingerprint", it) }
                         if (alpn.isNotEmpty()) put("alpn", buildJsonArray { alpn.forEach { add(JsonPrimitive(it)) } })
                     })
@@ -698,6 +705,27 @@ object ConfigParser {
 
     // ------------------------------------------------------------------ npvt
 
+    fun parseBytes(bytes: ByteArray, source: ConfigSource, npvtTables: () -> NpvtCodec.Tables,
+        npvsTables: () -> NpvtCodec.Tables, password: String? = null,
+        now: Long = System.currentTimeMillis()): List<CustomConfig> {
+        require(bytes.size <= 2 * 1024 * 1024) { "config file is too large" }
+        if (!NpvtCodec.isBinary(bytes)) return parse(NpvtCodec.decodeFileText(bytes), source, npvtTables, password, now)
+        val decoded = try { NpvsCodec.decode(bytes, npvsTables(), password)
+        } catch (e: NpvtPasswordException) { throw e
+        } catch (e: IllegalArgumentException) { throw ConfigImportException(e.message ?: "invalid NPVS file") }
+        return parseDecodedNpvt(decoded, "", source, password, now)
+    }
+
+    private fun parseNpvo(text: String, source: ConfigSource, password: String?, now: Long): List<CustomConfig> {
+        val decoded = NpvoCodec.decode(text)
+        // Each editable record owns its own normalized source. Editing #2 must not re-import #1.
+        return Json.parseToJsonElement(decoded.servers).jsonArray.flatMap { server ->
+            val single = JsonArray(listOf(server)).toString()
+            val raw = "NPVO1\n" + buildJsonObject { put("configs", JsonArray(listOf(server))) }
+            parseDecodedNpvt(NpvtCodec.Decoded(1, single, "{}"), raw, source, password, now)
+        }
+    }
+
     private fun parseNpvt(
         text: String,
         source: ConfigSource,
@@ -710,6 +738,11 @@ object ConfigParser {
         } catch (e: IllegalArgumentException) {
             throw ConfigImportException(e.message ?: "npvt file could not be read")
         }
+        return parseDecodedNpvt(decoded, text, source, password, now)
+    }
+
+    private fun parseDecodedNpvt(decoded: NpvtCodec.Decoded, text: String, source: ConfigSource,
+        password: String?, now: Long): List<CustomConfig> {
         val servers = runCatching { json.parseToJsonElement(decoded.servers).jsonArray }.getOrNull()
             ?: throw ConfigImportException("npvt file could not be decrypted")
         val globalLock = runCatching { json.parseToJsonElement(decoded.lock).jsonObject }.getOrNull()
@@ -773,8 +806,13 @@ object ConfigParser {
         q["spx"] = s("spiderX")
         q["headerType"] = s("headerType")
         q["serviceName"] = s("serviceName")
-        q["mode"] = s("mode")
-        q["allowInsecure"] = if ((p["insecure"] as? JsonPrimitive)?.contentOrNull == "true") "1" else "0"
+        q["mode"] = s("xhttpMode").ifEmpty { s("mode") }
+        q["extra"] = s("xhttpExtra")
+        q["seed"] = s("seed")
+        q["authority"] = s("authority")
+        q["pinnedPeerCertSha256"] = s("pinnedPeerCertSha256")
+        q["allowInsecure"] = if ((p["tlsAllowInsecure"] as? JsonPrimitive)?.contentOrNull
+            ?.let { it == "true" || it == "1" } ?: ((p["insecure"] as? JsonPrimitive)?.contentOrNull == "true")) "1" else "0"
         val id = s("password")
         // v2rayNG's EConfigType numbering, which NapsternetV's export keeps.
         val built = when (s("configType").toIntOrNull()) {

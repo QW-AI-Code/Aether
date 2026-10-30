@@ -89,6 +89,32 @@
             </intent-filter>
         </activity>
 
+        <!-- Generic MIME fallback is necessary for opaque content:// attachment URIs.
+             Android cannot combine DISPLAY_NAME and a path suffix in an intent filter;
+             the importer validates the header/content before saving anything. -->
+        <activity android:name=".ConfigImportActivity" android:exported="true"
+            android:theme="@style/Theme.AetherMobile"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode|density">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.npvt" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.npvt" />
+                <data android:scheme="file" android:host="*" android:pathPattern=".*\\.npvs" />
+                <data android:scheme="content" android:host="*" android:pathPattern=".*\\.npvs" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".vpn.AetherVpnService"
             android:exported="false"

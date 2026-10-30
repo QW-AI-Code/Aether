@@ -2,14 +2,9 @@ package studio.cluvex.aether.custom
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -28,8 +23,8 @@ import java.net.Inet4Address
  * A measurement never touches the tunnel: [RealDelay] runs the config's own
  * outbound in a separate Xray core (a child of this app, so outside the VPN, like
  * a direct session) and sends one HTTP request through it. A config that carries
- * nothing is then checked for DNS/TCP reachability by [ConfigPing.diagnose] to
- * say why.
+ * nothing is reported as no reply; a platform DNS/TCP probe cannot establish
+ * whether the encrypted outbound is usable and is not mixed into this metric.
  */
 object ConfigPingStore {
 
@@ -45,7 +40,9 @@ object ConfigPingStore {
     fun report(id: String): ConfigPing.Report = _results.value[id] ?: ConfigPing.Report()
 
     /** Drops every result, e.g. when the network changed. */
-    fun clear() {
+    @Synchronized fun retain(ids: Set<String>) { _results.value = _results.value.filterKeys { it in ids } }
+
+    @Synchronized fun clear() {
         _results.value = emptyMap()
     }
 
@@ -67,6 +64,42 @@ object ConfigPingStore {
         }
     }
 
+    /** Automatic selection waits for a fresh, serialised run instead of using a UI run's stale values. */
+    suspend fun measureForSelection(context: Context, configs: List<CustomConfig>): Map<String, ConfigPing.Report> =
+        running.withLock {
+            if (configs.isEmpty()) return@withLock emptyMap()
+            run(context.applicationContext, configs)
+            val ids = configs.map { it.id }.toSet()
+            _results.value.filterKeys { it in ids }
+        }
+
+    /** Scanner candidates: exact real-delay engine, no UI-map publication or direct-network fallback. */
+    internal suspend fun measureEphemeral(context: Context, configs: List<CustomConfig>): Map<String, Long> =
+        running.withLock {
+            if (configs.isEmpty() || !ConfigPing.networkUp(context)) return@withLock emptyMap()
+            val probe = XrayProcess(context.applicationInfo.nativeLibraryDir, context.noBackupFilesDir)
+            if (!probe.available()) return@withLock emptyMap()
+            val launcher = RealDelay.Launcher { json, tag ->
+                val process = XrayProcess(context.applicationInfo.nativeLibraryDir, context.noBackupFilesDir)
+                process.start(json, tag)
+                object : RealDelay.Core {
+                    override fun isAlive() = process.isAlive()
+                    override fun stop() = process.stop()
+                }
+            }
+            val results = java.util.concurrent.ConcurrentHashMap<String, Long>()
+            RealDelay.measureAll(configs.map { RealDelay.Item(it.id, it.outbound) }, launcher,
+                withContext(Dispatchers.IO) { physicalDns(context) }, onResult = { id, result ->
+                    results[id] = (result as? RealDelay.Result.Ok)?.ms ?: -1L
+                })
+            results.toMap()
+        }
+
+    internal fun recordScanned(id: String, ms: Long) {
+        require(ms >= 0)
+        publish(id, ConfigPing.Report(ms, ConfigPing.PingStatus.OK, at = now()))
+    }
+
     private suspend fun run(context: Context, configs: List<CustomConfig>) {
         configs.forEach { publish(it.id, report(it.id).copy(status = ConfigPing.PingStatus.TESTING)) }
         val up = withContext(Dispatchers.IO) { ConfigPing.networkUp(context) }
@@ -78,10 +111,7 @@ object ConfigPingStore {
         if (!runner.available()) {
             // Only a build without libxray.so ends up here: say what can be said.
             DiagnosticsLog.w(TAG, XrayProcess.MISSING)
-            for (cfg in configs) {
-                val status = withContext(Dispatchers.IO) { ConfigPing.diagnose(ConfigEndpoints.of(cfg), up) }
-                publish(cfg.id, failed(status))
-            }
+            configs.forEach { publish(it.id, failed(ConfigPing.PingStatus.INVALID)) }
             return
         }
         val byId = configs.associateBy { it.id }
@@ -110,27 +140,11 @@ object ConfigPingStore {
                 }
             },
         )
-        // Explain the failures, a few at a time (each is one DNS lookup and one TCP connect).
-        val gate = Semaphore(RealDelay.PARALLEL)
-        coroutineScope {
-            failures.map { (cfg, result) ->
-                async(Dispatchers.IO) {
-                    gate.withPermit {
-                        val status = if (result is RealDelay.Result.Invalid) {
-                            ConfigPing.PingStatus.INVALID
-                        } else {
-                            ConfigPing.diagnose(ConfigEndpoints.of(cfg), up)
-                        }
-                        val reason = when (result) {
-                            is RealDelay.Result.Invalid -> result.reason
-                            is RealDelay.Result.NoReply -> result.reason
-                            else -> ""
-                        }
-                        DiagnosticsLog.i(TAG, "Real delay ${cfg.name}: -1 ($reason) -> ${status.name}")
-                        publish(cfg.id, failed(status))
-                    }
-                }
-            }.awaitAll()
+        // Preserve the result of the actual through-core request. Plain DNS/TCP probes
+        // cannot diagnose VLESS/REALITY reachability and delayed the visible batch result.
+        failures.forEach { (cfg, result) ->
+            val status = if (result is RealDelay.Result.Invalid) ConfigPing.PingStatus.INVALID else ConfigPing.PingStatus.NO_REPLY
+            publish(cfg.id, failed(status))
         }
     }
 
@@ -154,8 +168,8 @@ object ConfigPingStore {
 
     private fun now() = System.currentTimeMillis()
 
-    @Synchronized
-    private fun publish(id: String, report: ConfigPing.Report) {
+    @Synchronized private fun publish(id: String, report: ConfigPing.Report) {
+        if (CustomConfigStore.state.value.configs.none { it.id == id }) return
         _results.value = _results.value + (id to report)
     }
 

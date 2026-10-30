@@ -80,7 +80,12 @@
     <string name="about_original_title">هستهٔ اتر — ⁨Cluvex Studio⁩</string>
     <string name="about_original_note">موتور اصلی که این برنامه روی آن اجرا می‌شود</string>
     <string name="about_port_title">برنامهٔ اندروید و رابط کاربری — ⁨QW-AI-Code⁩</string>
-    <string name="about_port_note">همین نسخه: رابط کاربری، اجرای اندروید و پروتکل‌های ترکیبی</string>
+    <string name="about_port_note">توسعهٔ برنامهٔ اندروید، رابط کاربری و مدیریت کانفیگ‌ها؛ توسعهٔ موتور و هسته به سازندگان بخش بالا تعلق دارد.</string>
+    <string name="support_core_title">حمایت از سازنده هسته اتر</string>
+    <string name="support_core_image_desc">تصویر پروفایل تلگرام سازندهٔ هستهٔ اتر</string>
+    <string name="support_core_body">برای حمایت از سازندهٔ هستهٔ اتر، لطفاً به کانال تلگرام زیر مراجعه کنید:</string>
+    <string name="support_core_warning">لطفاً برای این موضوع هیچ پیامی به ⁨QW-AI-Code⁩ ارسال نکنید. ⁨QW-AI-Code⁩ فقط توسعه‌دهندهٔ رابط کاربری (GUI) اتر است و سازندهٔ هستهٔ اتر نیست. برای حمایت از سازندهٔ هسته، مستقیم به آدرس تلگرام زیر مراجعه کنید.</string>
+    <string name="support_close">متوجه شدم</string>
     <string name="menu_open">باز کردن منو</string>
     <string name="advanced_open">باز کردن تنظیمات پیشرفته</string>
 
@@ -326,6 +331,8 @@
     <string name="cat_engine_desc">فرگمنت، گروه‌های ⁨TLS⁩ و سطح لاگ هسته</string>
     <string name="cat_zerotrust_desc">عضویت در سازمان ⁨Cloudflare Zero Trust⁩</string>
     <string name="cat_appearance_desc">انتخاب فارسی یا انگلیسی، یا پیروی از گوشی</string>
+    <string name="home_animations_title">انیمیشن‌های صفحهٔ اصلی</string>
+    <string name="home_animations_desc">برای گوشی‌های ضعیف‌تر، نور آبی (Glow) دور دکمهٔ اتصال و سایر افکت‌های متحرک صفحهٔ اصلی را خاموش می‌کند. دکمهٔ اتصال هنگام اتصال همچنان می‌چرخد و انیمیشن پینگ زنده هم فعال می‌ماند.</string>
 
     <string name="backend_label">بک‌اند شبکه</string>
     <string name="backend_help_aether">یک هاپ از موتور اتر/⁨WARP⁩ همراه برنامه. سریع‌ترین حالت.</string>
@@ -589,22 +596,22 @@
     </string-array>
 
     <string-array name="about_port_improvements">
-        <item>حالت زنجیره‌ای ⁨Aether ← Psiphon⁩ اضافه شد — یک آی‌پی خروجی واقعاً خارجی، پشت هاپ اول و مبهم‌شدهٔ اتر</item>
+        <item>حالت زنجیره‌ای Psiphon ← Aether اضافه شد — یک آی‌پی خروجی واقعاً خارجی، پشت هاپ اول و مبهم‌شدهٔ اتر</item>
         <item>همین حالت زنجیره‌ای، مشکل آی‌پی ایرانی اتر خالی را حل می‌کند و سرویس‌های هوش مصنوعی (جمینای و بقیه) که آن آی‌پی را قبول نمی‌کنند باز می‌شوند</item>
-        <item>انتخاب کشور خروجی با پرچم برای حالت زنجیره‌ای، به‌علاوهٔ یک فرانت ⁨SOCKS⁩ که ⁨UDP⁩ را هم حمل می‌کند تا ⁨DNS⁩ و ⁨QUIC⁩ از داخلش کار کنند</item>
+        <item>انتخاب کشور خروجی با پرچم برای حالت زنجیره‌ای، به‌علاوهٔ یک فرانت SOCKS که UDP را هم حمل می‌کند تا DNS و QUIC از داخلش کار کنند</item>
         <item>یک برنامهٔ کامل و بومی اندروید — نسخهٔ اصلی فقط خط فرمان است و هیچ رابط گرافیکی اندروید یا ویندوز ندارد</item>
-        <item>وی‌پی‌ان سراسری با یک لمس، از راه ⁨VpnService⁩ اندروید — بدون تنظیم دستی پراکسی</item>
-        <item>‏⁨hev-socks5-tunnel⁩ (همان ⁨tun2socks⁩) درون خود برنامه و روی یک ترد بومی اجرا می‌شود</item>
+        <item>وی‌پی‌ان سراسری با یک لمس، از راه VpnService اندروید — بدون تنظیم دستی پراکسی</item>
+        <item>hev-socks5-tunnel (همان tun2socks) درون خود برنامه و روی یک ترد بومی اجرا می‌شود</item>
         <item>نشان زندهٔ «آی‌پی شما / آی‌پی سرور» با چند سرویس مکان‌یابی</item>
         <item>خودآزمایی اتصال مرحله‌به‌مرحله، با لاگ تشخیصی که بعد از کرش هم باقی می‌ماند</item>
         <item>اتصال مجدد خودکار با فاصلهٔ فزاینده و مهلت اتصال متناسب با هر حالت اسکن</item>
-        <item>کنترل پروتکل، حالت اسکن و نسخهٔ آی‌پی در رابطی با ⁨Material 3⁩ (انگلیسی و فارسی)</item>
+        <item>کنترل پروتکل، حالت اسکن و نسخهٔ آی‌پی در رابطی با Material 3 (انگلیسی و فارسی)</item>
         <item>کلید در تنظیمات سریع — وصل و قطع کردن مستقیم از پردهٔ اعلان‌ها</item>
-        <item>اشتراک وی‌پی‌ان روی وای‌فای یا هات‌اسپات — پراکسی ⁨HTTP⁩ و ⁨SOCKS5⁩ توکار برای لپ‌تاپ و گوشی‌های دیگر</item>
+        <item>اشتراک وی‌پی‌ان روی وای‌فای یا هات‌اسپات — پراکسی HTTP و SOCKS5 توکار برای لپ‌تاپ و گوشی‌های دیگر</item>
         <item>تنظیمات پیشرفته، مستقیم از صفحهٔ خانه در دسترس</item>
-        <item>فایل‌های ⁨APK⁩ امضاشده برای هر معماری، که خودکار از ⁨GitHub Actions⁩ منتشر می‌شوند</item>
+        <item>فایل‌های APK امضاشده برای هر معماری، که خودکار از GitHub Actions منتشر می‌شوند</item>
         <item>نسخهٔ موتور در «درباره» نشان داده می‌شود، تا همیشه بشود هستهٔ همراه برنامه را راستی‌آزمایی کرد</item>
-        <item>‏⁨Zero Trust⁩ (همان ⁨WARP⁩ سازمانی)، قواعد مسیریابی تفکیکی و ⁨DNS⁩ دلخواه داخل تونل</item>
+        <item>Zero Trust (همان WARP سازمانی)، قواعد مسیریابی تفکیکی و DNS دلخواه داخل تونل</item>
     </string-array>
     <string name="meta_pipeline">اتصال</string>
 
@@ -752,6 +759,10 @@
     <string name="cat_group_tls">اثرانگشت ⁨TLS⁩</string>
     <string name="tls_ciphers_label">سوئیت‌های رمز ⁨TLS 1.2⁩</string>
     <string name="tls_ciphers_help">برای مقدار پیش‌فرض پیشنهادی (فهرست کروم که بالا نمایش داده شده) خالی بگذارید. در غیر این صورت نام‌های ⁨BoringSSL⁩ را با «⁨:⁩» از هم جدا کنید، مثلاً ⁨ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256⁩. یک نام ناشناخته جلوی شروع موتور را می‌گیرد.</string>
+    <string name="tls_verify_title">بررسی گواهی دروازه</string>
+    <string name="tls_verify_desc">گواهی دروازهٔ ⁨MASQUE⁩ را با پین‌های موتور بسنج. با تیم ⁨Zero Trust⁩ همیشه روشن است.</string>
+    <string name="api_address_label">نشانی ⁨WARP API⁩</string>
+    <string name="api_address_help">آی‌پی یا نام، با پورت اختیاری. خالی یعنی پیش‌فرض.</string>
     <string name="disable_grease_title">غیرفعال‌سازی ⁨GREASE⁩</string>
     <string name="disable_grease_desc">مقدارهای ⁨GREASE⁩ را از دست‌دهی ⁨TLS⁩ حذف کن. خاموش بودن، آن را شبیه کروم نگه می‌دارد.</string>
     <string name="tls_group_footer">روی ⁨MASQUE⁩ بر ⁨HTTP/2⁩، فراخوانی‌های ⁨API⁩ وارپ و دریافت ⁨ECH⁩ اعمال می‌شود. ⁨HTTP/3⁩ (⁨QUIC⁩) فقط ⁨TLS 1.3⁩ را ارائه می‌کند، پس هیچ رمز ⁨TLS 1.2⁩ در آن فهرست نمی‌شود.</string>
@@ -820,7 +831,7 @@
     <string name="cc_ping_noreply">پاسخ نمی‌دهد</string>
     <string name="cc_ping_invalid">کانفیگ نامعتبر</string>
     <string name="cc_ping_nonet">بدون اینترنت</string>
-    <string name="cc_ping_footer">پینگ، تست تأخیر واقعی است، مانند ⁨v2rayNG⁩: هر کانفیگ دقیقاً مثل اتصال مستقیم در هستهٔ ⁨Xray⁩ اجرا می‌شود و یک درخواست (⁨generate_204⁩) از داخل آن فرستاده می‌شود. عدد نمایش‌داده‌شده زمان همین درخواست، همراه دست‌دهی است. کانفیگی که چیزی عبور ندهد ⁨-1⁩ می‌گیرد و علت آن نوشته می‌شود: «غیرفعال / سرور خاموش» یعنی نام سرور پیدا نمی‌شود یا پورت آن بسته است؛ «فیلترشده» یعنی شبکه اتصال به سرور را می‌اندازد یا ریست می‌کند (زنجیره کردن پشت ⁨Aether⁩ یا ⁨Tor⁩ می‌تواند کمک کند)؛ «پاسخ نمی‌دهد» یعنی سرور اتصال را می‌پذیرد ولی کانفیگ چیزی عبور نمی‌دهد (منقضی، کلید یا کاربر نادرست، یا پروتکل آن مسدود است)؛ «کانفیگ نامعتبر» یعنی هستهٔ ⁨Xray⁩ کانفیگ را نمی‌پذیرد.</string>
+    <string name="cc_ping_footer">تأخیر واقعی با درخواست HTTPS به generate_204 از داخل هر کانفیگ در هستهٔ Xray سنجیده می‌شود. دو تلاش در صورت امکان از یک اتصال استفاده می‌کنند و سریع‌ترین درخواست موفق گزارش می‌شود. تلاش سرد شامل اتصال راه دور و TLS است؛ تلاش گرم می‌تواند آن‌ها را دوباره استفاده کند. راه‌اندازی هسته و صف تست در عدد محاسبه نمی‌شوند. نبود شبکه «آفلاین»، شروع نشدن هسته «کانفیگ نامعتبر» و نبود پاسخ معتبر 204 «پاسخ نمی‌دهد» است. تایم‌اوت به‌تنهایی ثابت نمی‌کند سرور خاموش یا فیلتر شده است. Home همین مقصد و روش را دارد؛ مسیر زنجیره‌ای ممکن است با کانفیگ مستقیم تأخیر متفاوتی داشته باشد.</string>
     <string name="cc_err_psiphon_direct">سایفون از اینجا به شبکهٔ خودش نرسید، پس چیزی برای تحویل به کانفیگ ندارد. در این شبکه جهت معکوس (⁨Config → Psiphon⁩) را استفاده کنید؛ آنجا سایفون از طریق کانفیگ شما شماره‌گیری می‌کند.</string>
     <string name="cc_err_expired">مهلت این کانفیگ سفارشی تمام شده است (سازنده‌اش تاریخ انقضا گذاشته).</string>
     <string name="cc_err_mobile_only">این کانفیگ سفارشی فقط روی اینترنت همراه قابل استفاده است.</string>
@@ -832,4 +843,156 @@
     <string name="announcements_desc">تازه‌های این نسخه و راهنمای اتصال، هر زمان که خواستید</string>
     <string name="announcements_version">نسخهٔ %1$s</string>
     <string name="announcements_footer">همهٔ پیام‌های به‌روزرسانی اینجا بایگانی می‌شوند. برای خواندن دوباره روی هر کدام بزنید.</string>
+    <string name="cc_verify">راستی‌آزمایی اتصال</string>
+    <string name="cc_verify_desc">فقط کانفیگ سفارشی؛ خاموش کردن، تست اولیه را رد می‌کند، نه راه‌اندازی هسته و پایش سلامت را.</string>
+    <string name="cc_auto">انتخاب خودکار / کمترین پینگ</string>
+    <string name="cc_auto_desc">هنگام اتصال، کانفیگ‌های مجاز گروه فعال (یا لینک کانفیگ) دوره‌ای تست می‌شوند و به سرور بهتر اتصال مجدد انجام می‌شود؛ وقفهٔ کوتاه طبیعی است.</string>
+    <string name="cc_health_interval">بازهٔ پایش سلامت</string>
+    <string name="cc_manual">کانفیگ‌ها</string>
+    <string name="cc_subscriptions">لینک‌های واردشده</string>
+    <string name="cc_all_groups">همهٔ گروه‌ها</string>
+    <string name="cc_group_new">تب جدید</string>
+    <string name="cc_group_edit">ویرایش تب</string>
+    <string name="cc_group_name">نام</string>
+    <string name="cc_group_save">ذخیره</string>
+    <string name="cc_move_group">انتقال به تب</string>
+    <string name="cc_ungrouped">بدون تب</string>
+    <string name="cc_sub_new">افزودن لینک</string>
+    <string name="cc_sub_update">به‌روزرسانی لینک</string>
+    <string name="cc_sub_url">آدرس لینک</string>
+    <string name="cc_sub_updated">لینک به‌روز شد</string>
+
+    <!-- Same-version functional repair: catalog, selection feedback and built-in verification. -->
+    <string name="cc_tab_all">همه</string>
+    <string name="cc_add_config">افزودن کانفیگ</string>
+    <string name="cc_col_name">نام سرور</string>
+    <string name="cc_col_type">نوع</string>
+    <string name="cc_col_protocol">پروتکل</string>
+    <string name="cc_col_ping">پینگ</string>
+    <string name="cc_col_port">پورت</string>
+    <string name="cc_col_actions">مدیریت</string>
+    <string name="cc_subscription_record">لینک واردشده</string>
+    <string name="cc_ping_failed_short">ناموفق</string>
+    <string name="cc_manage_short">مدیریت</string>
+    <string name="cc_sub_delete_confirm">لینک کانفیگ %1$s و کانفیگ‌های دانلودشدهٔ آن حذف شوند؟</string>
+    <string name="cc_table_footer">پینگ و منوی هر سرور همیشه در دید هستند. ستون‌های میانی نوع، پروتکل و پورت اسکرول می‌شوند. نتیجهٔ ناموفق با وضعیت تشخیصی نمایش داده می‌شود؛ پورت کانفیگ قفل‌شده مخفی می‌ماند.</string>
+    <string name="state_selecting">در حال انتخاب بهترین سرور…</string>
+    <string name="verify_connection_title">راستی‌آزمایی اتصال</string>
+    <string name="verify_connection_desc">پیش‌فرض برای شش حالت اصلی روشن است. خاموش‌کردن، تست اختیاری اولیه را رد می‌کند؛ نه راه‌اندازی هسته، آماده‌سازی Tor، دریافت IP خروجی یا پایش مداوم سلامت اتصال را.</string>
+    <string name="cc_custom_tab">تب سفارشی کاربر</string>
+    <string name="cc_server_ping">نام سرور / پینگ</string>
+    <string name="cc_link_source">لینک واردشده</string>
+<string name="err_vpn_permission_unavailable">صفحهٔ مجوز VPN روی این دستگاه در دسترس نیست.</string>
+<string name="cc_sort_ping_desc">اول بیشترین تأخیر</string>
+<string name="cc_sort_ping_desc_summary">خاموش: اول کمترین تأخیر. کانفیگ‌های ناموفق یا تست‌نشده همیشه در انتها می‌مانند.</string>
+<string name="game_mode_title">حالت بازی (DNS اختصاصی)</string>
+<string name="game_mode_summary">تا وقتی روشن است، موتور اتر از DNSهای زیر استفاده می‌کند. در حالت خاموش رفتار فعلی حفظ می‌شود. کاهش پینگ تضمین نمی‌شود.</string>
+<string name="game_dns_label">DNS حالت بازی</string>
+<string name="game_dns_invalid">هیچ نشانی معتبری وارد نشده؛ تنظیم DNS معمولی استفاده می‌شود.</string>
+<string name="preset_default_name">پیش‌فرض</string>
+<string name="preset_preserved_name">تنظیمات ذخیره‌شده</string>
+<string name="preset_save_as_new">ذخیرهٔ تنظیمات فعلی به‌عنوان پروفایل جدید</string>
+<string name="preset_delete">حذف این پروفایل</string>
+<string name="preset_name_hint">نام پروفایل</string>
+<string name="preset_locked_hint">برای تغییر پروفایل، ابتدا اتصال را قطع کنید</string>
+<string name="preset_save">ذخیره</string>
+<string name="preset_cancel">انصراف</string>
+<string name="preset_import">ورود تنظیمات</string>
+<string name="preset_export">خروجی پروفایل انتخاب‌شده (غیرمحرمانه)</string>
+<string name="preset_import_preview">%1$d پروفایل وارد شود؟ تا انتخاب یک پروفایل، تنظیمات فعلی تغییر نمی‌کند. اطلاعات ورود پراکسی، رازهای Zero Trust و داده سرورهای سفارشی منتقل نمی‌شوند.</string>
+<string name="preset_export_done">تنظیمات بدون اطلاعات ورود و سرورهای سفارشی صادر شد.</string>
+<string name="preset_operation_failed">عملیات پروفایل انجام نشد؛ ممکن است ذخیره‌سازی در دسترس نباشد یا فایل تنظیمات معتبر نباشد.</string>
+    <string name="cc_delete_tab_title">حذف تب و کانفیگ‌های آن</string>
+    <string name="cc_delete_tab_confirm">تب «%1$s» و تمام کانفیگ‌های داخل آن حذف شوند؟ این کار برگشت‌پذیر نیست. تب «همه» حذف نمی‌شود.</string>
+
+<string name="cc_ping_all_short">پینگ همه</string>
+<string name="cc_select">انتخاب</string>
+<string name="cc_select_done">پایان انتخاب</string>
+<string name="cc_speed_test">تست سرعت دانلود / آپلود</string>
+<string name="cc_speed_running">در حال سنجش سرعت واقعی…</string>
+<string name="cc_speed_failed">نتیجه‌ای دریافت نشد؛ پراکسی یا مقصد آزمون در دسترس نیست</string>
+<string name="cc_speed_consent">این آزمون فقط از همین سرور عبور می‌کند و در هر تلاش حدود ۱۰ مگابایت دادهٔ آزمایشی مصرف می‌کند. ممکن است هزینهٔ اینترنت همراه داشته باشد. هیچ فایل شخصی آپلود نمی‌شود.</string>
+<string name="cc_speed_start">شروع آزمون</string>
+<string name="connection_sound_title">صدای اتصال و قطع اتصال</string>
+<string name="connection_sound_summary">پخش صدای کوتاه هنگام اتصال و قطع اتصال؛ حالت بی‌صدا رعایت می‌شود.</string>
+    <string name="cip_title">اسکنر IP تمیز</string>
+    <string name="cip_notice">اسکن لبه‌های عمومی کلودفلر برای هر IP سالم تا ۱ مگابایت و در مجموع احتمالاً صدها مگابایت داده مصرف می‌کند؛ ممکن است هزینهٔ اینترنت داشته باشد. نتایج اولیه فقط سلامت لبه را نشان می‌دهند؛ اعمال روی سرور نیازمند پینگ واقعی و ۳ تأیید پایداری است. ابتدا اتصال را قطع کنید. سرورهای قفل‌شده یا ناسازگار تغییر نمی‌کنند.</string>
+    <string name="cip_profile">عمق اسکن</string>
+    <string name="cip_fast">سریع</string>
+    <string name="cip_balanced">متعادل</string>
+    <string name="cip_deep">عمیق</string>
+    <string name="cip_manual_ceiling">استفاده از محدودیت دستی پینگ</string>
+    <string name="cip_ceiling">بیشینهٔ پینگ مجاز (میلی‌ثانیه)</string>
+    <string name="cip_start">شروع اسکن</string>
+    <string name="cip_stop">توقف اسکن</string>
+    <string name="cip_probing">در حال اسکن آی‌پی‌های کلودفلر… %1$d%%</string>
+    <string name="cip_validating">در حال سنجش پینگ واقعی پراکسی… %1$d%%</string>
+    <string name="cip_locked">ابتدا اتصال و هر آزمون پینگ در حال اجرا را متوقف کنید.</string>
+    <string name="cip_cancelled">اسکن متوقف شد؛ IP تأییدنشده‌ای اعمال نشد.</string>
+    <string name="cip_failed">اسکن ناموفق بود یا سرور تغییر کرد؛ هیچ آدرس تأییدنشده‌ای ذخیره نشد.</string>
+    <string name="cip_empty">لبهٔ سالمی پیدا نشد؛ اسکن عمیق‌تر یا شبکهٔ دیگری را امتحان کنید.</string>
+    <string name="cip_applied">آدرس تأییدشده برای %1$d سرور ثبت شد.</string>
+    <string name="cip_unchanged">کاندیدای واجد شرایط با پینگ واقعی پایدار پیدا نشد؛ آدرس فعلی حفظ شد.</string>
+    <string name="cip_server_shortcut">اسکن / تغییر IP تمیز</string>
+    <string name="cip_settings_title">تنظیمات اسکن آی‌پی تمیز</string>
+    <string name="cip_settings_summary">سختی اسکن و سقف دستی پینگ واقعی برای اسکن تکی و گروهی</string>
+    <string name="cip_profiles_desc">میزان سختی کار اسکنر آی‌پی تمیز؛ هم برای اسکن تکی و هم اسکن گروهی.</string>
+    <string name="cip_fast_desc">سریع و سطحی — کمترین تعداد کاندیدا و کمترین زمان انتظار.</string>
+    <string name="cip_balanced_desc">پیش‌فرض — ترکیبی متعادل از عمق و سرعت.</string>
+    <string name="cip_deep_desc">کامل‌ترین و کندترین حالت — وقتی اسکن چیزی پیدا نمی‌کند استفاده کنید.</string>
+    <string name="cip_profile_detail">بودجه %1$d · وقفه %2$d میلی‌ثانیه · تلاش %3$d · موازی %4$d</string>
+    <string name="cip_manual_desc">روشن: اولین آی‌پی پایدار در محدودهٔ زیر پذیرفته می‌شود. خاموش: کمترین پینگ واقعی پایدار میان کاندیداهای آزمایش‌شده انتخاب می‌شود.</string>
+    <string name="cip_limit_error">عددی بین ۵۰ تا ۵۰۰۰ وارد کنید. تا ورود مقدار معتبر، آخرین محدودیت معتبر ذخیره‌شده استفاده می‌شود.</string>
+    <string name="cip_limit_policy">بازهٔ مجاز ۵۰ تا ۵۰۰۰ میلی‌ثانیه است. اگر هیچ کاندیدای تأییدشده‌ای زیر سقف فعال نباشد، آدرس فعلی سرور حفظ می‌شود.</string>
+    <string name="cip_scan_all">اسکن آی‌پی تمیزِ سرورهای این تب</string>
+    <string name="cip_group_progress">در حال اسکن سرور %1$d از %2$d</string>
+    <string name="cip_result_dismiss">بستن نتیجهٔ اسکن</string>
+    <string name="cc_err_active_tab_empty">تب انتخاب‌شده سرور قابل اتصال ندارد؛ تب یا سرور دیگری را انتخاب کنید.</string>
+    <string name="cat_display_sound">نمایش و صدا</string>
+    <string name="exit_country_search">جستجوی کشور</string>
+    <string name="cip_custom_title">رنج آی‌پی سفارشی کلودفلر</string>
+    <string name="cip_custom_enable">استفاده از رنج‌های آی‌پی خودم</string>
+    <string name="cip_custom_desc">روشن: اسکنر برای پیدا کردن آی‌پی تمیز فقط داخل رنج‌هایی که پایین وارد می‌کنید می‌گردد، نه رنج‌های پیش‌فرض کلودفلر.</string>
+    <string name="cip_custom_label">رنج‌های آی‌پی</string>
+    <string name="cip_custom_hint">هر مورد در یک خط: CIDR (104.16.0.0/20)، آی‌پی تکی (104.16.1.5) یا بازه (104.16.1.1-104.16.1.80). فقط IPv4 عمومی.</string>
+    <string name="cip_custom_invalid">مورد نامعتبر یا غیرعمومی: %1$s</string>
+    <string name="cip_custom_count">%1$d رنج، %2$s آدرس</string>
+    <string name="cip_custom_none">رنج سفارشی روشن است اما رنج معتبری وارد نشده. یک رنج اضافه کنید یا گزینه را خاموش کنید.</string>
+
+    <!-- Core 2.4.0 TLS / API options (ported from the Windows build) -->
+    <string name="tls24_names_caption">نام سرور (⁨SNI⁩)</string>
+    <string name="masque_sni_label">نام سرور ⁨MASQUE⁩</string>
+    <string name="masque_sni_help">نامی که دست‌دهی‌های ⁨MASQUE⁩ در ⁨ClientHello⁩ می‌گذارند. خالی = پیش‌فرض هسته.</string>
+    <string name="api_sni_label">نام سرور ⁨API⁩ (⁨SNI⁩)</string>
+    <string name="api_sni_help">نام سروری که ⁨ClientHello⁩ آن فراخوانی‌های ⁨API⁩ می‌فرستد.</string>
+    <string name="api_host_label">هاست ⁨API⁩</string>
+    <string name="api_host_help">هاست ⁨HTTP⁩ آن فراخوانی‌های ⁨API⁩.</string>
+    <string name="tls24_cert_caption">بررسی گواهی</string>
+    <string name="trust_anchors_label">شناسه‌های لنگر اعتماد</string>
+    <string name="trust_anchors_help">شناسه‌های نقطه‌دار که با دونقطه جدا می‌شوند. خالی = هیچ.</string>
+    <string name="cert_compression_label">فشرده‌سازی گواهی</string>
+    <string name="tls24_off">خاموش</string>
+    <string name="tls13_ciphers_label">مجموعه رمزهای ⁨TLS 1.3⁩</string>
+    <string name="tls13_ciphers_help">نام‌های استاندارد به ترتیب و با دونقطه. خالی = پیش‌فرض ⁨Chrome⁩.</string>
+    <string name="key_shares_label">اشتراک کلید</string>
+    <string name="key_shares_help">گروه‌هایی که اشتراک کلید می‌گیرند؛ هرکدام باید یکی از گروه‌های ⁨TLS⁩ باشد. خالی = پیش‌فرض ⁨Chrome⁩.</string>
+    <string name="sigalgs_label">الگوریتم‌های امضا</string>
+    <string name="sigalgs_help">نام‌های ⁨BoringSSL⁩ با دونقطه جدا می‌شوند. خالی = پیش‌فرض هسته.</string>
+    <string name="alps_label">⁨ALPS⁩</string>
+    <string name="alps_new">جدید</string>
+    <string name="alps_old">قدیمی</string>
+    <string name="server_padding_label">پدینگ سرور (بایت)</string>
+    <string name="server_padding_help">بایت‌های پدینگ درخواستی از سرور، ۰ تا ۶۵۵۳۵. خالی = هیچ.</string>
+    <string name="grease_sigalgs_title">⁨GREASE⁩ در الگوریتم امضا</string>
+    <string name="grease_sigalgs_desc">مانند ⁨Chrome⁩ یک مقدار ⁨GREASE⁩ در ابتدای الگوریتم‌های امضا قرار می‌گیرد.</string>
+    <string name="ech_grease_title">⁨ECH GREASE⁩</string>
+    <string name="ech_grease_desc">وقتی کلید ⁨ECH⁩ ارائه نمی‌شود، افزونهٔ ⁨GREASE⁩ برای ⁨ECH⁩ فرستاده می‌شود.</string>
+    <string name="no_ocsp_title">غیرفعال‌کردن ⁨OCSP stapling⁩</string>
+    <string name="no_ocsp_desc">افزونهٔ ⁨status_request⁩ حذف می‌شود.</string>
+    <string name="no_sct_title">غیرفعال‌کردن ⁨SCT⁩</string>
+    <string name="no_sct_desc">افزونهٔ ⁨signed_certificate_timestamp⁩ حذف می‌شود.</string>
+    <string name="no_ticket_title">غیرفعال‌کردن تیکت نشست</string>
+    <string name="no_ticket_desc">افزونهٔ ⁨session_ticket⁩ حذف می‌شود.</string>
+    <string name="no_perm_title">غیرفعال‌کردن جابه‌جایی افزونه‌ها</string>
+    <string name="no_perm_desc">به‌جای جابه‌جایی تصادفی ⁨Chrome⁩ در هر دست‌دهی، ترتیب افزونه‌ها ثابت می‌ماند.</string>
 </resources>

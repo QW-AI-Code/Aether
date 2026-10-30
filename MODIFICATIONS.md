@@ -105,3 +105,38 @@
 - Real delay test: new `custom/RealDelay.kt` (one Xray process per batch, password-protected loopback SOCKS inbound per config, HTTP `generate_204` through it); `custom/ConfigPing.kt` (TLS probe and trust-all `TrustManager` removed, `diagnose`, `NO_REPLY` / `INVALID`); `custom/ConfigPingStore.kt` (serialised runs, logged results); `custom/XrayConfigBuilder.kt` (`directOutbound`, `directDns`); `ui/settings/CustomConfigsPage.kt` and `res/values*/strings.xml` (`cc_ping_noreply`, `cc_ping_invalid`).
 - Security fixes from `docs/SECURITY_AUDIT_1.5.0.md`: `custom/XrayProcess.kt` (`redact` masks UUIDs, host names, IPv6, IPv4 /16), `custom/ConfigImporter.kt` + `vpn/AetherVpnService.kt` (`activeForwardPort`: subscription downloads through the session), *Copy link* via `copySensitive`.
 - Tests: `app/src/test/.../custom/RealDelayTest.kt` (incl. `XrayLogRedactionTest`).
+
+## 1.6.0
+
+See `docs/RELEASE_1.6.0.md` and `BUILD_VALIDATION.md`. Native Aether engine sources were not modified. The optional leaf-pin Xray backport is source-pinned, independently built, and selected only for configs requiring it.
+
+
+## Additional 1.6.0 UI and feedback changes
+
+- Preserve phase-one immutable Default migration and storage/UI guards.
+- Use LTR-safe capsule cards, compact tabs and top ping/import actions.
+- Add server-specific real throughput tests and optional connection-state audio.
+- Keep versionName 1.6.0 and base versionCode 19.
+
+## Independent clean-IP scanner
+
+- Share the same scan depth and manual real-ping ceiling between single and group scans.
+- Keep endpoint identity and ownership; reject stale or locked writes.
+- Run cancellable work off the UI thread and cancel before a VPN session starts.
+- Display progress on the active server row and a result card with old/new endpoints.
+- Preserve the original QWVPN license and scanner/validation attribution.
+
+## UI repair follow-up — 1.6.0 (versionCode 19 unchanged)
+
+Removed tab close controls, compacted row numbering, sanitized technical labels,
+persisted and enforced the selected custom-config tab across connection/ranking,
+expired scan notices/results, repaired asynchronous country enrichment, and put
+upstream engine credits before the UI-only QW-AI-Code description in both locales.
+Added model, storage, monitoring, lifecycle and native Compose-render regressions.
+See `docs/UI_REPAIR_1.6.0.fa.md` for behavior, validation and limitations.
+
+## 1.6.0 / 19 — CI audit and scanner AI follow-up
+- Fixed the log-confirmed RustSec gate failure: Cargo-resolved rustls-webpki 0.103.16 and webpki-roots 1.0.10; security floors also cover sync/fallback engine builds. Strict audit remains enabled.
+- Added scanner profile/limit Gemini help, safe live read-only context in explanations/cache/chat, Persian offline guidance, and missing semantic settings/drawer topics.
+- Added security and AI coverage/Compose regressions; CI collects repair renders outside the checkout. Full scope and validation limitations: docs/CI_AI_REPAIR_1.6.0.fa.md.
+- Fixed a locally reproduced first-subscription notice race: process initial store/connection snapshots instead of dropping them; regression uses no initialization sleep or increased timeout.

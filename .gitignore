@@ -24,12 +24,13 @@ app/src/main/cpp/hev-socks5-tunnel/
 .native/
 native/aether/target/
 
-# Core auto-upgrade working state (scripts/sync-core.sh): a snapshot of the
-# previous engine used to roll back if the new one does not compile, plus the
-# marker the CI commit step reads. Never committed.
+# Legacy core auto-upgrade state (auto-update is disabled; kept ignored).
 native/.core-prev/
 native/.core-sync-state
 
 # Signing (NEVER commit signing credentials)
 keystore.properties
 release.keystore
+
+# Kotlin compiler working state
+.kotlin/

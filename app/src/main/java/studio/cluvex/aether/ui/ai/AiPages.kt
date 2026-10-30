@@ -119,7 +119,7 @@ fun AiSettingsPage(
 
         // ---- key ---------------------------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_section_key))
+            GroupCaption(stringResource(R.string.ai_section_key), aiTopic = AiTopic.AI_KEY)
             SettingsGroup {
                 SettingsBlock {
                     LtrOutlinedTextField(
@@ -188,6 +188,7 @@ fun AiSettingsPage(
                 if (settings.hasKey) {
                     RowDivider(inset = false)
                     SettingsActionRow(
+                        aiTopic = AiTopic.AI_KEY,
                         title = stringResource(R.string.ai_key_forget),
                         icon = Icons.Rounded.Delete,
                         destructive = true,
@@ -205,7 +206,7 @@ fun AiSettingsPage(
 
         // ---- models ------------------------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_section_models))
+            GroupCaption(stringResource(R.string.ai_section_models), aiTopic = AiTopic.AI_MODEL)
             SettingsGroup {
                 if (models.isEmpty()) {
                     // Two genuinely different situations, and telling them apart is
@@ -250,6 +251,7 @@ fun AiSettingsPage(
                     RowDivider(inset = false)
                 }
                 SettingsActionRow(
+                    aiTopic = AiTopic.AI_MODEL,
                     title = stringResource(R.string.ai_models_refresh),
                     summary = stringResource(R.string.ai_models_filtered),
                     icon = Icons.Rounded.Refresh,
@@ -262,7 +264,7 @@ fun AiSettingsPage(
 
         // ---- behaviour ---------------------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_section_behaviour))
+            GroupCaption(stringResource(R.string.ai_section_behaviour), aiTopic = AiTopic.AI_AUTO_OPTIMIZE)
             SettingsGroup {
                 SettingsSwitchRow(
                     title = stringResource(R.string.ai_auto_optimize),
@@ -306,6 +308,7 @@ fun AiSettingsPage(
                 )
                 RowDivider()
                 SettingsNavRow(
+                    aiTopic = AiTopic.DIAGNOSTICS,
                     title = stringResource(R.string.ai_advisor_title),
                     summary = stringResource(R.string.ai_advisor_subtitle),
                     icon = Icons.Rounded.Insights,
@@ -316,7 +319,7 @@ fun AiSettingsPage(
 
         // ---- the honest small print --------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_privacy_title))
+            GroupCaption(stringResource(R.string.ai_privacy_title), aiTopic = AiTopic.AI_PRIVACY)
             SettingsGroup {
                 InfoBlock(
                     icon = Icons.Rounded.Lock,
@@ -365,6 +368,7 @@ fun AiAdvisorPage(
         settingsSection {
             SettingsGroup {
                 SettingsActionRow(
+                    aiTopic = AiTopic.DIAGNOSTICS,
                     title = stringResource(R.string.ai_advisor_run),
                     summary = stringResource(R.string.ai_advisor_subtitle),
                     icon = Icons.Rounded.Insights,

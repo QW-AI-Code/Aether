@@ -24,7 +24,7 @@ class AetherProcess(
 ) {
     private var process: Process? = null
 
-    fun start(profile: ConnectionProfile) {
+    fun start(profile: ConnectionProfile, extraEnv: Map<String, String> = emptyMap()) {
         val bin = File(nativeLibDir, "libaether.so")
         if (!bin.exists()) {
             throw IllegalStateException("Engine binary missing: ${bin.absolutePath}")
@@ -51,6 +51,7 @@ class AetherProcess(
             .redirectErrorStream(true)
         builder.environment().apply {
             putAll(profile.toEnv())
+            putAll(extraEnv)
             smartRoutes?.let { put("AETHER_ROUTES_FILE", it.absolutePath) }
             put("HOME", workingDir.absolutePath)
             put("TMPDIR", workingDir.absolutePath)

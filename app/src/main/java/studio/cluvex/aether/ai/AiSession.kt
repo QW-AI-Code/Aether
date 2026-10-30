@@ -113,6 +113,7 @@ enum class AiAdviceProblem {
  * request is dialled through the tunnel's SOCKS proxy - see [GeminiHttp].
  */
 object AiSession {
+    private var appContext: Context? = null
 
     /**
      * A process-lifetime scope, not a screen's.
@@ -192,6 +193,7 @@ object AiSession {
     /** Call once from `Application.onCreate`. Idempotent. */
     fun attach(context: Context) {
         if (store != null) return
+        appContext = context.applicationContext
         val created = GeminiStore(context.applicationContext)
         store = created
         scope.launch {
@@ -290,6 +292,7 @@ object AiSession {
         return AiAvailability.evaluate(
             state = state,
             backend = profile.backend,
+            customMode = studio.cluvex.aether.custom.CustomSession.info.value?.mode,
             hasKey = current.hasKey,
             // A key with no discovered models yet is still usable: discovery is
             // what the user is about to do. Only report NO_MODEL once we know the
@@ -324,7 +327,7 @@ object AiSession {
         _discovering.value = true
         _probe.value = AiProbe.Running
         scope.launch {
-            val port = AiAvailability.socksPort(profile.backend)
+            val port = AiAvailability.socksPort(profile.backend, state)
             when (val result = GeminiClient.listModels(current.apiKey, port)) {
                 is AiResult.Ok -> {
                     // GeminiClient has already applied the allow-list; re-applying
@@ -384,9 +387,10 @@ object AiSession {
         profile: ConnectionProfile,
         state: ConnectionState,
         persian: Boolean,
+        currentValue: String? = null,
     ): AiResult<String> {
         val current = _settings.value
-        val value = topic.profileKey?.let { AiPatch.read(profile, it) }
+        val value = currentValue ?: topic.profileKey?.let { AiPatch.read(profile, it) }
         val cacheKey = "${topic.id}|$value|${if (persian) "fa" else "en"}|${current.effectiveModel}"
         synchronized(explainCache) { explainCache[cacheKey] }?.let { return AiResult.Ok(it) }
 
@@ -397,7 +401,7 @@ object AiSession {
         return withContext(Dispatchers.IO) {
             val result = GeminiClient.generate(
                 apiKey = current.apiKey,
-                socksPort = AiAvailability.socksPort(profile.backend),
+                socksPort = AiAvailability.socksPort(profile.backend, state),
                 model = current.effectiveModel,
                 system = AiPrompts.explain(persian, topic, value),
                 history = listOf(
@@ -500,7 +504,10 @@ object AiSession {
             }
             val system = AiPrompts.chat(
                 persian = persian,
-                profileSnapshot = AiPatch.snapshot(profile),
+                profileSnapshot = AiPatch.snapshot(profile) + (appContext?.let {
+                    "\nUI clean-IP scanner (read-only): " + AiSettingContext.scanner(
+                        studio.cluvex.aether.scanner.CleanIpScanManager.options(it))
+                } ?: ""),
                 model = current.effectiveModel,
                 connectionStatus = statusForPrompt(state),
                 logAccess = current.autoOptimize,
@@ -508,7 +515,7 @@ object AiSession {
             )
             suspend fun ask(turns: List<GeminiTurn>, budget: Int) = GeminiClient.generate(
                 apiKey = current.apiKey,
-                socksPort = AiAvailability.socksPort(profile.backend),
+                socksPort = AiAvailability.socksPort(profile.backend, state),
                 model = current.effectiveModel,
                 system = system,
                 history = turns,
@@ -780,7 +787,7 @@ object AiSession {
              */
             suspend fun requestAdvice(budget: Int, strict: Boolean) = GeminiClient.generate(
                 apiKey = current.apiKey,
-                socksPort = AiAvailability.socksPort(profile.backend),
+                socksPort = AiAvailability.socksPort(profile.backend, state),
                 model = current.effectiveModel,
                 system = AiPrompts.advisor(persian, AiPatch.snapshot(profile), strict = strict),
                 history = listOf(GeminiTurn(true, AiPrompts.advisorRequest(digest))),
@@ -838,7 +845,7 @@ object AiSession {
                         )
                         val revised = GeminiClient.generate(
                             apiKey = current.apiKey,
-                            socksPort = AiAvailability.socksPort(profile.backend),
+                            socksPort = AiAvailability.socksPort(profile.backend, state),
                             model = current.effectiveModel,
                             system = AiPrompts.advisor(persian, AiPatch.snapshot(profile), strict = true),
                             history = listOf(
@@ -900,9 +907,12 @@ object AiSession {
      * "reconnecting, attempt 2 of 5"). Addresses are deliberately left out.
      */
     private fun statusForPrompt(state: ConnectionState): String = when (state) {
-        is ConnectionState.Connected -> "connected"
+        is ConnectionState.Connected -> studio.cluvex.aether.custom.CustomSession.info.value?.let {
+            "connected using custom chain: ${it.mode.label(it.configLabel)}; private server credentials omitted"
+        } ?: "connected"
         is ConnectionState.Reconnecting -> "reconnecting (attempt ${state.attempt} of ${state.maxAttempts})"
         ConnectionState.Verifying -> "tunnel up, end-to-end self-test still running"
+        ConnectionState.Selecting -> "selecting best custom server"
         ConnectionState.Connecting, ConnectionState.Launching -> "connecting"
         ConnectionState.Disconnecting -> "disconnecting"
         ConnectionState.Idle -> "disconnected"

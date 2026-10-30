@@ -112,6 +112,8 @@ data class ConnectionProfile(
     val scanMode: ScanMode = ScanMode.BALANCED,
     val ipVersion: IpVersion = IpVersion.V4,
     val quickReconnect: Boolean = true,
+    /** Optional app-side initial readiness gate. Never disables bootstrap, TLS checks or supervision. */
+    val verifyConnection: Boolean = true,
     val masqueHttp2: Boolean = false,
     /**
      * Share the tunnel with other devices on the same Wi-Fi / hotspot via the
@@ -295,6 +297,53 @@ data class ConnectionProfile(
      * handshake without it stops looking like Chrome's.
      */
     val disableGrease: Boolean = false,
+    /**
+     * Core 2.4.0: hold the MASQUE gateway's certificate to the pins the engine
+     * carries (engine `--tls-verify`). Off by default; the engine turns it on by
+     * itself with a Zero Trust team.
+     */
+    val tlsVerify: Boolean = false,
+    /**
+     * Core 2.4.0: where the calls to the WARP API go (engine `--api-address`,
+     * replaces the old `--enroll-address`): an IP or name, optionally with a port.
+     * Blank = engine default.
+     */
+    val apiAddress: String = "",
+    // ---- Core 2.4.0 TLS / API options (UI ported from the Windows build) ----
+    // All blank / false = engine default: nothing is sent. Values are sanitised by
+    // [Tls24Options] and reach the engine as AETHER_* environment variables.
+    /** SNI of the MASQUE handshakes (`--masque-sni`). */
+    val masqueSni: String = "",
+    /** SNI of the WARP API calls (`--api-sni`). */
+    val apiSni: String = "",
+    /** HTTP host of the WARP API calls (`--api-host`). */
+    val apiHost: String = "",
+    /** TLS 1.3 cipher suites, colon separated (`--tls13-ciphers`). */
+    val tls13Ciphers: String = "",
+    /** Groups that get a key share (`--tls-key-shares`). */
+    val tlsKeyShares: String = "",
+    /** Signature algorithms (`--tls-sigalgs`). */
+    val tlsSigalgs: String = "",
+    /** Certificate compression: "", brotli, zlib or zstd (`--tls-cert-compression`). */
+    val tlsCertCompression: String = "",
+    /** ALPS: "" (off), "new" or "old" (`--tls-alps`). */
+    val tlsAlps: String = "",
+    /** Trust anchor IDs, dotted, colon separated (`--tls-trust-anchors`). */
+    val tlsTrustAnchors: String = "",
+    /** Bytes of server padding, 0..65535 (`--tls-server-padding`). */
+    val tlsServerPadding: String = "",
+    /** `--enable-grease-sigalgs`. */
+    val enableGreaseSigalgs: Boolean = false,
+    /** `--enable-ech-grease`. */
+    val enableEchGrease: Boolean = false,
+    /** `--disable-ocsp-stapling`. */
+    val disableOcspStapling: Boolean = false,
+    /** `--disable-sct`. */
+    val disableSct: Boolean = false,
+    /** `--disable-session-ticket`. */
+    val disableSessionTicket: Boolean = false,
+    /** `--disable-extension-permutation`. */
+    val disableExtensionPermutation: Boolean = false,
     /** Endpoint validation window, seconds; 0 = engine default. */
     val validateSecs: Int = 0,
     /** Delay between engine-level reconnects, seconds; 0 = engine default. */
@@ -480,6 +529,8 @@ data class ConnectionProfile(
      * only on the engine copy a custom chain launches; never persisted or encoded.
      */
     val enginePsiphonOnly: Boolean = false,
+    val gameMode: Boolean = false,
+    val gameDnsServers: String = "",
 
 ) {
     /** The local SOCKS5 port this profile's engine will listen on. */
@@ -604,7 +655,7 @@ data class ConnectionProfile(
                 args += "--psiphon-region"
                 args += it
             }
-            sanitizedDns().takeIf { it.isNotEmpty() }?.let {
+            effectiveDns().takeIf { it.isNotEmpty() }?.let {
                 args += "--dns"
                 args += it.joinToString(",")
             }
@@ -667,7 +718,7 @@ data class ConnectionProfile(
         if (!backend.usesWarp) {
             // Plain Tor: the resolvers still apply (they are what the engine's own
             // SOCKS front hands out), nothing else here does.
-            sanitizedDns().takeIf { it.isNotEmpty() }?.let {
+            effectiveDns().takeIf { it.isNotEmpty() }?.let {
                 args += "--dns"
                 args += it.joinToString(",")
             }
@@ -737,7 +788,7 @@ data class ConnectionProfile(
 
         // In-tunnel resolvers. Sanitised so a malformed entry can never inject
         // a second CLI token (the engine itself also re-validates each entry).
-        sanitizedDns().takeIf { it.isNotEmpty() }?.let {
+        effectiveDns().takeIf { it.isNotEmpty() }?.let {
             args += "--dns"
             args += it.joinToString(",")
         }
@@ -779,6 +830,8 @@ data class ConnectionProfile(
         // engine default, so an untouched profile launches exactly as before.
         sanitizedTlsCiphers()?.let { args += "--tls-ciphers"; args += it }
         if (disableGrease) args += "--disable-grease"
+        if (tlsVerify) args += "--tls-verify"
+        sanitizedApiAddress()?.let { args += "--api-address"; args += it }
         if (validateSecs > 0) { args += "--validate-secs"; args += validateSecs.coerceIn(1, 3600).toString() }
         if (reconnectSecs > 0) { args += "--reconnect-secs"; args += reconnectSecs.coerceIn(1, 600).toString() }
         if (noProfileRetry) args += "--no-profile-retry"
@@ -872,6 +925,10 @@ data class ConnectionProfile(
         sanitizedTlsGroups()?.let { put("AETHER_TLS_GROUPS", it) }
         sanitizedTlsCiphers()?.let { put("AETHER_TLS_CIPHERS", it) }
         if (disableGrease) put("AETHER_DISABLE_GREASE", "1")
+        if (tlsVerify) put("AETHER_TLS_VERIFY", "1")
+        sanitizedApiAddress()?.let { put("AETHER_API_ADDRESS", it) }
+        // Core 2.4.0 TLS / API options (value layer: model/Tls24Options.kt).
+        putAll(Tls24Options.env(this@ConnectionProfile))
         if (coreLogLevel != CoreLogLevel.WARN) put("AETHER_LOG_LEVEL", coreLogLevel.raw)
 
         // ---- engine core 2.0.0 (1.3.0): Tor tuning ----
@@ -963,6 +1020,21 @@ data class ConnectionProfile(
      * and drops anything else, so a stray space or shell metacharacter in the
      * settings field can never become a separate engine argument.
      */
+    fun gameDnsList(): List<String> = gameDnsServers.split(',', ' ', ';', '\n')
+        .map { it.trim() }.filter { validGameDns(it) }.distinct().take(MAX_DNS_SERVERS)
+
+    fun effectiveDns(): List<String> = if (gameMode) gameDnsList().ifEmpty { sanitizedDns() } else sanitizedDns()
+
+    private fun validGameDns(value: String): Boolean {
+        if (!DNS_ENTRY.matches(value)) return false
+        val port = if (value.startsWith("[")) value.substringAfter(']').removePrefix(":")
+            else value.substringAfter(':', "")
+        if (port.isNotEmpty() && port.toIntOrNull() !in 1..65535) return false
+        val host = if (value.startsWith("[")) value.substringAfter('[').substringBefore(']') else value.substringBefore(':')
+        return if (':' in host) runCatching { java.net.InetAddress.getByName(host) is java.net.Inet6Address }.getOrDefault(false)
+            else host.split('.').let { parts -> parts.size == 4 && parts.all { p -> p.isNotEmpty() && p.all { it in '0'..'9' } && p.toIntOrNull() in 0..255 } }
+    }
+
     fun sanitizedDns(): List<String> = dnsServers
         .split(',', ' ', ';', '\n')
         .map { it.trim() }
@@ -1035,7 +1107,13 @@ data class ConnectionProfile(
     fun sanitizedTlsCiphers(): String? =
         tlsCiphers.trim().takeIf { it.matches(TLS_CIPHERS_RE) }
 
+    /** Core 2.4.0 `--api-address`: IPv4, `[IPv6]:port`, or a host name, with an optional port. */
+    fun sanitizedApiAddress(): String? =
+        apiAddress.trim().takeIf { it.matches(API_ADDRESS_RE) }
+
     companion object {
+        private val API_ADDRESS_RE = Regex("^(\\[[0-9A-Fa-f:.]{2,45}\\](:[0-9]{1,5})?|[A-Za-z0-9.-]{1,253}(:[0-9]{1,5})?)$")
+
         /** The engine's own TLS 1.2 cipher rule (Chrome's), used when [tlsCiphers] is blank. */
         const val DEFAULT_TLS_CIPHERS = "ALL:!aPSK:!ECDSA+SHA1:!3DES"
         private val TLS_CIPHERS_RE = Regex("^[A-Za-z0-9:,_.+!@=-]{1,512}$")

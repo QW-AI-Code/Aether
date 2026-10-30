@@ -1,5 +1,12 @@
 package studio.cluvex.aether.ui.components
 
+import androidx.compose.foundation.layout.heightIn
+import android.content.ClipData
+import android.content.ClipDescription
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Build
+import android.os.PersistableBundle
 import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.SizeTransform
@@ -13,7 +20,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -31,6 +40,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -44,6 +54,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.shadow
@@ -58,6 +69,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathMeasure
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.rememberTextMeasurer
 import studio.cluvex.aether.custom.CustomSession
@@ -68,6 +80,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.sp
 import java.util.Locale
 import kotlin.math.sin
@@ -171,7 +184,7 @@ fun ConnectionCard(
 
     // Only alive while connected: no frame subscription when there is nothing
     // to show off.
-    val cycle = if (connected) rememberGlowCycle() else null
+    val cycle = if (connected && LocalHomeVisible.current && LocalHomeAnimationsEnabled.current) rememberGlowCycle() else null
 
     Box(
         modifier = modifier
@@ -213,6 +226,11 @@ fun ConnectionCard(
 
 @Composable
 private fun StatusBlock(title: String, caption: String, accent: Color) {
+    val titleStyle = TextStyle(fontSize = 27.sp, fontWeight = FontWeight.Bold,
+        letterSpacing = (-0.3).sp, textAlign = TextAlign.Center)
+    val captionStyle = TextStyle(fontSize = 13.sp, textAlign = TextAlign.Center)
+    val titleFloor = rememberLineFloor(titleStyle)
+    val captionFloor = rememberLineFloor(captionStyle)
     Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         AnimatedContent(
             targetState = title,
@@ -225,16 +243,11 @@ private fun StatusBlock(title: String, caption: String, accent: Color) {
             // home screen shrink (see FitToHeight / FitLineText).
             FitLineText(
                 text = value,
-                style = TextStyle(
-                    fontSize = 27.sp,
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = (-0.3).sp,
-                    textAlign = TextAlign.Center,
-                ),
+                style = titleStyle,
                 minLineHeight = 31.sp,
                 color = accent,
                 minFontSize = 14.sp,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = titleFloor),
             )
         }
         Spacer(Modifier.height(4.dp))
@@ -248,13 +261,13 @@ private fun StatusBlock(title: String, caption: String, accent: Color) {
             // ellipsizes on one line instead of growing the card.
             FitLineText(
                 text = value,
-                style = TextStyle(fontSize = 13.sp, textAlign = TextAlign.Center),
+                style = captionStyle,
                 // 24 sp = the bodyLarge line this caption always inherited, so the
                 // card keeps exactly its 1.4.0 height.
                 minLineHeight = 24.sp,
                 color = CardTextMuted,
                 minFontSize = 9.sp,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().heightIn(min = captionFloor),
             )
         }
     }
@@ -265,8 +278,9 @@ private fun StatusBlock(title: String, caption: String, accent: Color) {
 @Composable
 private fun TimerBlock(connectedSince: Long?, connected: Boolean) {
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(connectedSince) {
-        if (connectedSince == null) return@LaunchedEffect
+    val visible = LocalHomeVisible.current
+    LaunchedEffect(connectedSince, visible) {
+        if (connectedSince == null || !visible) return@LaunchedEffect
         while (true) {
             now = System.currentTimeMillis()
             delay(1_000L)
@@ -303,58 +317,151 @@ private fun TimerBlock(connectedSince: Long?, connected: Boolean) {
 
 // ------------------------------------------------------------ 3. server IP
 
+/**
+ * 1.6.0 layout contract of the IP pill:
+ *
+ *  - the label and the flag/globe are measured first; the address gets EVERY
+ *    remaining pixel of the card width (`weight(1f, fill = false)`), so a
+ *    compressed IPv6 is no longer squeezed into whatever two fixed texts left;
+ *  - the address shrinks (down to [IP_MIN_FONT_SP]) before it ellipsizes, stays
+ *    LTR + monospace, and is never altered in state (no middle-cut strings);
+ *  - a TAP expands the pill to the full, wrapped address (plus the other address
+ *    family of a dual-stack exit, see [IpEndpoint.alternateIp]); a LONG PRESS
+ *    copies the full value, flagged sensitive for the clipboard overlay;
+ *  - an unknown country shows a neutral globe, never a white flag or two boxed
+ *    letters (see `NetProbe.normalizeCountryCode`).
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ServerIpPill(connected: Boolean, ipInfo: IpEndpoint?, ipLoading: Boolean) {
     val label = stringResource(
         if (connected) R.string.ip_server_label else R.string.ip_your_label,
     )
-    val flag = NetProbe.flagEmoji(ipInfo?.countryCode)
+    val flag = NetProbe.flagEmojiOrNull(ipInfo?.countryCode)
     val value = when {
         ipLoading && ipInfo == null -> stringResource(R.string.ip_checking)
         ipInfo != null -> ipInfo.ip
         else -> stringResource(R.string.ip_unavailable)
     }
+    val context = LocalContext.current
+    // Expansion is per address: a new IP (new session) folds the pill again.
+    var expanded by remember(ipInfo?.ip) { mutableStateOf(false) }
+    val interactive = if (ipInfo != null) {
+        Modifier.combinedClickable(
+            onClick = { expanded = !expanded },
+            onLongClick = { copyToClipboard(context, ipInfo.ip) },
+        )
+    } else Modifier
 
     Row(
         modifier = Modifier
+            .clip(CircleShape)
             .background(color = CardSubSurface, shape = CircleShape)
             .subEdge(CircleShape)
+            .then(interactive)
             .padding(horizontal = 15.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(text = label, fontSize = 12.sp, lineHeight = 24.sp, maxLines = 1, color = CardTextMuted)
         if (ipInfo != null) {
-            // r2: pinned to the pill's 24 sp line (the label's inherited bodyLarge
-            // line, which always set the pill height), so the pill does not
-            // grow a few pixels (and resize the screen) when the flag appears.
-            Text(
-                text = flag,
-                fontSize = 15.sp,
-                lineHeight = 24.sp,
-                maxLines = 1,
-                modifier = Modifier.height(24.dp),
-            )
+            if (flag != null) {
+                // r2: pinned to the pill's 24 sp line (the label's inherited bodyLarge
+                // line, which always set the pill height), so the pill does not
+                // grow a few pixels (and resize the screen) when the flag appears.
+                Text(
+                    text = flag,
+                    fontSize = 15.sp,
+                    lineHeight = 24.sp,
+                    maxLines = 1,
+                    modifier = Modifier.height(24.dp),
+                )
+            } else {
+                // Unknown / reserved country: neutral placeholder on the same 24 dp line.
+                Box(modifier = Modifier.height(24.dp), contentAlignment = Alignment.Center) {
+                    Icon(
+                        imageVector = Icons.Rounded.Public,
+                        contentDescription = null,
+                        tint = CardTextMuted,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
         }
-        AnimatedContent(
-            targetState = value,
-            transitionSpec = { fadeIn() togetherWith fadeOut() },
-            label = "cardIp",
-        ) { shown ->
-            Text(
-                text = shown,
-                // BiDi: an address is LTR technical text even in the Persian UI.
-                style = MaterialTheme.typography.titleSmall.copy(textDirection = TextDirection.Ltr),
-                fontFamily = FontFamily.Monospace,
-                fontWeight = FontWeight.SemiBold,
-                color = CardTextPrimary,
-                lineHeight = 24.sp,
-                maxLines = 1,
-                softWrap = false,
-                overflow = TextOverflow.Ellipsis,
-            )
+        // BiDi: an address is LTR technical text even in the Persian UI.
+        val baseStyle = MaterialTheme.typography.titleSmall.copy(
+            textDirection = TextDirection.Ltr,
+            fontFamily = FontFamily.Monospace,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.End,
+        )
+        // weight(fill = false): the address owns what the label and the flag leave
+        // over, but the pill still hugs a short IPv4 instead of spanning the card.
+        BoxWithConstraints(modifier = Modifier.weight(1f, fill = false)) {
+            val measurer = rememberTextMeasurer()
+            val maxPx = constraints.maxWidth
+            AnimatedContent(
+                targetState = value to expanded,
+                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                label = "cardIp",
+            ) { (shown, full) ->
+                if (full && ipInfo != null) {
+                    val alternate = ipInfo.alternateIp
+                    Text(
+                        text = if (alternate != null) "${ipInfo.ip}\n$alternate" else ipInfo.ip,
+                        style = baseStyle,
+                        color = CardTextPrimary,
+                        lineHeight = 18.sp,
+                        softWrap = true,
+                    )
+                } else {
+                    // Same shrink-to-fit pass as the meta slides: the largest size from
+                    // the style's own down to IP_MIN_FONT_SP that fits the real budget.
+                    val fitted = remember(shown, maxPx, baseStyle) {
+                        val start = if (baseStyle.fontSize.isSpecified) baseStyle.fontSize.value else 14f
+                        var size = start
+                        var style = baseStyle.copy(fontSize = size.sp)
+                        while (size > IP_MIN_FONT_SP) {
+                            val width = measurer.measure(
+                                text = shown, style = style, maxLines = 1, softWrap = false,
+                            ).size.width
+                            if (width <= maxPx) break
+                            size -= 1f
+                            style = baseStyle.copy(fontSize = size.sp)
+                        }
+                        style
+                    }
+                    Text(
+                        text = shown,
+                        style = fitted,
+                        color = CardTextPrimary,
+                        lineHeight = 24.sp,
+                        maxLines = 1,
+                        softWrap = false,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
     }
+}
+
+/** Smallest font the IP pill shrinks to before it ellipsizes (matches the meta slides). */
+private const val IP_MIN_FONT_SP = 9f
+
+/**
+ * Copies [text] to the clipboard. On Android 13+ the clip is flagged sensitive so
+ * the system clipboard preview does not echo the exit address on screen.
+ */
+private fun copyToClipboard(context: Context, text: String) {
+    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager ?: return
+    val clip = ClipData.newPlainText("ip", text)
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        clip.description.extras = PersistableBundle().apply {
+            putBoolean(ClipDescription.EXTRA_IS_SENSITIVE, true)
+        }
+    }
+    runCatching { clipboard.setPrimaryClip(clip) }
 }
 
 // --------------------------------------------------------------- 4. speeds
@@ -452,10 +559,11 @@ private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
     val meta by EngineMeta.state.collectAsState()
     val ping by PingMonitor.state.collectAsState()
 
-    // Live latency, exactly like the desktop edition: one cheap TCP handshake
-    // through the tunnel every few seconds, serialised by PingMonitor.
-    LaunchedEffect(connected) {
-        while (connected) {
+    // Same validated HTTPS generate_204 metric as the config catalog, through
+    // the live tunnel. PingMonitor serialises probes and reuses its channel.
+    val visible = LocalHomeVisible.current
+    LaunchedEffect(connected, visible) {
+        while (connected && visible) {
             PingMonitor.pingOnce(viaTunnel = true)
             delay(LATENCY_REFRESH_MS)
         }
@@ -489,8 +597,14 @@ private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
     val pipelineForms = customInfo?.takeIf { connected }
         ?.let { it.mode.compactLabels(it.configLabel, meta.protocol) }
         ?: listOf(pipeline)
+    // 1.6.0: a probe that COMPLETED without a value (not running, ms < 0) means
+    // the retained number is no longer fresh. It stays readable - in brackets and
+    // dimmed - and the meter drops to its floor, instead of an old reading posing
+    // as live data after a failure. A probe merely in flight is not stale.
+    val stale = connected && lastMs >= 0L && !ping.running && ping.ms < 0L
     val latency = when {
         !connected -> dash
+        lastMs >= 0L && stale -> "($lastMs ms)"
         lastMs >= 0L -> "$lastMs ms"
         ping.running -> "\u2026"
         else -> dash
@@ -511,7 +625,8 @@ private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
         MetaSlide(
             label = stringResource(R.string.meta_latency),
             value = latency,
-            below = { PingStrength(connected = connected, ms = lastMs) },
+            below = { PingStrength(connected = connected, ms = if (stale) -1L else lastMs) },
+            stale = stale,
         )
     }
 }
@@ -531,6 +646,8 @@ private fun MetaSlide(
      * then shrinks it further only if even the shortest one is too wide.
      */
     forms: List<String> = listOf(value),
+    /** 1.6.0: dims the value when it is a retained reading, not a fresh one. */
+    stale: Boolean = false,
 ) {
     val valueStyle = MaterialTheme.typography.bodySmall.copy(
         fontSize = 13.sp,
@@ -594,7 +711,7 @@ private fun MetaSlide(
                     style = valueStyle,
                     // 16 sp = bodySmall's line, the height this row always had.
                     minLineHeight = 16.sp,
-                    color = CardTextPrimary,
+                    color = if (stale) CardTextDim else CardTextPrimary,
                     minFontSize = 9.sp,
                     contentAlignment = Alignment.CenterEnd,
                     modifier = Modifier.fillMaxWidth(),
@@ -650,7 +767,7 @@ private fun PingStrength(connected: Boolean, ms: Long) {
     val quality = stringResource(pingQualityRes(grade))
 
     // No frame subscription at all while the tunnel is down.
-    val travel = if (connected) {
+    val travel = if (connected && LocalHomeVisible.current) {
         rememberInfiniteTransition(label = "pingWave").animateFloat(
             initialValue = 0f,
             targetValue = 1f,
@@ -809,8 +926,9 @@ private data class TrafficStats(
 private fun rememberTrafficStats(connectedSince: Long?, connected: Boolean): TrafficStats {
     var stats by remember(connectedSince) { mutableStateOf(TrafficStats()) }
 
-    LaunchedEffect(connectedSince, connected) {
-        if (!connected) return@LaunchedEffect
+    val visible = LocalHomeVisible.current
+    LaunchedEffect(connectedSince, connected, visible) {
+        if (!connected || !visible) return@LaunchedEffect
         var lastDown = -1L
         var lastUp = -1L
         var lastAt = 0L

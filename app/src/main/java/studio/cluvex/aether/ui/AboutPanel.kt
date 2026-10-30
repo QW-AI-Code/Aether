@@ -1,5 +1,7 @@
 package studio.cluvex.aether.ui
 
+import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.ui.ai.AiTopicIcon
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -52,10 +54,8 @@ private const val URL_PORT_GITHUB = "https://github.com/QW-AI-Code"
 /**
  * Collapsible "About" card.
  *
- * The Android edition / GUI (QW-AI-Code) is credited FIRST with its GitHub link
- * and everything it adds on top of upstream - including the chained
- * `Aether -> Psiphon` transport - and the upstream Aether engine (Cluvex Studio)
- * follows with its own links and feature set.
+ * Core development belongs to Cluvex Studio; the QW-AI-Code section below
+ * describes only the Android UI and configuration-management improvements.
  */
 @Composable
 fun AboutPanel(modifier: Modifier = Modifier, startExpanded: Boolean = false) {
@@ -117,6 +117,8 @@ fun AboutPanel(modifier: Modifier = Modifier, startExpanded: Boolean = false) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                AiTopicIcon(AiTopic.ABOUT)
+                Spacer(Modifier.width(8.dp))
                 Icon(
                     imageVector = Icons.Rounded.ExpandMore,
                     contentDescription = null,
@@ -218,26 +220,7 @@ fun AboutPanel(modifier: Modifier = Modifier, startExpanded: Boolean = false) {
 
                     Spacer(Modifier.height(16.dp))
 
-                    // ORDER, deliberately: the author of THIS app (the GUI,
-                    // the Android runtime and the chained transports) comes
-                    // first, and the upstream engine's author follows. The
-                    // reader is holding this edition, so this edition's credit
-                    // and its feature list are what the panel opens on.
-
-                    // ---- This Android edition / GUI (QW-AI-Code) ----
-                    SectionHeader(
-                        title = stringResource(R.string.about_port_title),
-                        note = stringResource(R.string.about_port_note),
-                    )
-                    LinkRow(R.drawable.ic_github, "github.com/QW-AI-Code", URL_PORT_GITHUB)
-                    Spacer(Modifier.height(6.dp))
-                    FeatureList(stringArrayResource(R.array.about_port_improvements).toList())
-
-                    Spacer(Modifier.height(16.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                    Spacer(Modifier.height(14.dp))
-
-                    // ---- Upstream engine (Cluvex Studio) ----
+                    // Core authors first; the UI edition is credited separately below.
                     SectionHeader(
                         title = stringResource(R.string.about_original_title),
                         note = stringResource(R.string.about_original_note),
@@ -246,6 +229,16 @@ fun AboutPanel(modifier: Modifier = Modifier, startExpanded: Boolean = false) {
                     LinkRow(R.drawable.ic_telegram, "t.me/CluvexStudio", URL_ORIGINAL_TELEGRAM)
                     Spacer(Modifier.height(6.dp))
                     FeatureList(stringArrayResource(R.array.about_original_features).toList())
+                    Spacer(Modifier.height(16.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                    Spacer(Modifier.height(14.dp))
+                    SectionHeader(
+                        title = stringResource(R.string.about_port_title),
+                        note = stringResource(R.string.about_port_note),
+                    )
+                    LinkRow(R.drawable.ic_github, "github.com/QW-AI-Code", URL_PORT_GITHUB)
+                    Spacer(Modifier.height(6.dp))
+                    FeatureList(stringArrayResource(R.array.about_port_improvements).toList())
                 }
             }
         }

@@ -201,12 +201,16 @@ pub async fn run_chain(_through: SocketAddr, _state: PathBuf) -> Result<()> {
 }
 
 #[cfg(not(feature = "tor"))]
-pub async fn run_only(_listen: SocketAddr, _state: PathBuf) -> Result<()> {
+pub async fn run_only(
+    _listener: tokio::net::TcpListener,
+    _listen: SocketAddr,
+    _state: PathBuf,
+) -> Result<()> {
     Err(unsupported())
 }
 
 #[cfg(not(feature = "tor"))]
-pub async fn start_reverse(_state: PathBuf) -> Result<SocketAddr> {
+pub async fn start_reverse(_state: PathBuf) -> Result<(SocketAddr, tokio::task::AbortHandle)> {
     Err(unsupported())
 }
 
@@ -776,12 +780,28 @@ mod with_tor {
     }
 
     fn announce_exit(proxy: SocketAddr, what: &'static str) {
+        let proxy = crate::socks::dialable(proxy);
         tokio::spawn(async move {
             crate::exitloc::report_through_socks(proxy, what).await;
         });
     }
 
-    async fn serve(listener: TcpListener, client: Client, kind: &'static str) -> Result<()> {
+    /// Binds Tor's http proxy when one is asked for, with --tor-http.
+    async fn bind_http() -> Result<Option<TcpListener>> {
+        match http_listen_address() {
+            Some(address) => Ok(Some(
+                crate::socks::bind_listener("tor http proxy", address, "--tor-http").await?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn serve(
+        listener: TcpListener,
+        http: Option<TcpListener>,
+        client: Client,
+        kind: &'static str,
+    ) -> Result<()> {
         let connector = move |host: String, port: u16| {
             let client = client.clone();
             async move {
@@ -796,32 +816,28 @@ mod with_tor {
             }
         };
 
-        let http_task = match http_listen_address() {
-            Some(address) => {
-                let http_listener = crate::socks::bind_listener("tor http proxy", address).await?;
-                let connector = connector.clone();
-                Some(tokio::spawn(async move {
-                    if let Err(e) = crate::socks::serve_http_connector(
-                        http_listener,
-                        "tor http proxy",
-                        connector,
-                    )
-                    .await
-                    {
-                        log::error!("[-] the tor http proxy stopped: {e}");
-                    }
-                }))
+        // Served inside this future, so that it ends with it, letting go of its port, also when
+        // the future is dropped as the core ends. Its failing leaves the socks5 one serving.
+        let http_connector = connector.clone();
+        let http_proxy = async move {
+            if let Some(http_listener) = http {
+                if let Err(e) = crate::socks::serve_http_connector(
+                    http_listener,
+                    "tor http proxy",
+                    http_connector,
+                )
+                .await
+                {
+                    log::error!("[-] the tor http proxy stopped: {e}");
+                }
             }
-            None => None,
+            std::future::pending::<std::convert::Infallible>().await
         };
 
-        let outcome = crate::socks::serve_connector(listener, kind, connector).await;
-
-        if let Some(task) = http_task {
-            task.abort();
+        tokio::select! {
+            outcome = crate::socks::serve_connector(listener, kind, connector) => outcome,
+            never = http_proxy => match never {},
         }
-
-        outcome
     }
 
     /// The upstream proxy tor dials through when no tunnel carries it, see
@@ -848,24 +864,23 @@ mod with_tor {
         }
     }
 
+    /// Waits for the core's socks5 server on `through`: the core holds its listener from its start
+    /// and answers once a tunnel serves it.
     async fn wait_for_proxy(through: SocketAddr) {
-        let mut announced = false;
-        loop {
-            if tokio::net::TcpStream::connect(through).await.is_ok() {
-                return;
-            }
-            if !announced {
-                log::info!("[*] tor is waiting for the tunnel proxy at {through}");
-                announced = true;
-            }
-            tokio::time::sleep(Duration::from_secs(2)).await;
-        }
+        crate::socks::until_answered(through, Duration::from_secs(2), || {
+            log::info!("[*] tor is waiting for the tunnel proxy at {through}")
+        })
+        .await
     }
 
     pub async fn run_chain(through: SocketAddr, state: PathBuf) -> Result<()> {
         init_tracing();
         let listen = listen_address();
-        let listener = crate::socks::bind_listener("tor socks5", listen).await?;
+        // Both held from the start, as the core holds its own: the user dials them while the
+        // tunnel and Tor come up, and no other program may take them meanwhile.
+        let listener = crate::socks::bind_listener("tor socks5", listen, "--tor-bind").await?;
+        let listen = listener.local_addr().unwrap_or(listen);
+        let http = bind_http().await?;
 
         wait_for_proxy(through).await;
         log::info!("[*] bootstrapping tor through the tunnel at {through}");
@@ -874,12 +889,16 @@ mod with_tor {
         log::info!("[+] tor is ready; {listen} leaves through tor, carried by the tunnel");
         announce_exit(listen, "tor through the tunnel");
 
-        serve(listener, client, "tor socks5").await
+        serve(listener, http, client, "tor socks5").await
     }
 
-    pub async fn run_only(listen: SocketAddr, state: PathBuf) -> Result<()> {
+    /// Tor with no tunnel underneath it, serving `listener`, which the core holds on `listen` from
+    /// its start; its http proxy is held from the start as well.
+    pub async fn run_only(listener: TcpListener, listen: SocketAddr, state: PathBuf) -> Result<()> {
         init_tracing();
-        let listener = crate::socks::bind_listener("tor socks5", listen).await?;
+        // The port the system gave, where --bind names port 0.
+        let listen = listener.local_addr().unwrap_or(listen);
+        let http = bind_http().await?;
 
         log::info!("[*] bootstrapping tor with no tunnel underneath it");
         announce_upstream();
@@ -888,29 +907,38 @@ mod with_tor {
         log::info!("[+] tor is ready; {listen} leaves through tor");
         announce_exit(listen, "tor");
 
-        serve(listener, client, "tor socks5").await
+        serve(listener, http, client, "tor socks5").await
     }
 
-    pub async fn start_reverse(state: PathBuf) -> Result<SocketAddr> {
+    /// Starts Tor for the tunnel to be dialled through: its socks5 address, and the handle that
+    /// ends it with the core.
+    pub async fn start_reverse(state: PathBuf) -> Result<(SocketAddr, tokio::task::AbortHandle)> {
         init_tracing();
         let listen = listen_address();
-        let listener = crate::socks::bind_listener("tor socks5", listen).await?;
+        let listener = crate::socks::bind_listener("tor socks5", listen, "--tor-bind").await?;
+        // Where the tunnel dials Tor: where its listener is bound, a port 0 asked for being the port
+        // the system picked.
+        let dialled = crate::socks::dialable(listener.local_addr().unwrap_or(listen));
 
         log::info!("[*] bootstrapping tor; the tunnel will be dialled through it");
         // The upstream is still the proxy aether was given: the caller points it at tor once tor is up.
         announce_upstream();
 
         let client = establish(&state, None, REVERSE_ATTEMPTS).await?;
-        log::info!("[+] tor is ready; the tunnel goes out through {listen}");
-        announce_exit(listen, "tor");
+        log::info!("[+] tor is ready; the tunnel goes out through {dialled}");
+        announce_exit(dialled, "tor");
 
-        tokio::spawn(async move {
-            if let Err(e) = serve(listener, client, "tor socks5").await {
+        let serving = tokio::spawn(async move {
+            let served = match bind_http().await {
+                Ok(http) => serve(listener, http, client, "tor socks5").await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = served {
                 log::error!("[-] the tor proxy stopped: {e}");
             }
         });
 
-        Ok(listen)
+        Ok((dialled, serving.abort_handle()))
     }
 
     // >>> AETHER-APP-PATCH tor-cache-seed

@@ -187,7 +187,7 @@ build_hev() {
     # been stable across hev releases for years.
     dynsyms="$("${NDK_TOOLCHAIN}/llvm-nm" --dynamic --defined-only "${out}" 2>/dev/null || true)"
     for sym in hev_socks5_tunnel_main hev_socks5_tunnel_quit hev_socks5_tunnel_stats; do
-      if ! echo "${dynsyms}" | grep -qw "${sym}"; then
+      if ! grep -qw "${sym}" <<<"${dynsyms}"; then
         echo "ERROR: [${abi}] libhev-socks5-tunnel.so lacks ${sym}." >&2
         exit 1
       fi
@@ -195,7 +195,7 @@ build_hev() {
     # hev-jni.c was stripped above; if JNI_OnLoad is STILL exported, the strip
     # failed (upstream moved/renamed the file) and its RegisterNatives would
     # run again via the dlsym() dependency search. Never ship that.
-    if echo "${dynsyms}" | grep -qw 'JNI_OnLoad'; then
+    if grep -qw 'JNI_OnLoad' <<<"${dynsyms}"; then
       echo "ERROR: [${abi}] libhev-socks5-tunnel.so still exports JNI_OnLoad — hev-jni.c was not stripped." >&2
       echo "       Update the strip logic in build_hev for the new upstream layout." >&2
       exit 1
@@ -242,7 +242,7 @@ build_hev() {
       Java_studio_cluvex_aether_core_TProxyService_TProxyStartService \
       Java_studio_cluvex_aether_core_TProxyService_TProxyStopService \
       Java_studio_cluvex_aether_core_TProxyService_TProxyGetStats; do
-      if ! echo "${bridgesyms}" | grep -qw "${sym}"; then
+      if ! grep -qw "${sym}" <<<"${bridgesyms}"; then
         echo "ERROR: [${abi}] libaethertun.so lacks ${sym} — Kotlin externals would not resolve." >&2
         exit 1
       fi
@@ -428,6 +428,7 @@ build_aether() {
     exit 1
   fi
   echo "==> [aether] binary crate: ${crate}"
+  python3 "${SCRIPT_DIR}/patch-engine-dependencies.py" "${crate}"
 
   export CARGO_TARGET_DIR="${AETHER_SRC}/target"
 
@@ -457,7 +458,7 @@ build_aether() {
       # because the resulting APK looks complete and has no Tor in it.
       echo "    WARNING: building WITHOUT cargo features - the app's Tor modes will NOT work." >&2
     fi
-    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release "${feature_args[@]}" )
+    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release --locked "${feature_args[@]}" )
 
     local reldir="${CARGO_TARGET_DIR}/${triple}/release"
     local artifact=""
@@ -515,6 +516,12 @@ build_aether() {
         exit 1
       fi
     done
+  fi
+  # Audit the dependency tree that actually produced the binaries, even after
+  # a failed upstream upgrade triggered a rollback. Keep it across disk cleanup.
+  if [ -n "${RUNNER_TEMP:-}" ]; then
+    mkdir -p "${RUNNER_TEMP}/aether-audit/built-engine"
+    cp "${crate}/Cargo.lock" "${RUNNER_TEMP}/aether-audit/built-engine/Cargo.lock"
   fi
 }
 
@@ -677,8 +684,8 @@ case "${TARGET}" in
   aether) build_aether ;;
   pt)     build_pt ;;
   psiphon) build_psiphon ;;
-  xray)   build_xray ;;
-  all)    build_hev; build_aether; build_pt; build_psiphon; build_xray ;;
+  xray)   build_xray; bash "${SCRIPT_DIR}/build-xray-pinned.sh" ;;
+  all)    build_hev; build_aether; build_pt; build_psiphon; build_xray; bash "${SCRIPT_DIR}/build-xray-pinned.sh" ;;
   *) echo "Usage: build-natives.sh [hev|aether|pt|psiphon|xray|all]" >&2; exit 2 ;;
 esac
 

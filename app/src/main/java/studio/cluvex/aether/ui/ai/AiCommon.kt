@@ -45,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
@@ -129,6 +130,7 @@ fun AiTopicIcon(topic: AiTopic?, modifier: Modifier = Modifier) {
 
     Box(
         modifier = modifier
+            .then(Modifier.testTag("ai-topic:${topic.id}"))
             .size(28.dp)
             .clip(RoundedCornerShape(9.dp))
             .background(AetherViolet.copy(alpha = 0.16f))
@@ -172,13 +174,17 @@ fun AiExplainSheet(topic: AiTopic, onDismiss: () -> Unit) {
     var failure by remember { mutableStateOf<Pair<String, AiErrorKind>?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
 
+    val currentValue = studio.cluvex.aether.ai.AiSettingContext.read(context, topic)
+        ?: topic.profileKey?.let { AiPatch.read(host.profile, it) }
     val gate = AiSession.gate(host.state, host.profile)
 
-    LaunchedEffect(topic, attempt, gate) {
+    LaunchedEffect(topic, attempt, gate, currentValue) {
+        answer = null
+        failure = null
+        loading = false
         if (!gate.ready) return@LaunchedEffect
         loading = true
-        failure = null
-        when (val result = AiSession.explain(topic, host.profile, host.state, persian)) {
+        when (val result = AiSession.explain(topic, host.profile, host.state, persian, currentValue)) {
             is AiResult.Ok -> answer = result.value
             is AiResult.Err -> failure = result.message to result.kind
         }
@@ -236,11 +242,14 @@ fun AiExplainSheet(topic: AiTopic, onDismiss: () -> Unit) {
 
             // The offline truth, always present.
             Text(
-                text = topic.detail,
+                text = topic.offlineDetail(persian),
                 style = MaterialTheme.typography.bodyMedium,
                 color = OnDarkMuted,
             )
 
+            currentValue?.let { value ->
+                Text(value, style = MaterialTheme.typography.bodySmall, color = OnDarkMuted)
+            }
             Spacer(Modifier.height(18.dp))
 
             when {
@@ -312,9 +321,8 @@ fun AiExplainSheet(topic: AiTopic, onDismiss: () -> Unit) {
                             explainFollowUpPrompt(
                                 persian = persian,
                                 label = topic.label,
-                                detail = topic.detail,
-                                currentValue = topic.profileKey
-                                    ?.let { AiPatch.read(host.profile, it) },
+                                detail = topic.offlineDetail(persian),
+                                currentValue = currentValue,
                                 previousAnswer = answer,
                             ),
                         )

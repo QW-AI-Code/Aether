@@ -18,7 +18,14 @@
 # pipeline can never be broken again by a leftover file from an older version.
 #
 # Safety: only paths listed in .github/removed-sources.txt are ever touched,
-# and only inside app/ , native/aether/aether/src/ , docs/ and scripts/ .
+# and only inside app/ , native/aether/aether/src/ , docs/ and scripts/ , plus
+# these four EXACT paths that 1.6.0 dropped (1.6.0 automatic cleanup, so nobody
+# has to delete them by hand in GitHub):
+#   BUILD_VALIDATION.md  PROJECT_STATUS.md  _META/TODO/bhs.md
+#   native/aether/Docs/Aether.png
+# A tracked file is removed with `git rm` (the deletion is then committed by the
+# next workflow step); an untracked one is simply deleted. Neither can fail the
+# build: a path that is already gone is skipped silently.
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -37,6 +44,7 @@ else
 			/*|*..*)
 				echo "::error::Refusing suspicious path in $MANIFEST: $path"; exit 1 ;;
 			app/*|native/aether/aether/src/*|docs/*|scripts/*) : ;;
+			BUILD_VALIDATION.md|PROJECT_STATUS.md|_META/TODO/bhs.md|native/aether/Docs/Aether.png) : ;;
 			*)
 				echo "::error::Path outside the allowed trees in $MANIFEST: $path"; exit 1 ;;
 		esac
@@ -73,6 +81,10 @@ else
 					fi ;;
 			esac
 
+			if git ls-files --error-unmatch -- "$path" >/dev/null 2>&1; then
+				# Tracked by git: stage the deletion (git rm). Never fail the build.
+				git rm -rq --ignore-unmatch -- "$path" 2>/dev/null || true
+			fi
 			rm -rf -- "$path"
 			echo "Removed stale file left over from an older version: $path"
 			removed=$((removed + 1))

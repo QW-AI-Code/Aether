@@ -33,6 +33,76 @@ enum class AiTopic(
     /** Key in [AiPatch.WRITABLE]/[AiPatch.read], when this topic has a value. */
     val profileKey: String? = null,
 ) {
+    CUSTOM_CONFIGS("customConfigs", "Custom configs, tabs and imports",
+        "Aether 1.6.0 imports VLESS, VMess, Trojan, Shadowsocks, Xray JSON and NPVT/NPVS files via link, text, file or QR. " +
+        "All, V2Ray and Npvt are automatic tabs with stable internal keys; names can be edited. User tabs support create, rename, move and delete. " +
+        "The selected tab persists across navigation and restart; automatic selection is restricted to it. Tab deletion is confirmed and removes its members. Locked NPVT authors' credentials and endpoints must stay hidden. " +
+        "Never ask for private config links, passwords or API keys in chat. Explain steps; you cannot mutate the custom vault."),
+    CUSTOM_CHAIN("customChain", "Custom chain order",
+        "Arrows are traffic order from the phone to the internet. Config -> Aether starts Xray first, then carries Aether MASQUE HTTP/2 TCP through that local SOCKS proxy; exit IP is WARP. " +
+        "Aether -> Config starts Aether first then dials the config through it; the final local Xray port feeds TUN and exit-IP probes. " +
+        "A healthy ordinary HTTPS ping does not prove that a remote config permits WARP gateway connections. No direct fallback is allowed."),
+    CUSTOM_PING("customPing", "Custom ping and automatic selection",
+        "Numeric real delay is measured through each actual config. Below 150 ms is green, 150 through 300 ms amber, above 300 ms red. " +
+        "Failures are muted and labelled; they are not latency values. Successful entries can sort by increasing or decreasing delay; failures stay last. " +
+        "Auto-select tests eligible configs and periodic health checks use the configured interval. A failed probe alone cannot prove censorship."),
+    CUSTOM_VERIFY("customVerify", "Verify custom connection",
+        "Enabled by default. This optional bounded HTTP readiness check does not measure upload speed. Turning it off skips only the initial check, " +
+        "not core startup, TLS authentication, tunnel supervision or exit-IP lookup. It does not make an unreachable server work."),
+    CLEAN_IP_SCANNER("cleanIpScanner", "Clean-IP scanner for custom servers",
+        "This UI scanner is separate from the engine WARP endpoint scan. It scans supported, unlocked TLS custom servers only, while disconnected. " +
+        "It preserves credentials, SNI and transport; a candidate must pass actual proxy traffic and three stability confirmations before being applied. " +
+        "Group scan is limited to the selected tab. Opening settings or asking AI never starts a scan. Scan results depend on this network, not country or censorship guarantees."),
+    CLEAN_IP_PROFILE("cleanIpProfile", "Clean-IP scan depth",
+        "Fast, Balanced (default) and Deep trade search budget and repeat measurements against time. " +
+        "Fast: 120 candidates, 3500 ms timeout, 1 probe/IP, parallelism 60. Balanced: 300, 5000 ms, 2, 50. Deep: 600, 6000 ms, 3, 40. " +
+        "These are per-profile search budgets, not promises of total duration or real-delay limits. All profiles still require final proxy validation."),
+    CLEAN_IP_FAST("cleanIpFast", "Fast clean-IP scan",
+        "120 candidates, 3500 ms per-probe timeout, 1 probe/IP, 60 concurrent probes and 6 neighbours per hit. " +
+        "Quick first attempt; may miss healthy IPs on slow networks. Final real-delay validation still uses three confirmations."),
+    CLEAN_IP_BALANCED("cleanIpBalanced", "Balanced clean-IP scan",
+        "Default: 300 candidates, 5000 ms timeout, 2 probes/IP, 50 concurrent probes and 12 neighbours per hit. " +
+        "A compromise between time and stability; use Deep if it finds nothing. Final proxy validation is still required."),
+    CLEAN_IP_DEEP("cleanIpDeep", "Deep clean-IP scan",
+        "600 candidates, 6000 ms timeout, 3 probes/IP, 40 concurrent probes and 16 neighbours per hit. " +
+        "Broader, slower search for difficult networks; no success guarantee. Final proxy validation is still required."),
+    CLEAN_IP_LIMIT("cleanIpLimit", "Manual real-delay ceiling",
+        "Separate from the scan timeout: optional integer 50..5000 ms, saved default 2000 ms. " +
+        "Manual mode accepts the first candidate passing the ceiling AND three actual proxy confirmations. " +
+        "Automatic mode ranks the passing measured candidates by latency and confirms the fastest stable one without the manual ceiling. " +
+        "Failed probes never count as low ping. AI can explain these separate preferences but cannot change them or start a scan."),
+    VERIFY_CONNECTION("verifyConnection", "Initial connection verification",
+        "Disabling skips only the optional initial HTTP readiness check, not startup, TLS, supervision or exit-IP lookup. It cannot make an unreachable server work."),
+    GAME_DNS("gameDns", "Game DNS override",
+        "When game mode is on, valid comma-separated game DNS IPs replace the regular tunnel resolvers. Empty or invalid input falls back to regular DNS. It does not guarantee lower game latency."),
+    BYPASS_IRAN("bypassIran", "Bypass Iranian destinations",
+        "Uses the bundled or updated Iranian domain/CIDR lists to route those destinations directly outside the tunnel. This exposes their traffic to the operator. Suspended while LAN sharing is enabled."),
+    BLOCK_ADS("blockAds", "Block advertising domains",
+        "Adds the bundled or updated advertising domain list to blocked routes. Domain rules may require hostname sniffing. Not every ad can be blocked; custom block rules still apply."),
+    CONNECTION_SOUND("connectionSound", "Connection sounds",
+        "Device-local connection/disconnection feedback, enabled by default. Respects the phone's silent/vibrate mode. Does not change the network or tunnel."),
+    BATTERY("battery", "Background battery exemption",
+        "Opens Android battery-optimisation settings so the user can allow background VPN work. The app cannot grant this itself. Vendor power saving can otherwise interrupt the tunnel."),
+    ANNOUNCEMENTS("announcements", "Release announcements",
+        "Reopens this app's bundled version announcements. These are release notes, not real-time network status or security advice from a remote server."),
+    ABOUT("about", "About Aether and credits",
+        "Shows version, core/build provenance, signature information and source links. Cluvex Studio develops the engine; QW-AI-Code develops this Android UI and its UI-side scanner, tabs and real-delay presentation. Do not attribute engine work to the UI author."),
+    SHARE_MODE("shareMode", "Share over Wi-Fi or mobile hotspot",
+        "Home Wi-Fi requires both devices on the same router. Mobile hotspot covers the phone's hotspot or USB/Bluetooth tethering. " +
+        "Select the mode matching the actual local link and use that link's displayed proxy address on the other device. It does not enable Android tethering itself."),
+    SHARE_AUTH("shareAuth", "Sharing proxy authentication",
+        "Optional username/password protection for the local HTTP/SOCKS sharing proxy, recommended on shared Wi-Fi. " +
+        "Enable, edit or rotate credentials here and configure them on clients. These are NOT Gemini credentials. Never paste proxy passwords into AI chat."),
+    SHARE_WEBRTC("shareWebrtc", "Sharing and WebRTC leak checks",
+        "A browser can send WebRTC traffic outside its configured proxy. The local sharing setup page provides leak checks and instructions/locks. " +
+        "A configured proxy does not guarantee that every application or browser channel uses it. Check the client before trusting the setup."),
+    PRESETS("presets", "Saved connection presets",
+        "Save, select, rename, delete, import or export connection setting presets from the home selector. Default restores clean tunnel settings even when already selected. " +
+        "Presets are distinct from custom-server tabs. Changing a preset while busy is locked. Exported settings may contain private values: never paste their contents into AI chat."),
+    SETTINGS("settings", "Aether settings",
+        "Settings are grouped into connection, custom configs, clean-IP scanner, transport, DNS/routing, upstream, apps, security, sharing and app/AI pages. Tunnel controls are locked while connected; some device-only preferences remain available."),
+    AI_PRIVACY("aiPrivacy", "AI privacy and limits",
+        "Requests go to Google only through the final connected SOCKS endpoint. Topic name, factual help and safe current settings may be sent; log analysis uses a redacted excerpt when enabled. Never ask users to paste keys, passwords, tokens, one-time codes or private config links. Offline topic help needs no API key."),
     // ---- connection ------------------------------------------------------
     BACKEND(
         "backend",
@@ -446,6 +516,102 @@ enum class AiTopic(
             "default; turning it on makes the handshake stop looking like Chrome's, " +
             "which only helps against a middlebox that chokes on GREASE.",
     ),
+    TLS_VERIFY(
+        "tlsVerify",
+        "Verify gateway certificate",
+        "Holds the MASQUE gateway's certificate to the pins the engine carries " +
+            "(engine --tls-verify, core 2.4.0). Off by default; the engine turns it " +
+            "on by itself with a Zero Trust team. Turn it on if a middlebox might " +
+            "be intercepting TLS.",
+    ),
+    API_ADDRESS(
+        "apiAddress",
+        "WARP API address",
+        "Where the calls that register and enroll the keys go (engine " +
+            "--api-address, core 2.4.0; it replaces --enroll-address). An IP address " +
+            "or name, with an optional port, e.g. 162.159.137.105 or " +
+            "[2606:4700:7::a29f:8969]:443. Empty uses the engine's default.",
+    ),
+    MASQUE_SNI(
+        "masqueSni",
+        "MASQUE server name (SNI)",
+        "The server name the engine puts in the ClientHello of its MASQUE handshakes (engine --masque-sni, core 2.4.0). Empty uses the engine default. Only affects how the handshake looks to the network; the gateway is still the one chosen by the endpoint.",
+    ),
+    API_SNI(
+        "apiSni",
+        "WARP API server name (SNI)",
+        "The server name sent in the ClientHello of the calls to the WARP API (engine --api-sni, core 2.4.0), e.g. to front the calls behind another name. Empty uses the default. Used together with the API address and API host.",
+    ),
+    API_HOST(
+        "apiHost",
+        "WARP API host",
+        "The HTTP Host of the calls to the WARP API (engine --api-host, core 2.4.0). Empty uses the default api.cloudflareclient.com. Normally only changed together with the API address / API server name.",
+    ),
+    TLS_TRUST_ANCHORS(
+        "tlsTrustAnchors",
+        "TLS trust anchor IDs",
+        "Trust anchor IDs the ClientHello announces (engine --tls-trust-anchors, core 2.4.0): dotted numeric IDs separated by a colon, e.g. 11129.9.1:11129.9.4. Empty announces none.",
+    ),
+    TLS_CERT_COMPRESSION(
+        "tlsCertCompression",
+        "Certificate compression",
+        "Which certificate compression algorithm the ClientHello offers (engine --tls-cert-compression, core 2.4.0): brotli, zlib or zstd; Off offers the engine default.",
+    ),
+    TLS13_CIPHERS(
+        "tls13Ciphers",
+        "TLS 1.3 cipher suites",
+        "The TLS 1.3 cipher suites of the engine ClientHello, in order, as standard names separated by a colon (engine --tls13-ciphers, core 2.4.0), e.g. TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256. Empty uses Chrome's order. An unknown name stops the engine at startup.",
+    ),
+    TLS_KEY_SHARES(
+        "tlsKeyShares",
+        "TLS key shares",
+        "The groups that get a key share in the ClientHello (engine --tls-key-shares, core 2.4.0), e.g. X25519MLKEM768:X25519. Each must be one of the TLS groups. Empty uses Chrome's choice.",
+    ),
+    TLS_SIGALGS(
+        "tlsSigalgs",
+        "TLS signature algorithms",
+        "The signature algorithms of the ClientHello as BoringSSL names separated by a colon (engine --tls-sigalgs, core 2.4.0), e.g. ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256. Empty uses the engine default.",
+    ),
+    TLS_ALPS(
+        "tlsAlps",
+        "ALPS",
+        "Whether the ClientHello offers ALPS (application-layer protocol settings) and with which codepoint: Off, New or Old (engine --tls-alps, core 2.4.0). Off offers none.",
+    ),
+    TLS_SERVER_PADDING(
+        "tlsServerPadding",
+        "Server padding",
+        "Bytes of padding the ClientHello asks of the server, 0 to 65535 (engine --tls-server-padding, core 2.4.0). Empty asks for none.",
+    ),
+    GREASE_SIGALGS(
+        "enableGreaseSigalgs",
+        "GREASE signature algorithm",
+        "Puts a GREASE value first among the signature algorithms, as Chrome does (engine --enable-grease-sigalgs, core 2.4.0). Off by default.",
+    ),
+    ECH_GREASE(
+        "enableEchGrease",
+        "ECH GREASE",
+        "Sends a GREASE ECH extension when no real ECH key is offered (engine --enable-ech-grease, core 2.4.0). Off by default.",
+    ),
+    DISABLE_OCSP_STAPLING(
+        "disableOcspStapling",
+        "Disable OCSP stapling",
+        "Leaves the status_request extension out of the ClientHello (engine --disable-ocsp-stapling, core 2.4.0). Off by default; Chrome sends it.",
+    ),
+    DISABLE_SCT(
+        "disableSct",
+        "Disable SCT",
+        "Leaves the signed_certificate_timestamp extension out of the ClientHello (engine --disable-sct, core 2.4.0). Off by default; Chrome sends it.",
+    ),
+    DISABLE_SESSION_TICKET(
+        "disableSessionTicket",
+        "Disable session tickets",
+        "Leaves the session_ticket extension out of the ClientHello (engine --disable-session-ticket, core 2.4.0). Off by default.",
+    ),
+    DISABLE_EXTENSION_PERMUTATION(
+        "disableExtensionPermutation",
+        "Disable extension permutation",
+        "Keeps one fixed order of the ClientHello extensions instead of Chrome's per-handshake shuffle (engine --disable-extension-permutation, core 2.4.0). Off by default.",
+    ),
     VALIDATE_SECS(
         "validateSecs",
         "Validate seconds",
@@ -562,6 +728,19 @@ enum class AiTopic(
             "decides which traffic is protected.",
     ),
     ;
+
+    fun offlineDetail(persian: Boolean): String {
+        if (!persian) return detail
+        return when (this) {
+            CLEAN_IP_SCANNER -> "این اسکنر رابط کاربری با اسکن ورودی WARP موتور متفاوت است. فقط سرورهای سفارشی TLS پشتیبانی‌شده و قفل‌نشده، در حالت قطع اتصال و در تب انتخابی بررسی می‌شوند. هر مقصد باید ترافیک واقعی پروکسی و سه تأیید پایداری را پاس کند. باز کردن راهنما یا تنظیمات اسکن را شروع نمی‌کند."
+            CLEAN_IP_PROFILE -> "سریع: 120 نامزد، مهلت 3500 ms و یک پروب برای هر IP. متعادل (پیش‌فرض): 300 نامزد، 5000 ms و دو پروب. عمیق: 600 نامزد، 6000 ms و سه پروب؛ کندتر و گسترده‌تر است. مهلت پروب با سقف پینگ واقعی یا زمان کل اسکن یکی نیست. همهٔ حالت‌ها تأیید نهایی پروکسی دارند."
+            CLEAN_IP_FAST -> "برای تلاش اول و سریع: 120 نامزد، مهلت هر پروب 3500 ms، یک پروب برای هر IP و 60 پروب هم‌زمان؛ 6 همسایه برای هر نتیجهٔ سالم. ممکن است IP سالم در شبکهٔ کند پیدا نشود؛ سه تأیید نهایی ترافیک واقعی همچنان لازم است."
+            CLEAN_IP_BALANCED -> "حالت پیش‌فرض: 300 نامزد، مهلت 5000 ms، دو پروب برای هر IP، 50 پروب هم‌زمان و 12 همسایه برای هر نتیجهٔ سالم. تعادل زمان و دقت؛ اگر نتیجه‌ای پیدا نشد عمیق را امتحان کنید. تأیید واقعی پروکسی همچنان الزامی است."
+            CLEAN_IP_DEEP -> "جست‌وجوی گسترده‌تر و کندتر: 600 نامزد، مهلت 6000 ms، سه پروب برای هر IP، 40 پروب هم‌زمان و 16 همسایه برای هر نتیجهٔ سالم. مناسب شبکهٔ دشوار، بدون تضمین موفقیت و با تأیید نهایی پروکسی."
+            CLEAN_IP_LIMIT -> "سقف دستی عددی بین 50 تا 5000 ms است؛ مقدار ذخیره‌شدهٔ پیش‌فرض 2000 ms. این سقف با مهلت پروب فرق دارد. حالت دستی اولین نامزد زیر سقف را پس از سه تأیید واقعی می‌پذیرد؛ خودکار، نامزدهای اندازه‌گیری‌شده را مرتب و سریع‌ترین مورد پایدار را تأیید می‌کند، بدون سقف دستی. دستیار فقط راهنمایی می‌کند و تنظیمات اسکن یا شروع آن را تغییر نمی‌دهد."
+            else -> detail
+        }
+    }
 
     companion object {
         fun byId(id: String): AiTopic? = entries.firstOrNull { it.id == id }

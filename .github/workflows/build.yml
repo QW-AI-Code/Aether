@@ -150,6 +150,190 @@ jobs:
         with:
           packages: "platform-tools platforms;android-35 build-tools;35.0.0"
 
+      # 1.6.0 ships the complete, checksummed Gradle Wrapper. Pin the setup
+      # action to the same 8.9 version for its cache/toolchain integration;
+      # test and packaging tasks below run through ./gradlew, not runner defaults.
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Show build toolchain
+        run: |
+          # GitHub web uploads may lose executable bits.
+          chmod +x gradlew
+          ./gradlew --version
+          java -version 2>&1
+
+      # ------------------------------------------------------------------ 1.3.1
+      # Bump engine dependencies that carry a KNOWN advisory, within the semver
+      # range their crate already allows.
+      #
+      # Sync replaces Cargo.lock. Reapply scoped fixes before fetching/compiling.
+      # build-natives also checks the actual working crate, including rollback cores.
+      # Fail closed if a required patch cannot be resolved; never ship a knowingly
+      # vulnerable binary just because the registry was unavailable.
+      - name: Test security CI handling
+        run: |
+          python3 scripts/test-security-ci.py
+          python3 scripts/test-core-sync-disabled.py
+          python3 scripts/test-functional-wiring.py
+          python3 scripts/test-ai-settings-coverage.py
+          python3 scripts/test-auto-signing.py
+          python3 scripts/test-ci-preflight.py
+
+      # Signing: ALWAYS sign with a STABLE key so users can update in place
+      # (Android only installs an update when old and new APKs share the same
+      # signature). Priority:
+      #   1. Your own keystore from repo Secrets (recommended for real releases).
+      #   2. A CI keystore persisted in the repo (.github/ci-keystore.jks.b64):
+      #      generated ONCE on the first build and committed back automatically,
+      #      so every later build reuses the exact same key. Without this, each
+      #      build used a fresh debug key and users had to uninstall on every
+      #      update.
+      # NOTE: the repo-persisted CI keystore is public by definition. It solves
+      # updatability, not authenticity - set the Secrets for real distribution.
+      - name: Prepare signing keystore (stable across builds)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # AUTHORITATIVE KEY (this is the 1.2.1 release key). When the four
+          # signing secrets are configured in the repository, the APK is signed
+          # with EXACTLY the same certificate as 1.2.1, so 1.2.1 users can
+          # install 1.2.2 straight over their existing app. Only in this mode
+          # is the fingerprint pinned and enforced.
+          if [ -n "${KEYSTORE_BASE64}" ]; then
+            echo "Using the user-provided release keystore from repository Secrets."
+            echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+            {
+              echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore"
+              echo "KEYSTORE_PASSWORD=${SECRET_KEYSTORE_PASSWORD}"
+              echo "KEY_ALIAS=${SECRET_KEY_ALIAS}"
+              echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}"
+              echo "AETHER_SIGNING_MODE=release"
+            } >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # PUBLIC TEST KEY. With no Secrets, reuse the bundled historical CI
+          # key. Its fingerprint is still checked below; no key rotation and no
+          # disabled signer guard. This needs no repository-settings changes.
+          # It is public and provides test-build continuity, not authenticity.
+          # An APK signed with a different private key will NOT accept this as
+          # an in-place update. Private signing Secrets remain optional/preferred.
+          echo "::warning::Using the bundled PUBLIC TEST certificate; no signing Secrets are required for this test build."
+          echo "::warning::Use a private signing identity for authenticated production releases."
+          echo "AETHER_SIGNING_MODE=test" >> "$GITHUB_ENV"
+
+          KS="${RUNNER_TEMP}/ci-release.keystore"
+          if [ -f .github/ci-keystore.jks.b64 ]; then
+            echo "Reusing the persisted CI keystore (same signature as previous builds)."
+            base64 -d .github/ci-keystore.jks.b64 > "$KS"
+          else
+            # OVER-INSTALL GUARD: if this repository has already published
+            # releases signed with a persisted CI key, its fingerprint was
+            # recorded in .github/expected-signer-ci.txt. Minting a brand new
+            # key here would silently produce an APK that existing users can
+            # NOT install over their current app, so stop instead.
+            if [ -f .github/expected-signer-ci.txt ]; then
+              echo "::error::.github/ci-keystore.jks.b64 is missing but this repo already published with a persisted CI key."
+              echo "::error::Restore .github/ci-keystore.jks.b64 (it is the key that signed the previous release),"
+              echo "::error::or add the KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD secrets."
+              echo "::error::Building now would produce an APK that users could not install over their current version."
+              exit 1
+            fi
+            echo "First build: generating a CI keystore and persisting it to the repo."
+            keytool -genkeypair -v -keystore "$KS" \
+              -storepass aether-ci-keystore -keypass aether-ci-keystore \
+              -alias aether-ci -keyalg RSA -keysize 2048 -validity 10950 \
+              -dname "CN=Aether Mobile CI, OU=AetherMobile, O=QW-AI-Code"
+            base64 -w0 "$KS" > .github/ci-keystore.jks.b64
+            if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
+              git config user.name "github-actions[bot]"
+              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+              git add .github/ci-keystore.jks.b64
+              git commit -m "ci: persist auto-generated signing keystore [skip ci]"
+              # Another CI cleanup or concurrent push may have changed the
+              # branch, so rebase before pushing instead of racing it.
+              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+              git push origin "HEAD:${GITHUB_REF_NAME}" \
+                || echo "WARNING: could not push the keystore back; the next build may sign with a different key."
+            else
+              echo "WARNING: tag build without a persisted keystore - push to a branch first so the keystore gets committed."
+            fi
+          fi
+          {
+            echo "KEYSTORE_PATH=$KS"
+            echo "KEYSTORE_PASSWORD=aether-ci-keystore"
+            echo "KEY_ALIAS=aether-ci"
+            echo "KEY_PASSWORD=aether-ci-keystore"
+          } >> "$GITHUB_ENV"
+
+      # ROOT FIX for "it builds in a fresh repo but fails in the real one":
+      # copying 1.2.2 on top of a 1.2.1 checkout overwrites changed files but
+      # cannot delete the files 1.2.2 REMOVED (the in-app updater, the location
+      # picker, the forced-exit policy). Those orphans still reference symbols
+      # and string resources that no longer exist, so compileReleaseKotlin died
+      # with "Unresolved reference 'GITHUB_REPO' / 'update_available' / ...".
+      # The build now deletes them itself (and hard-fails early on any other
+      # stale string reference), so a leftover file can never break a release.
+      - name: Purge stale sources from older versions
+        run: bash scripts/purge-stale-sources.sh
+
+      # Keep the repository itself clean, so the next build starts from a tree
+      # that no longer contains the orphans. Best-effort: a failed push must
+      # never fail a release.
+      - name: Commit stale-source purge
+        if: github.ref_type == 'branch'
+        run: |
+          set -uo pipefail
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Nothing to commit - the tree was already clean."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "ci: remove files left over from older versions (git rm) [skip ci]" || exit 0
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "WARNING: could not push the purge commit; the next build will purge again."
+
+      # Fail fast: execute BOTH real JVM/Compose suites before NDK/Go/Rust
+      # setup and native compilation. Signing is prepared first because Gradle
+      # also configures release test resources. No tests are skipped or ignored.
+      - name: Run unit tests
+        env:
+          AETHER_UI_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_REPAIR_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_TEST_REPORTS: ${{ runner.temp }}/aether-validation/test-reports
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8"
+        run: |
+          set -uo pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/gradle-unit-tests.log"
+          for attempt in 1 2 3; do
+            set +e
+            ./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! grep -qE 'Could not (resolve|GET|get resource|download)|Received status code (403|408|429|50[0-9])|Read timed out|Connection reset|Premature end of Content-Length' "$LOG"; then
+              echo "::error::Unit tests FAILED. Refusing to build a release from code that does not pass its own tests."
+              exit "$status"
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Dependency download kept failing after 3 attempts."
+              exit "$status"
+            fi
+            echo "::warning::Attempt ${attempt} failed while downloading dependencies - retrying in $((attempt * 30))s."
+            sleep $((attempt * 30))
+          done
+
       # This step swallowed sdkmanager's output into /dev/null, so a package that
       # is no longer served would fail here with nothing to read. Keep the log,
       # and prove the NDK is on disk before exporting a path later steps use.
@@ -223,78 +407,23 @@ jobs:
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      # This repo intentionally ships no gradle-wrapper.jar, so the build runs
-      # with the Gradle that is on PATH. Leaving that to the runner image is a
-      # time bomb: GitHub keeps bumping its preinstalled Gradle, and AGP 8.7.2
-      # only supports the 8.x line (Gradle 9 fails the build outright with an
-      # "unsupported" / plugin-compatibility error). Pin the exact version the
-      # wrapper descriptor already declares so the toolchain can never drift.
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+      # AUTOMATIC CORE UPDATES ARE DISABLED (1.6.0, same version).
+      #
+      # The vendored engine in native/aether (core 2.4.0, see CORE_VERSION) is
+      # the ONLY engine this build compiles. CI no longer asks GitHub for a newer
+      # CluvexStudio/Aether release, never swaps the vendored sources and never
+      # commits an engine upgrade back to the branch. A core upgrade is a
+      # deliberate, reviewed change to native/aether made by hand (with its UI),
+      # not something a workflow may do on its own. scripts/test-core-sync-disabled.py
+      # fails the build if any of that comes back.
 
-      - name: Show build toolchain
-        run: |
-          gradle --version
-          java -version 2>&1
-
-      # 1.2.2: the BUILD owns the engine version, not a human. Every build
-      # checks the official core repo and upgrades the vendored engine when a
-      # newer release exists, preserving this app's own engine patches. The
-      # script also appends the upgrade to the 1.2.2 changelog in both READMEs.
-      - name: Sync Aether core (auto-upgrade engine)
-        run: bash scripts/sync-core.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AETHER_REPO: CluvexStudio/Aether
-
-      # ------------------------------------------------------------------ 1.3.1
-      # Bump engine dependencies that carry a KNOWN advisory, within the semver
-      # range their crate already allows.
-      #
-      # WHY THIS IS A WORKFLOW STEP AND NOT AN EDIT TO Cargo.lock: the step above
-      # replaces native/aether/aether wholesale from upstream (sync-core.sh line
-      # ~348, `cp -R "$staging/new/aether"`), and Cargo.lock is not in its
-      # PATCHED_FILES set. Any fix committed to that lock file is therefore
-      # deleted on the next run. Doing it here means it is re-applied every time,
-      # on whatever version upstream just handed us.
-      #
-      # AND IT MUST RUN BEFORE "Build engine": the point is that the SHIPPED
-      # binary is fixed. Updating the lock only before `cargo audit` would turn
-      # the report green while the APK still carried the vulnerable code, which is
-      # worse than the warning.
-      #
-      # rustls: RUSTSEC-2026-0285 - TLS 1.3 handshake messages accepted across
-      # encryption-level boundaries, fixed in 0.23.45. Reached through reqwest
-      # (the WARP registration calls), quinn and tor-rtcompat, so it is on a live
-      # path, not a dev dependency. `-p rustls` without --precise takes the newest
-      # compatible 0.23.x, so this does not need editing again at the next
-      # advisory in the same line.
-      #
-      # Non-fatal on purpose: if a future upstream lock has no rustls at all, or
-      # the registry is briefly unreachable, that is not a reason to fail a
-      # release build. The audit step below still reports the truth either way.
       - name: Patch known-vulnerable engine dependencies
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          lock=native/aether/aether/Cargo.lock
-          [ -f "$lock" ] || { echo "no engine lock yet - nothing to patch"; exit 0; }
-          before="$(grep -A1 '^name = "rustls"' "$lock" | grep '^version' | head -1 || true)"
-          ( cd native/aether/aether && cargo update --package rustls ) || true
-          after="$(grep -A1 '^name = "rustls"' "$lock" | grep '^version' | head -1 || true)"
-          echo "rustls: ${before:-absent} -> ${after:-absent}"
-          {
-            echo "### Engine dependency patch"
-            echo "rustls: \`${before:-absent}\` -> \`${after:-absent}\` (RUSTSEC-2026-0285)"
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: python3 scripts/patch-engine-dependencies.py native/aether/aether
 
       - name: Fetch native sources
         run: bash scripts/fetch-natives.sh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AETHER_REF: ${{ github.event_name == 'workflow_dispatch' && '' || '' }}
 
       - name: Build tunnel core (hev)
         run: bash scripts/build-natives.sh hev
@@ -321,32 +450,12 @@ jobs:
       - name: Fetch Xray core (custom configs)
         run: bash scripts/build-natives.sh xray
 
-      # The engine build is the one step an automatic core upgrade can break:
-      # upstream may add a struct field or a function parameter at any time and
-      # no textual merge can guarantee the result still compiles (core 1.4.0
-      # did exactly that: E0063 on H2TunnelConfig, E0061 on
-      # wireguard::verify_endpoint_keep_session). A convenience feature must
-      # never be able to fail a release, so this step is allowed to fail once:
-      # it rolls the core back to the version the repo already shipped, rebuilds
-      # and continues. Only a failure that is NOT caused by the auto-upgrade can
-      # stop the pipeline here.
       # 1.3.0: builds with `--features tor` (see AETHER_FEATURES in
       # build-natives.sh) and refuses to install an engine that has no Tor in it.
+      # There is no rollback path any more: the engine is vendored and never
+      # auto-upgraded, so a failure here is always a real build error.
       - name: Build engine (Aether, with Tor)
-        run: |
-          set -uo pipefail
-          if bash scripts/build-natives.sh aether; then
-            exit 0
-          fi
-          echo "::warning::Engine build failed with the freshly synced core."
-          if [ ! -d native/.core-prev/aether ]; then
-            echo "::error::Engine build failed and there is no core upgrade to blame - this is a real build error."
-            exit 1
-          fi
-          bash scripts/core-rollback.sh
-          bash scripts/fetch-natives.sh
-          set -e
-          bash scripts/build-natives.sh aether
+        run: bash scripts/build-natives.sh aether
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -364,154 +473,6 @@ jobs:
           go clean -cache -modcache 2>/dev/null || true
           rm -rf "${HOME}/.cargo/registry/src" "${HOME}/.cache/go-build" 2>/dev/null || true
           echo "After:"; df -h / | tail -1
-
-      # If the core moved AND the engine actually built with it, commit the new
-      # CORE_VERSION, the refreshed upstream baseline and the auto-written
-      # changelog lines back to the branch, so the repository always documents
-      # exactly which engine was shipped. Running this AFTER the build is what
-      # keeps the repo from recording an upgrade that does not compile.
-      # Never runs on tag builds.
-      - name: Commit core upgrade + README changelog
-        if: github.ref_type == 'branch'
-        run: |
-          set -euo pipefail
-          if [ ! -f native/.core-sync-state ]; then
-            echo "No core upgrade to record (already current, or it was rolled back)."
-            exit 0
-          fi
-          if [ -z "$(git status --porcelain native/aether README.md README.fa.md)" ]; then
-            echo "Core already up to date - nothing to commit."
-            exit 0
-          fi
-          CORE_V="$(tr -d '[:space:]' < native/aether/CORE_VERSION)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add native/aether README.md README.fa.md
-          git commit -m "ci: auto-upgrade Aether core to v${CORE_V} + document in 1.2.2 changelog [skip ci]"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-          git push origin "HEAD:${GITHUB_REF_NAME}" \
-            || echo "WARNING: could not push the core upgrade back to the branch."
-
-      # Signing: ALWAYS sign with a STABLE key so users can update in place
-      # (Android only installs an update when old and new APKs share the same
-      # signature). Priority:
-      #   1. Your own keystore from repo Secrets (recommended for real releases).
-      #   2. A CI keystore persisted in the repo (.github/ci-keystore.jks.b64):
-      #      generated ONCE on the first build and committed back automatically,
-      #      so every later build reuses the exact same key. Without this, each
-      #      build used a fresh debug key and users had to uninstall on every
-      #      update.
-      # NOTE: the repo-persisted CI keystore is public by definition. It solves
-      # updatability, not authenticity - set the Secrets for real distribution.
-      - name: Prepare signing keystore (stable across builds)
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          SECRET_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          SECRET_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: |
-          # AUTHORITATIVE KEY (this is the 1.2.1 release key). When the four
-          # signing secrets are configured in the repository, the APK is signed
-          # with EXACTLY the same certificate as 1.2.1, so 1.2.1 users can
-          # install 1.2.2 straight over their existing app. Only in this mode
-          # is the fingerprint pinned and enforced.
-          if [ -n "${KEYSTORE_BASE64}" ]; then
-            echo "Using the user-provided release keystore from repository Secrets."
-            echo "${KEYSTORE_BASE64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
-            {
-              echo "KEYSTORE_PATH=${RUNNER_TEMP}/release.keystore"
-              echo "KEYSTORE_PASSWORD=${SECRET_KEYSTORE_PASSWORD}"
-              echo "KEY_ALIAS=${SECRET_KEY_ALIAS}"
-              echo "KEY_PASSWORD=${SECRET_KEY_PASSWORD}"
-              echo "AETHER_SIGNING_MODE=release"
-            } >> "$GITHUB_ENV"
-            exit 0
-          fi
-
-          # TEST KEY. No signing secrets in this repository, so we fall back to
-          # a throwaway CI certificate. APKs signed this way are for TESTING
-          # ONLY: they can never be installed over an app signed with the real
-          # key. Nothing about this key is pinned or enforced, so building the
-          # project in a scratch repository can NEVER poison the over-install
-          # guarantee of the real release repository.
-          echo "::warning::No signing secrets found - building with a TEST certificate."
-          echo "::warning::This APK cannot be installed over an existing 1.2.1 install."
-          echo "::warning::Add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD to sign with the real 1.2.1 key."
-          echo "AETHER_SIGNING_MODE=test" >> "$GITHUB_ENV"
-
-          KS="${RUNNER_TEMP}/ci-release.keystore"
-          if [ -f .github/ci-keystore.jks.b64 ]; then
-            echo "Reusing the persisted CI keystore (same signature as previous builds)."
-            base64 -d .github/ci-keystore.jks.b64 > "$KS"
-          else
-            # OVER-INSTALL GUARD: if this repository has already published
-            # releases signed with a persisted CI key, its fingerprint was
-            # recorded in .github/expected-signer-ci.txt. Minting a brand new
-            # key here would silently produce an APK that existing users can
-            # NOT install over their current app, so stop instead.
-            if [ -f .github/expected-signer-ci.txt ]; then
-              echo "::error::.github/ci-keystore.jks.b64 is missing but this repo already published with a persisted CI key."
-              echo "::error::Restore .github/ci-keystore.jks.b64 (it is the key that signed the previous release),"
-              echo "::error::or add the KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD secrets."
-              echo "::error::Building now would produce an APK that users could not install over their current version."
-              exit 1
-            fi
-            echo "First build: generating a CI keystore and persisting it to the repo."
-            keytool -genkeypair -v -keystore "$KS" \
-              -storepass aether-ci-keystore -keypass aether-ci-keystore \
-              -alias aether-ci -keyalg RSA -keysize 2048 -validity 10950 \
-              -dname "CN=Aether Mobile CI, OU=AetherMobile, O=QW-AI-Code"
-            base64 -w0 "$KS" > .github/ci-keystore.jks.b64
-            if [ "${GITHUB_REF_TYPE}" = "branch" ]; then
-              git config user.name "github-actions[bot]"
-              git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-              git add .github/ci-keystore.jks.b64
-              git commit -m "ci: persist auto-generated signing keystore [skip ci]"
-              # An earlier step in this same run may already have pushed the
-              # core upgrade, so rebase before pushing instead of racing it.
-              git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-              git push origin "HEAD:${GITHUB_REF_NAME}" \
-                || echo "WARNING: could not push the keystore back; the next build may sign with a different key."
-            else
-              echo "WARNING: tag build without a persisted keystore - push to a branch first so the keystore gets committed."
-            fi
-          fi
-          {
-            echo "KEYSTORE_PATH=$KS"
-            echo "KEYSTORE_PASSWORD=aether-ci-keystore"
-            echo "KEY_ALIAS=aether-ci"
-            echo "KEY_PASSWORD=aether-ci-keystore"
-          } >> "$GITHUB_ENV"
-
-      # ROOT FIX for "it builds in a fresh repo but fails in the real one":
-      # copying 1.2.2 on top of a 1.2.1 checkout overwrites changed files but
-      # cannot delete the files 1.2.2 REMOVED (the in-app updater, the location
-      # picker, the forced-exit policy). Those orphans still reference symbols
-      # and string resources that no longer exist, so compileReleaseKotlin died
-      # with "Unresolved reference 'GITHUB_REPO' / 'update_available' / ...".
-      # The build now deletes them itself (and hard-fails early on any other
-      # stale string reference), so a leftover file can never break a release.
-      - name: Purge stale sources from older versions
-        run: bash scripts/purge-stale-sources.sh
-
-      # Keep the repository itself clean, so the next build starts from a tree
-      # that no longer contains the orphans. Best-effort: a failed push must
-      # never fail a release.
-      - name: Commit stale-source purge
-        if: github.ref_type == 'branch'
-        run: |
-          set -uo pipefail
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "Nothing to commit - the tree was already clean."
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "ci: remove sources deleted in 1.2.2 that were left over from 1.2.1 [skip ci]" || exit 0
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-          git push origin "HEAD:${GITHUB_REF_NAME}" \
-            || echo "WARNING: could not push the purge commit; the next build will purge again."
 
       # A release must never die because an artifact repository had a bad
       # minute. The 1.2.6 build in the release repository failed with
@@ -535,75 +496,43 @@ jobs:
       # genuine test failure is never retried.
       # DEPENDENCY-VULNERABILITY SCAN (audit 1.3.0, F-7).
       #
-      # Runs here, after the engine build, because the Rust tree does not exist in
-      # this repository until sync-core.sh / fetch-natives.sh have run - a scan
-      # placed earlier would find nothing and pass.
+      # Audit the successful build's captured lock, not an independently updated
+      # source lock. This remains accurate after an automatic core rollback.
       #
-      # Deliberately NON-BLOCKING (continue-on-error). A fresh RUSTSEC advisory in
-      # a transitive dependency of the engine is a reason to look, not a reason to
-      # stop shipping a circumvention tool to people who need the release - and the
-      # engine tree is re-synced from upstream on every run, so the fix for most
-      # findings is not even in this repository. The point is that the finding now
-      # appears in the job summary on every push instead of waiting for the next
-      # manual audit.
-      #
-      # `cargo audit` fetches the advisory database itself, so it needs no key and
-      # no third-party action. Not added here: a Gradle-side CVE scan - the OWASP
-      # plugin now requires an NVD API key, and Dependabot (see
-      # .github/dependabot.yml) covers the Android dependency set server-side
-      # without runner time.
+      # Capture cargo-audit's finding exit code without Bash -e aborting the
+      # report. Maintenance warnings remain visible; vulnerabilities block release.
+      # Installation, network and malformed-report failures are NOT a clean scan.
       - name: Audit Rust dependencies (cargo audit)
-        continue-on-error: true
         run: |
-          set -uo pipefail
-          cargo install --locked cargo-audit || exit 0
-          status=0
-          for lock in native/aether/aether/Cargo.lock; do
-            [ -f "$lock" ] || continue
-            dir="$(dirname "$lock")"
-            echo "::group::cargo audit $dir"
-            # --ignore RUSTSEC-2023-0071 (rsa "Marvin Attack" timing side channel).
-            # 1.3.1: this advisory has NO fixed release - `cargo audit` itself
-            # prints "No fixed upgrade is available!" - so it can only ever fail
-            # this step forever, which is how a check stops being read.
-            #
-            # It is also not on a path this app exercises. `rsa` arrives only
-            # through arti's Tor stack (tor-llcrypto -> tor-key-forge ->
-            # ssh-key-fork-arti), where RSA is used to VERIFY legacy relay
-            # identity keys. The Marvin attack needs the victim to perform RSA
-            # PRIVATE-key decryption on attacker-chosen ciphertexts and to have
-            # its timing measured; a Tor client checking signatures does neither.
-            #
-            # `--ignore` still LISTS the advisory in the output, so this hides
-            # nothing - it stops an unfixable finding from masking a fixable one.
-            # Remove this flag the day the rsa crate ships a patched release.
-            ( cd "$dir" && cargo audit --color never --ignore RUSTSEC-2023-0071 \
-                | tee "${RUNNER_TEMP:-/tmp}/cargo-audit.txt" )
-            rc=${PIPESTATUS[0]}
-            echo "::endgroup::"
-            [ "$rc" -eq 0 ] || status=1
-          done
-          {
-            echo "### cargo audit"
-            if [ "$status" -eq 0 ]; then
-              echo "No advisories reported for the engine's dependency tree."
-            else
-              echo "Advisories reported - see the step log. Not blocking the release."
-              echo '```'
-              tail -n 60 "${RUNNER_TEMP:-/tmp}/cargo-audit.txt" 2>/dev/null || true
-              echo '```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          python3 scripts/audit-rust.py --strict \
+            --crate "${RUNNER_TEMP}/aether-audit/built-engine" \
+            --report "${RUNNER_TEMP}/aether-audit/cargo-audit.json"
 
-      - name: Run unit tests
+      - name: Upload Rust audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-dependency-audit
+          path: ${{ runner.temp }}/aether-audit/
+          if-no-files-found: warn
+
+      # Retain the post-native gate as well: core sync may change build
+      # identity/source inputs. Force the Test tasks (not all compile tasks)
+      # to execute again before packaging; never trust an early cached result.
+      - name: Revalidate unit tests against built core
         env:
+          AETHER_UI_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_REPAIR_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_TEST_REPORTS: ${{ runner.temp }}/aether-validation/test-reports
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8"
         run: |
           set -uo pipefail
-          LOG="${RUNNER_TEMP:-/tmp}/gradle-unit-tests.log"
+          LOG="${RUNNER_TEMP:-/tmp}/gradle-unit-tests-final.log"
           for attempt in 1 2 3; do
             set +e
-            gradle :app:testReleaseUnitTest --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            ./gradlew :app:testDebugUnitTest --rerun :app:testReleaseUnitTest --rerun --no-daemon --stacktrace 2>&1 | tee "$LOG"
             status=${PIPESTATUS[0]}
             set -e
             if [ "$status" -eq 0 ]; then
@@ -621,6 +550,7 @@ jobs:
             sleep $((attempt * 30))
           done
 
+
       - name: Build release APKs
         env:
           # Kotlin/Compose compilation needs more heap than the 1 GB Gradle
@@ -631,7 +561,7 @@ jobs:
           LOG="${RUNNER_TEMP:-/tmp}/gradle-release-build.log"
           for attempt in 1 2 3; do
             set +e
-            gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
             status=${PIPESTATUS[0]}
             set -e
             if [ "$status" -eq 0 ]; then
@@ -974,3 +904,24 @@ jobs:
                  .native/aether/target "${HOME}/.cargo/registry/src" 2>/dev/null || true
           go clean -cache 2>/dev/null || true
           df -h / | tail -1
+
+      - name: Package validation evidence
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/aether-validation/logs"
+          for log in gradle-unit-tests.log gradle-unit-tests-final.log gradle-release-build.log; do
+            if [ -f "${RUNNER_TEMP}/$log" ]; then
+              cp "${RUNNER_TEMP}/$log" "${RUNNER_TEMP}/aether-validation/logs/"
+            fi
+          done
+          cd "${RUNNER_TEMP}"
+          zip -rq Validation_Evidence.zip aether-validation
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Validation-Evidence-1.6.0
+          path: ${{ runner.temp }}/Validation_Evidence.zip
+          if-no-files-found: warn
+

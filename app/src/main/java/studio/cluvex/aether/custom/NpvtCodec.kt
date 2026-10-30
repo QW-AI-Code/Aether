@@ -26,6 +26,20 @@ import java.util.Base64
  */
 object NpvtCodec {
 
+    const val BINARY_HEADER = "NPVS"
+    fun isBinary(bytes: ByteArray): Boolean = bytes.size >= 4 &&
+        bytes.copyOfRange(0, 4).contentEquals(BINARY_HEADER.toByteArray(Charsets.US_ASCII))
+
+    fun decodeFileText(bytes: ByteArray): String {
+        require(bytes.size <= 2 * 1024 * 1024) { "npvt file is too large" }
+        if (isBinary(bytes)) {
+            require(bytes.size >= 9) { "truncated NPVS header" }
+            val version = bytes[4].toInt() and 255
+            throw IllegalArgumentException("NPVS binary version $version must be imported through ConfigParser.parseBytes, not the text decoder.")
+        }
+        return Charsets.UTF_8.newDecoder().decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+    }
+
     const val HEADER = "NPVT1"
     const val SUB_HEADER = "NPVTSUB1"
     private const val BLOCK = 16

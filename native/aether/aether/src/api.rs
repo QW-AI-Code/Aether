@@ -275,6 +275,8 @@ pub fn save_identity(path: &str, identity: &Identity) -> Result<()> {
     config::save(path, identity)
 }
 
+/// Registers a new identity, gives it its MASQUE key when asked, and hands it back only once WARP
+/// is enabled on it, as the core saves its own; an identity that is saved is never asked about again.
 pub async fn provision_identity(request: &ProvisionRequest) -> Result<Identity> {
     let identity = match &request.team {
         Some(team) => {
@@ -291,9 +293,12 @@ pub async fn provision_identity(request: &ProvisionRequest) -> Result<Identity> 
         None => account::provision_wg(&request.model, &request.locale, None).await?,
     };
 
-    if request.masque_cert {
-        return attach_masque_cert(identity).await;
-    }
+    let identity = if request.masque_cert {
+        attach_masque_cert(identity).await?
+    } else {
+        identity
+    };
+    crate::enable_warp_on(&identity).await?;
     Ok(identity)
 }
 
@@ -397,7 +402,7 @@ pub async fn scan(identity: &Identity, request: &ScanRequest, cancel: &Cancel) -
     match request.transport {
         Transport::Masque => {
             let probe = prober::MasqueProbe {
-                sni: consts::CONNECT_SNI.to_string(),
+                sni: quic::masque_sni()?,
                 authority: quic::default_authority().to_string(),
                 path: quic::default_path().to_string(),
                 cert_pem: Arc::from(identity.cert_pem.clone()),
@@ -553,22 +558,33 @@ pub async fn connect(
         Some(listen) => std::env::set_var("AETHER_HTTP_PROXY", listen.to_string()),
         None => std::env::remove_var("AETHER_HTTP_PROXY"),
     }
-
-    match spec.transport {
-        Transport::Masque => {
-            let attempt = crate::run_masque_tunnel(identity, peer, spec.ech.clone(), spec.socks);
-            guard(cancel, attempt).await
+    // Held for this one tunnel, from before it comes up until it ends; a cancel lets them go at once,
+    // so the next tunnel can bind them as soon as this call returns. One that breaks ends it.
+    let attempt = async {
+        let (broken, mut breaks) = tokio::sync::mpsc::unbounded_channel();
+        let listeners = crate::Listeners::bind(spec.socks, broken).await?;
+        let tunnel = async {
+            match spec.transport {
+                Transport::Masque => {
+                    crate::run_masque_tunnel(identity, peer, spec.ech.clone(), &listeners).await
+                }
+                Transport::WireGuard => {
+                    crate::run_wireguard_tunnel(
+                        identity.clone(),
+                        peer,
+                        spec.aethernoize.clone(),
+                        &listeners,
+                    )
+                    .await
+                }
+            }
+        };
+        tokio::select! {
+            result = tunnel => result,
+            Some(e) = breaks.recv() => Err(e),
         }
-        Transport::WireGuard => {
-            let attempt = crate::run_wireguard_tunnel(
-                identity.clone(),
-                peer,
-                spec.aethernoize.clone(),
-                spec.socks,
-            );
-            guard(cancel, attempt).await
-        }
-    }
+    };
+    guard(cancel, attempt).await
 }
 
 #[cfg(test)]

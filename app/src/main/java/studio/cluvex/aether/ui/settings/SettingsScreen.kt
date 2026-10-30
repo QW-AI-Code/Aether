@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.AutoAwesome
@@ -70,6 +71,7 @@ import studio.cluvex.aether.core.ShareBridge
 import studio.cluvex.aether.core.SmartPlusPlan
 import studio.cluvex.aether.data.AppLanguage
 import studio.cluvex.aether.data.LanguagePrefs
+import studio.cluvex.aether.data.VisualPrefs
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.CoreLogLevel
@@ -91,6 +93,7 @@ import studio.cluvex.aether.ui.AboutPanel
 import studio.cluvex.aether.ui.SharePanel
 import studio.cluvex.aether.ui.ai.AiAdvisorPage
 import studio.cluvex.aether.ui.ai.AiChatScreen
+import studio.cluvex.aether.ui.ai.AiTopicIcon
 import studio.cluvex.aether.ui.ai.AiHostContext
 import studio.cluvex.aether.ui.ai.AiSettingsPage
 import studio.cluvex.aether.ui.ai.LocalAiHost
@@ -149,6 +152,7 @@ enum class SettingsRoute {
 
     /** 1.5.0: the user's own V2Ray/Xray and NapsternetV configs, and their chain. */
     CUSTOM_CONFIGS,
+    CLEAN_IP_SETTINGS,
 
     /** 1.5.0: archive of the "What's new" announcements (پیام‌ها و اطلاعیه‌ها). */
     ANNOUNCEMENTS,
@@ -238,6 +242,7 @@ fun SettingsHost(
         SettingsRoute.ENGINE -> EnginePage(profile, editable, onProfileChange, back, modifier)
         SettingsRoute.APPEARANCE -> AppearancePage(back, modifier)
         SettingsRoute.CUSTOM_CONFIGS -> CustomConfigsPage(editable, back, modifier)
+        SettingsRoute.CLEAN_IP_SETTINGS -> CleanIpSettingsPage(editable, back, modifier)
         SettingsRoute.ANNOUNCEMENTS -> AnnouncementsPage(back, modifier)
         SettingsRoute.DIAGNOSTICS -> PanelPage(stringResource(R.string.diag_title), back, modifier) {
             DiagnosticsPanel(startExpanded = true)
@@ -319,7 +324,7 @@ private fun SettingsHomePage(
         // with its current value on the row, so the whole configuration can be
         // read without opening anything.
         settingsSection {
-            GroupCaption(stringResource(R.string.cat_group_tunnel))
+            GroupCaption(stringResource(R.string.cat_group_tunnel), aiTopic = AiTopic.SETTINGS)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.cat_connection),
@@ -332,11 +337,16 @@ private fun SettingsHomePage(
                 RowDivider()
                 SettingsNavRow(
                     title = stringResource(R.string.cc_title),
+                    aiTopic = AiTopic.CUSTOM_CONFIGS,
                     summary = stringResource(R.string.cc_nav_desc),
                     icon = Icons.Rounded.Route,
                     value = customConfigsValue(),
                     onClick = { onOpen(SettingsRoute.CUSTOM_CONFIGS) },
                 )
+                RowDivider()
+                SettingsNavRow(aiTopic = AiTopic.CLEAN_IP_SCANNER, title = stringResource(R.string.cip_settings_title),
+                    summary = stringResource(R.string.cip_settings_summary), icon = Icons.Rounded.Cloud,
+                    onClick = { onOpen(SettingsRoute.CLEAN_IP_SETTINGS) })
                 RowDivider()
                 SettingsNavRow(
                     title = stringResource(R.string.section_transport),
@@ -366,7 +376,7 @@ private fun SettingsHomePage(
         }
 
         if (!quick) settingsSection {
-            GroupCaption(stringResource(R.string.cat_group_device))
+            GroupCaption(stringResource(R.string.cat_group_device), aiTopic = AiTopic.SETTINGS)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.cat_apps),
@@ -398,7 +408,7 @@ private fun SettingsHomePage(
         // three screens rather than one setting - and because a user who has not
         // set a key yet needs to find it without reading the whole tree.
         if (!quick) settingsSection {
-            GroupCaption(stringResource(R.string.cat_ai))
+            GroupCaption(stringResource(R.string.cat_ai), aiTopic = AiTopic.AI_CHAT)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.ai_title),
@@ -410,8 +420,15 @@ private fun SettingsHomePage(
             }
         }
 
+        // Moved here from the language page: animations and connection sounds are
+        // general app behaviour, not language settings.
         if (!quick) settingsSection {
-            GroupCaption(stringResource(R.string.cat_group_app))
+            GroupCaption(stringResource(R.string.cat_display_sound), aiTopic = AiTopic.SETTINGS)
+            DisplayAndSoundGroup()
+        }
+
+        if (!quick) settingsSection {
+            GroupCaption(stringResource(R.string.cat_group_app), aiTopic = AiTopic.SETTINGS)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.language_title),
@@ -480,6 +497,7 @@ private fun SettingsHomePage(
                 if (!exempt) {
                     RowDivider()
                     SettingsNavRow(
+                        aiTopic = AiTopic.BATTERY,
                         title = stringResource(R.string.battery_title),
                         summary = stringResource(R.string.battery_desc),
                         icon = Icons.Rounded.BatteryAlert,
@@ -494,6 +512,7 @@ private fun SettingsHomePage(
                 }
                 RowDivider()
                 SettingsNavRow(
+                    aiTopic = AiTopic.ANNOUNCEMENTS,
                     title = stringResource(R.string.announcements_title),
                     summary = stringResource(R.string.announcements_desc),
                     icon = Icons.Rounded.Campaign,
@@ -501,6 +520,7 @@ private fun SettingsHomePage(
                 )
                 RowDivider()
                 SettingsNavRow(
+                    aiTopic = AiTopic.ABOUT,
                     title = stringResource(R.string.about_title),
                     summary = stringResource(R.string.about_subtitle),
                     icon = Icons.Rounded.Info,
@@ -560,7 +580,7 @@ private fun ConnectionPage(
     modifier: Modifier = Modifier,
 ) = SettingsScaffold(stringResource(R.string.cat_connection), onBack, modifier) {
     settingsSection {
-        GroupCaption(stringResource(R.string.backend_label))
+        GroupCaption(stringResource(R.string.backend_label), aiTopic = AiTopic.BACKEND)
         SettingsGroup {
             SettingsChoiceRow(
                 title = stringResource(R.string.backend_label),
@@ -591,9 +611,20 @@ private fun ConnectionPage(
                     else -> stringResource(R.string.exit_help_aether)
                 },
                 aiTopic = AiTopic.EXIT_REGION,
+                searchable = true,
+                searchPlaceholder = stringResource(R.string.exit_country_search),
             )
         }
         GroupFooter(backendHelp(profile.backend))
+    }
+
+    settingsSection {
+        SettingsGroup {
+            SettingsSwitchRow(aiTopic = AiTopic.VERIFY_CONNECTION, title = stringResource(R.string.verify_connection_title),
+                summary = stringResource(R.string.verify_connection_desc), icon = Icons.Rounded.Info,
+                checked = profile.verifyConnection, enabled = editable,
+                onCheckedChange = { onProfileChange(profile.copy(verifyConnection = it)) })
+        }
     }
 
     // ---- Tor (engine core 2.0.0) -------------------------------------------
@@ -603,7 +634,7 @@ private fun ConnectionPage(
     // something and then silently ignores it.
     if (profile.backend.usesTor) {
         settingsSection {
-            GroupCaption(stringResource(R.string.section_tor))
+            GroupCaption(stringResource(R.string.section_tor), aiTopic = AiTopic.TOR_BRIDGES)
             SettingsGroup {
                 SettingsChoiceRow(
                     title = stringResource(R.string.tor_bridges_title),
@@ -699,7 +730,7 @@ private fun ConnectionPage(
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.section_core))
+        GroupCaption(stringResource(R.string.section_core), aiTopic = AiTopic.PROTOCOL)
         SettingsGroup {
             SettingsBlock(title = stringResource(R.string.protocol), aiTopic = AiTopic.PROTOCOL) {
                 SegmentedSelector(
@@ -860,7 +891,7 @@ private fun TransportPage(
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_tuning))
+        GroupCaption(stringResource(R.string.cat_group_tuning), aiTopic = AiTopic.MTU)
         SettingsGroup {
             SettingsChoiceRow(
                 title = stringResource(R.string.keepalive_label),
@@ -932,7 +963,7 @@ private fun TransportPage(
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_antidpi))
+        GroupCaption(stringResource(R.string.cat_group_antidpi), aiTopic = AiTopic.ECH)
         SettingsGroup {
             SettingsSwitchRow(
                 title = stringResource(R.string.fragment_title),
@@ -1011,7 +1042,7 @@ private fun DnsRoutingPage(
     modifier: Modifier = Modifier,
 ) = SettingsScaffold(stringResource(R.string.cat_dns_routing), onBack, modifier) {
     settingsSection {
-        GroupCaption(stringResource(R.string.dns_label))
+        GroupCaption(stringResource(R.string.dns_label), aiTopic = AiTopic.DNS)
         SettingsGroup {
             SettingsBlock(helper = stringResource(R.string.dns_help), aiTopic = AiTopic.DNS) {
                 LtrOutlinedTextField(
@@ -1023,6 +1054,32 @@ private fun DnsRoutingPage(
                     placeholder = { Text(stringResource(R.string.dns_hint)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+SettingsSwitchRow(
+    aiTopic = AiTopic.GAME_DNS,
+    title = stringResource(R.string.game_mode_title),
+    checked = profile.gameMode,
+    onCheckedChange = { onProfileChange(profile.copy(gameMode = it)) },
+    summary = stringResource(R.string.game_mode_summary),
+    enabled = editable,
+)
+if (profile.gameMode) {
+    AiTopicIcon(AiTopic.GAME_DNS)
+    val invalid = profile.gameDnsServers.isNotBlank() && profile.gameDnsList().isEmpty()
+    LtrOutlinedTextField(
+        value = profile.gameDnsServers,
+        onValueChange = { onProfileChange(profile.copy(gameDnsServers = it)) },
+        enabled = editable,
+        singleLine = true,
+        label = { Text(stringResource(R.string.game_dns_label)) },
+        placeholder = { Text(stringResource(R.string.dns_hint)) },
+        isError = invalid,
+        supportingText = if (invalid) {
+            { Text(stringResource(R.string.game_dns_invalid)) }
+        } else null,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
             }
         }
     }
@@ -1032,6 +1089,7 @@ private fun DnsRoutingPage(
         SettingsGroup {
             // 1.4.0 smart routing (core/SmartLists.kt)
             SettingsSwitchRow(
+                aiTopic = AiTopic.BYPASS_IRAN,
                 title = stringResource(R.string.bypass_iran_title),
                 summary = stringResource(R.string.bypass_iran_desc),
                 checked = profile.bypassIran,
@@ -1040,6 +1098,7 @@ private fun DnsRoutingPage(
             )
             RowDivider(inset = false)
             SettingsSwitchRow(
+                aiTopic = AiTopic.BLOCK_ADS,
                 title = stringResource(R.string.block_ads_title),
                 summary = stringResource(R.string.block_ads_desc),
                 checked = profile.blockAds,
@@ -1047,7 +1106,7 @@ private fun DnsRoutingPage(
                 onCheckedChange = { onProfileChange(profile.copy(blockAds = it)) },
             )
             RowDivider(inset = false)
-            SettingsBlock(aiTopic = AiTopic.ROUTE_DIRECT) {
+            SettingsBlock(aiTopic = AiTopic.ROUTE_BLOCK) {
                 LtrOutlinedTextField(
                     value = profile.routeBlock,
                     onValueChange = { onProfileChange(profile.copy(routeBlock = it)) },
@@ -1057,7 +1116,8 @@ private fun DnsRoutingPage(
                     placeholder = { Text(stringResource(R.string.route_block_hint)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(12.dp))
+            }
+            SettingsBlock(aiTopic = AiTopic.ROUTE_DIRECT) {
                 LtrOutlinedTextField(
                     value = profile.routeDirect,
                     onValueChange = { onProfileChange(profile.copy(routeDirect = it)) },
@@ -1163,7 +1223,7 @@ private fun ZeroTrustPage(
             // this section is composed.
             SecureSurface()
             SettingsGroup {
-                SettingsBlock {
+                SettingsBlock(aiTopic = AiTopic.ZERO_TRUST) {
                     LtrOutlinedTextField(
                         value = profile.team,
                         onValueChange = { onProfileChange(profile.copy(team = it)) },
@@ -1318,7 +1378,7 @@ private fun AppsPage(
 
     SettingsScaffold(stringResource(R.string.cat_apps), onBack, modifier) {
         settingsSection {
-            GroupCaption(stringResource(R.string.section_routing))
+            GroupCaption(stringResource(R.string.section_routing), aiTopic = AiTopic.PROXY_MODE)
             SettingsGroup {
                 SettingsSwitchRow(
                     title = stringResource(R.string.proxy_mode_title),
@@ -1334,6 +1394,7 @@ private fun AppsPage(
                     // Fixed, standard ports: the same value every session, so
                     // what the user copies into another app keeps working.
                     SettingsValueRow(
+                        aiTopic = AiTopic.PROXY_MODE,
                         title = stringResource(R.string.proxy_socks_label),
                         value = socks,
                     ) {
@@ -1344,6 +1405,7 @@ private fun AppsPage(
                     }
                     RowDivider(inset = false)
                     SettingsValueRow(
+                        aiTopic = AiTopic.PROXY_MODE,
                         title = stringResource(R.string.proxy_http_label),
                         value = http,
                     ) {
@@ -1474,7 +1536,7 @@ private fun SecurityPage(
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_recovery))
+        GroupCaption(stringResource(R.string.cat_group_recovery), aiTopic = AiTopic.SMART_RECONNECT)
         SettingsGroup {
             SettingsSwitchRow(
                 title = stringResource(R.string.reprovision_title),
@@ -1548,41 +1610,13 @@ private fun EnginePage(
         }
     }
 
-    // Core 2.3.0 ClientHello fingerprint options. Both default to the engine's
-    // own behaviour (Chrome's cipher list, GREASE on), so leaving them alone
-    // launches the engine exactly as before.
-    settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_tls))
-        SettingsGroup {
-            SettingsBlock(aiTopic = AiTopic.TLS_CIPHERS) {
-                LtrOutlinedTextField(
-                    value = profile.tlsCiphers,
-                    onValueChange = { onProfileChange(profile.copy(tlsCiphers = it.trim())) },
-                    enabled = editable,
-                    singleLine = true,
-                    isError = profile.tlsCiphers.isNotBlank() &&
-                        profile.sanitizedTlsCiphers() == null,
-                    label = { Text(stringResource(R.string.tls_ciphers_label)) },
-                    placeholder = { Text(ConnectionProfile.DEFAULT_TLS_CIPHERS) },
-                    supportingText = { Text(stringResource(R.string.tls_ciphers_help)) },
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            RowDivider(inset = false)
-            SettingsSwitchRow(
-                title = stringResource(R.string.disable_grease_title),
-                summary = stringResource(R.string.disable_grease_desc),
-                checked = profile.disableGrease,
-                enabled = editable,
-                onCheckedChange = { onProfileChange(profile.copy(disableGrease = it)) },
-                aiTopic = AiTopic.DISABLE_GREASE,
-            )
-        }
-        GroupFooter(stringResource(R.string.tls_group_footer))
-    }
+    // Core 2.3.0 / 2.4.0 TLS fingerprint and API options. Server names,
+    // certificate checks and the ClientHello fingerprint (same layout and
+    // defaults as the Windows build). See Tls24Settings.kt.
+    tls24Sections(profile, editable, onProfileChange)
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_tuning))
+        GroupCaption(stringResource(R.string.cat_group_tuning), aiTopic = AiTopic.TLS_GROUPS)
         SettingsGroup {
             // AI-ICON COVERAGE: these were three unrelated fields inside ONE
             // block, so a single icon labelled "TLS groups" was the only
@@ -1661,6 +1695,32 @@ private fun EnginePage(
                 aiTopic = AiTopic.CORE_LOG,
             )
         }
+    }
+}
+
+// ---------------------------------------------------------------- display & sound
+
+/** Home-screen animations and connect/disconnect sound, in the main settings. */
+@Composable
+private fun DisplayAndSoundGroup() {
+    val context = LocalContext.current
+    var soundsEnabled by remember { mutableStateOf(studio.cluvex.aether.core.ConnectionSounds.enabled(context)) }
+    var homeAnimationsEnabled by remember { mutableStateOf(VisualPrefs.homeAnimationsEnabled(context)) }
+    SettingsGroup {
+        SettingsSwitchRow(
+            title = stringResource(R.string.home_animations_title),
+            summary = stringResource(R.string.home_animations_desc),
+            checked = homeAnimationsEnabled,
+            onCheckedChange = {
+                homeAnimationsEnabled = it
+                VisualPrefs.setHomeAnimationsEnabled(context, it)
+            },
+            aiTopic = AiTopic.SETTINGS,
+        )
+        RowDivider(inset = false)
+        SettingsSwitchRow(aiTopic = AiTopic.CONNECTION_SOUND, title = stringResource(R.string.connection_sound_title),
+            summary = stringResource(R.string.connection_sound_summary), checked = soundsEnabled,
+            onCheckedChange = { soundsEnabled = it; studio.cluvex.aether.core.ConnectionSounds.setEnabled(context, it) })
     }
 }
 

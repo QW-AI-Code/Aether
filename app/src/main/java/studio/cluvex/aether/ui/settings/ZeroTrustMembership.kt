@@ -1,5 +1,6 @@
 package studio.cluvex.aether.ui.settings
 
+import studio.cluvex.aether.ai.AiTopic
 import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.Column
@@ -107,15 +108,19 @@ internal fun ZeroTrustMembershipGroup(profile: ConnectionProfile, editable: Bool
     var refresh by remember { mutableIntStateOf(0) }
 
     // null = still reading. File checks and a keystore decrypt: off the main thread.
-    val enrolled by produceState<Boolean?>(null, team, editable, refresh) {
-        value = if (team == null) {
+    // Same remembered state and cancellation keys as produceState; explicit writes
+    // avoid the Kotlin 2/Compose lint false positive without suppressing the rule.
+    var enrolled by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(team, editable, refresh) {
+        enrolled = if (team == null) {
             false
         } else {
             withContext(Dispatchers.IO) { TeamMembership.isEnrolled(context.filesDir, team) }
         }
     }
-    val record by produceState<TeamSignInRecord?>(null, editable, refresh) {
-        value = withContext(Dispatchers.IO) { TeamSignInStore(context).load() }
+    var record by remember { mutableStateOf<TeamSignInRecord?>(null) }
+    LaunchedEffect(editable, refresh) {
+        record = withContext(Dispatchers.IO) { TeamSignInStore(context).load() }
     }
 
     var showSignIn by remember { mutableStateOf(false) }
@@ -129,6 +134,7 @@ internal fun ZeroTrustMembershipGroup(profile: ConnectionProfile, editable: Bool
                 SettingsNoticeRow(stringResource(R.string.zt_enrolled, team), Icons.Rounded.CheckCircle)
                 RowDivider(inset = false)
                 SettingsActionRow(
+                    aiTopic = AiTopic.ZERO_TRUST,
                     title = stringResource(R.string.zt_forget),
                     summary = stringResource(
                         if (editable) R.string.zt_forget_desc else R.string.zt_disconnect_first,
@@ -255,6 +261,7 @@ private fun EmailSignInRows(
     val emailReady = ZeroTrustWeb.plausibleEmail(profile.accessEmail)
     RowDivider(inset = false)
     SettingsActionRow(
+        aiTopic = AiTopic.ZERO_TRUST,
         title = stringResource(if (record == null) R.string.zt_signin else R.string.zt_signin_again),
         summary = stringResource(
             when {
@@ -271,6 +278,7 @@ private fun EmailSignInRows(
     if (record != null) {
         RowDivider(inset = false)
         SettingsActionRow(
+            aiTopic = AiTopic.ZERO_TRUST,
             title = stringResource(R.string.zt_signout),
             summary = stringResource(R.string.zt_signout_desc),
             icon = Icons.Rounded.Close,
@@ -317,6 +325,7 @@ private fun ServiceTokenRows(profile: ConnectionProfile, team: String, editable:
     SettingsNoticeRow(stringResource(R.string.zt_service_pending), Icons.Rounded.Info)
     RowDivider(inset = false)
     SettingsActionRow(
+        aiTopic = AiTopic.ZERO_TRUST,
         title = stringResource(R.string.zt_svc_test),
         summary = when (val r = result) {
             ServiceTest.Running -> stringResource(R.string.zt_svc_testing)

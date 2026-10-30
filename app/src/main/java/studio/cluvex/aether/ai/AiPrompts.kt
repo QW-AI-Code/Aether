@@ -57,13 +57,27 @@ object AiPrompts {
         - Two network backends: "Aether" (one hop through a bundled Aether/WARP engine)
           and "Aether -> Psiphon" (the engine runs first as a local SOCKS5 proxy and
           Psiphon dials out through it, so the exit IP is Psiphon's).
+        - Custom configs also support V2Ray/Xray and NPVT/NPVS import, automatic and
+          user tabs, real-delay tests and chains. Config -> Aether exits at WARP;
+          Aether -> Config exits at the custom server. Do not request private links
+          or credentials. Custom vault entries are not writable AI patch settings.
+        - UI clean-IP scanner is NOT the engine WARP scan: Fast/Balanced/Deep use
+          120/300/600 candidates, 3500/5000/6000 ms timeout, 1/2/3 probes per IP.
+          Manual real-delay ceiling is 50..5000 ms (saved default 2000), not timeout.
+          Manual mode needs a passing candidate plus three proxy confirmations;
+          automatic mode ranks measured candidates then confirms the fastest stable one.
+          Only supported unlocked custom servers while disconnected; selected tab only.
+          These scanner preferences are not writable AI patch keys. Explain the steps,
+          never claim to start a scan or change its preferences. No success guarantee.
         - Transports: MASQUE (QUIC or HTTP/2), WireGuard, and WARP*2 ("gool", WARP in
           WARP), plus a Smart mode that tries strategies and keeps what works.
         - Anti-DPI options it really has: Amnezia-style obfuscation profiles ("noize"),
           TLS ClientHello fragmentation with size and delay ranges, Encrypted Client
           Hello, MTU control, endpoint scanning strategies, and TLS group selection.
-        - You are talking to the user THROUGH that tunnel: this conversation only
-          works while the app is connected in the chained "Aether -> Psiphon" mode.
+        - AI requests use the CONNECTED session's final local SOCKS endpoint, never
+          a direct network fallback. Psiphon exits and custom-server exits can use
+          the assistant; API availability still depends on Google accepting the exit.
+          Offline topic help remains available without a key or a connection.
     """.trimIndent()
 
     private val SCOPE = """

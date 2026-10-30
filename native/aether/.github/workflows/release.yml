@@ -20,6 +20,16 @@ jobs:
   # Every leg builds the pluggable transports first and ships them in a
   # pt/ folder beside the binary, so tor works out of the box with
   # nothing for anyone to install by hand.
+  #
+  # Every leg also ships a LICENSES/ folder beside the binary: aether's
+  # license, the license files of lyrebird and psiphon-tunnel-core from
+  # the sources the scripts build, lyrebird-THIRD-PARTY-NOTICES.txt and
+  # psiphon-tunnel-core-THIRD-PARTY-NOTICES.txt, which the scripts write
+  # from `go list -deps` for the Go standard library and modules linked
+  # into each, and THIRD-PARTY-NOTICES.txt, which third-party-notices.py
+  # writes from `cargo metadata` and `cargo tree` for the Rust standard
+  # library and the Rust crates linked into aether with the target and
+  # features of the build.
   # ------------------------------------------------------------------
   desktop:
     name: Build ${{ matrix.archive }}
@@ -71,28 +81,38 @@ jobs:
 
       - name: Build pluggable transports
         shell: bash
-        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt" "" "$PWD/LICENSES"
 
       - name: Build psiphon
         shell: bash
-        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt" "" "$PWD/LICENSES"
 
       - name: Build release binary
         run: cargo build --release --features tor --target ${{ matrix.target }}
+
+      - name: Collect licenses
+        shell: bash
+        run: |
+          py=python3
+          if [ "$RUNNER_OS" = "Windows" ]; then py=python; fi
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          "$py" ../third-party-notices.py --target ${{ matrix.target }} --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
 
       - name: Package archive (Unix)
         if: runner.os != 'Windows'
         run: |
           cp -R pt target/${{ matrix.target }}/release/pt
+          cp -R LICENSES target/${{ matrix.target }}/release/LICENSES
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether pt
+          tar -czf ../../../${{ matrix.archive }}  aether pt LICENSES
 
       - name: Package archive (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           Copy-Item -Recurse -Force pt target/${{ matrix.target }}/release/pt
-          Compress-Archive -Path target/${{ matrix.target }}/release/aether.exe,target/${{ matrix.target }}/release/pt,run-aether.bat -DestinationPath ${{ matrix.archive }}
+          Copy-Item -Recurse -Force LICENSES target/${{ matrix.target }}/release/LICENSES
+          Compress-Archive -Path target/${{ matrix.target }}/release/aether.exe,target/${{ matrix.target }}/release/pt,target/${{ matrix.target }}/release/LICENSES,run-aether.bat -DestinationPath ${{ matrix.archive }}
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -106,7 +126,7 @@ jobs:
   # x86_64 builds on an x86_64 runner and arm64 on a native arm64
   # runner, both using fedora:latest so binaries link against a fresh
   # Fedora toolchain. Rust is installed via rustup to guarantee the
-  # latest stable (>= 1.98 required by the crate).
+  # latest stable, as every other job builds with.
   # ------------------------------------------------------------------
   linux:
     name: Build ${{ matrix.archive }}
@@ -137,7 +157,7 @@ jobs:
           dnf -y install \
             gcc gcc-c++ make cmake ninja-build golang nasm clang \
             perl perl-FindBin perl-IPC-Cmd \
-            curl git tar gzip xz unzip findutils which
+            curl git tar gzip xz unzip findutils which python3 diffutils
 
       - name: Checkout
         uses: actions/checkout@v4
@@ -154,19 +174,25 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       - name: Build pluggable transports
-        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt" "" "$PWD/LICENSES"
 
       - name: Build psiphon
-        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt" "" "$PWD/LICENSES"
 
       - name: Build release binary
         run: cargo build --release --features tor --target ${{ matrix.target }}
 
+      - name: Collect licenses
+        run: |
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python3 ../third-party-notices.py --target ${{ matrix.target }} --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+
       - name: Package archive
         run: |
           cp -R pt target/${{ matrix.target }}/release/pt
+          cp -R LICENSES target/${{ matrix.target }}/release/LICENSES
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether pt
+          tar -czf ../../../${{ matrix.archive }}  aether pt LICENSES
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -217,19 +243,25 @@ jobs:
           sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
 
       - name: Build pluggable transports
-        run: bash ../pt-build.sh linux arm "$PWD/pt" 7
+        run: bash ../pt-build.sh linux arm "$PWD/pt" 7 "$PWD/LICENSES"
 
       - name: Build psiphon
-        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7
+        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7 "$PWD/LICENSES"
 
       - name: Build release binary
         run: cargo build --release --features tor --target armv7-unknown-linux-gnueabihf
 
+      - name: Collect licenses
+        run: |
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python3 ../third-party-notices.py --target armv7-unknown-linux-gnueabihf --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+
       - name: Package archive
         run: |
           cp -R pt target/armv7-unknown-linux-gnueabihf/release/pt
+          cp -R LICENSES target/armv7-unknown-linux-gnueabihf/release/LICENSES
           cd target/armv7-unknown-linux-gnueabihf/release
-          tar -czf ../../../aether-linux-armv7.tar.gz aether pt
+          tar -czf ../../../aether-linux-armv7.tar.gz aether pt LICENSES
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -324,19 +356,25 @@ jobs:
           echo "=== uapi check ==="; for inc in /opt/musl-cross/*/include; do echo "$inc:"; ls "$inc/linux/random.h" "$inc/asm/types.h" 2>&1 | sed 's/^/    /'; done
 
       - name: Build pluggable transports
-        run: bash ../pt-build.sh linux arm "$PWD/pt" 7
+        run: bash ../pt-build.sh linux arm "$PWD/pt" 7 "$PWD/LICENSES"
 
       - name: Build psiphon
-        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7
+        run: bash ../psiphon-build.sh linux arm "$PWD/pt" 7 "$PWD/LICENSES"
 
       - name: Build release binary
         run: cargo build --release --features tor --target armv7-unknown-linux-musleabihf
 
+      - name: Collect licenses
+        run: |
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python3 ../third-party-notices.py --target armv7-unknown-linux-musleabihf --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+
       - name: Package archive
         run: |
           cp -R pt target/armv7-unknown-linux-musleabihf/release/pt
+          cp -R LICENSES target/armv7-unknown-linux-musleabihf/release/LICENSES
           cd target/armv7-unknown-linux-musleabihf/release
-          tar -czf ../../../aether-linux-armv7-musl.tar.gz aether pt
+          tar -czf ../../../aether-linux-armv7-musl.tar.gz aether pt LICENSES
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -430,19 +468,25 @@ jobs:
           echo "BINDGEN_EXTRA_CLANG_ARGS_${triple}=--target=${{ matrix.target }} --sysroot=/opt/musl-cross/${{ matrix.cross_prefix }}" >> "$GITHUB_ENV"
 
       - name: Build pluggable transports
-        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+        run: bash ../pt-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt" "" "$PWD/LICENSES"
 
       - name: Build psiphon
-        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt"
+        run: bash ../psiphon-build.sh ${{ matrix.goos }} ${{ matrix.goarch }} "$PWD/pt" "" "$PWD/LICENSES"
 
       - name: Build release binary
         run: cargo build --release --features tor --target ${{ matrix.target }}
 
+      - name: Collect licenses
+        run: |
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python3 ../third-party-notices.py --target ${{ matrix.target }} --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+
       - name: Package archive
         run: |
           cp -R pt target/${{ matrix.target }}/release/pt
+          cp -R LICENSES target/${{ matrix.target }}/release/LICENSES
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }} aether pt
+          tar -czf ../../../${{ matrix.archive }} aether pt LICENSES
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -454,7 +498,9 @@ jobs:
   # ------------------------------------------------------------------
   # Android / Termux targets, built with the NDK via cargo-ndk on the
   # latest Ubuntu runner (the NDK cross toolchain, not the host libc,
-  # determines the output).
+  # determines the output). The binary is built for Android 10 (API 29)
+  # and later, the level PattNG builds aether, hev-socks5-tunnel and
+  # libv2ray for.
   #
   # The transports are built as static GOOS=linux binaries rather than
   # GOOS=android: android needs cgo, while a CGO_ENABLED=0 linux ELF
@@ -514,10 +560,10 @@ jobs:
         run: cargo install cargo-ndk --locked
 
       - name: Build pluggable transports
-        run: bash ../pt-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}"
+        run: bash ../pt-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}" "$PWD/LICENSES"
 
       - name: Build psiphon
-        run: bash ../psiphon-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}"
+        run: bash ../psiphon-build.sh linux ${{ matrix.goarch }} "$PWD/pt" "${{ matrix.goarm }}" "$PWD/LICENSES"
 
       - name: Build release binary
         env:
@@ -526,7 +572,7 @@ jobs:
         run: |
           under=$(echo "${{ matrix.target }}" | tr '-' '_')
           export "BORING_BSSL_RUST_CPPLIB_${under}=static:-bundle=c++"
-          cargo ndk -t ${{ matrix.abi }} --platform 24 build --release --features tor
+          cargo ndk -t ${{ matrix.abi }} --platform 29 build --release --features tor
           bin="target/${{ matrix.target }}/release/aether"
           needed=$(readelf -d "$bin" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p')
           echo "[android ${{ matrix.abi }}] aether NEEDED: $needed"
@@ -534,11 +580,17 @@ jobs:
             echo "ERROR: aether still needs libc++_shared.so (static libc++ link failed)"; exit 1
           fi
 
+      - name: Collect licenses
+        run: |
+          cp ../LICENSE LICENSES/aether-LICENSE.txt
+          python3 ../third-party-notices.py --target ${{ matrix.target }} --features tor --output LICENSES/THIRD-PARTY-NOTICES.txt
+
       - name: Package archive
         run: |
           cp -R pt target/${{ matrix.target }}/release/pt
+          cp -R LICENSES target/${{ matrix.target }}/release/LICENSES
           cd target/${{ matrix.target }}/release
-          tar -czf ../../../${{ matrix.archive }}  aether pt
+          tar -czf ../../../${{ matrix.archive }}  aether pt LICENSES
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
@@ -587,55 +639,88 @@ jobs:
           fail_on_unmatched_files: false
           files: dist/**/*
           body: |
-            Aether v2.3.0
+            Aether v2.4.0
 
             Aether is a user-space proxy client. It tunnels traffic out of a filtered network and exposes a local SOCKS5 proxy on 127.0.0.1:1819. Point a browser, terminal, or system proxy at that address and your traffic leaves through the tunnel.
 
-            WARP over MASQUE, and gool
+            These notes cover the changes since 2.3.0.
 
-            - `--masque` tunnels WARP over MASQUE: CONNECT-IP on HTTP/3 (QUIC) by default, or HTTP/2 (TCP) with `AETHER_MASQUE_HTTP2`, for networks that block or throttle UDP. An edge scanner finds a working Cloudflare gateway and verifies it end to end before SOCKS5 opens.
-            - `--gool` carries a WireGuard WARP identity inside the MASQUE tunnel and registers it through that tunnel, so the exit address is foreign rather than local. The classic WireGuard-in-WireGuard gool stays on `--gool-classic`, and the menu asks which of the two to use.
-            - On the HTTP/2 carrier `--fragment` splits the ClientHello for networks that drop the WARP server name; it is off by default. ECH is opt-in with `AETHER_ECH`, fetched over DoH, for the WARP key API where that is not enough.
+            Changes that can break a command written for 2.3.0
 
-            Psiphon is built in
+            - `--enroll-address` is now `--api-address`, and `AETHER_ENROLL_ADDRESS` is now `AETHER_API_ADDRESS`. A command with `--enroll-address` stops with "unknown option", and `AETHER_ENROLL_ADDRESS` is no longer read, so where it is still set the calls go by the API's own names.
+            - `--no-fragment` is gone, since leaving `--fragment` out already means off, and so is `--api-fragment`, which 2.3.0 took but never read: `--fragment` now splits the WARP API calls as well. A command with either stops with "unknown option".
+            - `--register gool` now registers what `--gool` runs: the MASQUE identity and the WireGuard identity carried inside it (`<masque config>-gool.toml`). The two WireGuard hops of the classic gool, which it registered in 2.3.0, now take `--register gool-classic`.
+            - MASQUE handshakes send `www.cloudflare.com` as their server name by default, instead of `consumer-masque.cloudflareclient.com`, the name the WARP client sends. `--masque-sni consumer-masque.cloudflareclient.com` sends the old name again.
+            - With `--psiphon` and `--psiphon-only`, `AETHER_PSIPHON_INTERFACE` and a `ListenInterface` in `--psiphon-config` no longer set where Psiphon listens; give that address with `--psiphon-bind` or `--bind`. They still apply to `--psiphon-reverse`.
+            - An `--upstream` (or `AETHER_UPSTREAM`) that aether cannot dial through, such as one with no port, port 0 or a kind it does not speak, now stops it as it starts, with the option named. 2.3.0 logged that the setting was ignored and connected straight out, around the proxy you named.
+            - The Android builds need Android 10 (API 29) or later; those of 2.3.0 ran on Android 7 (API 24) and later.
 
-            - Three ways to use it, the same three Tor has. `--psiphon` carries Psiphon inside the tunnel, `--psiphon-reverse` dials the tunnel through Psiphon so WARP is reached from a Psiphon exit, and `--psiphon-only` is plain Psiphon on the usual proxy port. Both appear in the menu when you run aether with no flags.
-            - Nothing to configure. The credentials and server list are built in, so it connects on a fresh machine. `--psiphon-config` lays your own settings over them if you have them.
-            - `--psiphon-region DE` asks for an exit in a country you name, and the log lists what is on offer.
-            - `--psiphon-mode cdn` limits it to fronted meek through a CDN, for networks that block the rest; `direct` turns fronting off.
-            - `--psiphon-http` serves it as an HTTP CONNECT proxy as well, for clients that cannot speak SOCKS5.
-            - The console client ships in the `pt/` folder beside the binary, next to the Tor transports.
+            The WARP API
 
-            Tor reaches its bridges again
+            - The calls to the WARP API, which register devices, enroll MASQUE keys and enable WARP, go by api.devices.cloudflare.com, the name Cloudflare's own client has called since its version 2026.6.0. An attempt that gets no answer there, or a refusal from another server than the API, such as an error page, goes by api.cloudflareclient.com next, the name 2.3.0 used, and the name the API answers by goes first for the rest of the run.
+            - Behind those two names the calls have a third way: the first of them on a Cloudflare edge of its own, 104.24.4.6 and then 104.18.0.6. A network that blocks the API's own addresses, or answers in their place, but lets an edge through no longer keeps aether from getting a key, and once an edge has answered, the later calls of the run go there first.
+            - `--api-address` sets where the calls connect, `--api-host` their HTTP host and `--api-sni` the server name of their ClientHello. The server name follows the host, and the address follows the server name unless given. With `--api-address` the calls go to that address alone, by both names; with `--api-host` or `--api-sni` they go by that one name, so `--api-host api.cloudflareclient.com` sends every call by the old name. Cloudflare refuses a call whose server name and host differ, with a 403 that the error message explains.
+            - `--fragment` splits the ClientHello of these calls too, on every transport, with the same `--fragment-size` and `--fragment-delay`, for networks that filter the API's name. Without it, MASQUE over HTTP/2 and these calls, the edge among them, send their ClientHello whole. The help and the guides give the HTTP/2 fragment defaults the code uses: off, and pieces of 8-16 bytes.
+            - Getting an identity means registering it and then enabling WARP on it, as the WARP app does, and it is saved only when both went through; if enabling fails, the start or the registration fails and nothing is saved. An identity file that is already there is used as it is. 2.3.0 enabled WARP on the MASQUE identity at every start, before the tunnel came up, which held each start for about 10 seconds where the WARP API is filtered and the tunnel is not, or about 110 on a silent drop.
+            - A Retry-After from the WARP API no longer delays the error after the last attempt.
+            - The Zero Trust sign-in by email sends each of its requests over a connection of its own, as the WARP API calls do.
 
-            - On a network that blocks Tor, bridgedb and onionoo are usually blocked too, so there was no way to fetch a bridge. With `--tor` the tunnel comes up first and the bridges are now fetched through it, which is what makes Tor work on a network that blocks it outright.
-            - `--tor-relays` takes running relays from onionoo and uses them as plain bridges. Bridgedb hands out a handful that are enumerated and blocked early; onionoo lists every running relay, thousands of them, filtered to the ports a restrictive firewall tends to leave open and measured before use.
-            - `--tor-bridge-file` reads bridge lines from a file, in the shape torrc uses.
-            - `--tor-http` serves Tor as an HTTP CONNECT proxy as well.
-            - The Tor SOCKS listener answers UDP ASSOCIATE for DNS, carried over TCP through the circuit, so a TUN front end can resolve names through it.
+            MASQUE
 
-            Keeping the exit where you want it
+            - `--masque-sni <name>` (`AETHER_MASQUE_SNI`) sets the server name in the ClientHello of every MASQUE handshake, over HTTP/3 and HTTP/2: gateway scans and checks, the tunnel, and both hops of MASQUE-in-MASQUE. Only the TLS name changes; the HTTP host stays cloudflareaccess.com. With `--ech` it is the name inside the encrypted ClientHello. A value that is not a domain name stops aether as it starts.
+            - Without `--team`, the MASQUE scan over IPv4 tries 297 gateways and no other address: 75 of 162.159.198.0/24 and 222 of 162.159.199.0/24, those of their 256 that completed a TCP handshake on port 443. It tries each of them on every MASQUE port, 443 first, then 500, 1701, 4500, 4443, 8443 and 8095; before, the scan swept the ranges, and only eight known gateways went past port 443. WARP's own gateways, 162.159.198.1 and 162.159.198.2, are not among the 297; `--peer` still names any gateway.
+            - Without `--team`, the MASQUE scan over IPv6 tries WARP's own gateway, 2606:4700:103::1, first and on every MASQUE port, and samples 2606:4700:103::/48 alone, as many addresses as it took from each range before. It no longer tries 2606:4700:d0::/48, 2606:4700:d1::/48 or 2606:4700:102::/48, nor the four known gateways in them; `--peer` still names any gateway.
+            - With `--team`, both MASQUE scans still try their known gateways and then every range, 162.159.197.0/24 and 2606:4700:102::/48 first. They now also try 162.159.199.0/24 and 2606:4700:103::/48, and the gateways 162.159.199.2, 162.159.197.2 and 2606:4700:103::1.
 
-            - `--exit-loc '!IR,AZ,RU'` refuses a tunnel whose exit country is not wanted. It is checked through the finished tunnel before SOCKS5 opens, and again every minute, so a tunnel that moves is dropped and replaced. `--exit-loc DE,SE` names the only countries to accept. Off unless you pass the flag.
-            - `--stats` logs how much has gone up and down and how long the tunnel has been up.
+            Reconnects
+
+            - A MASQUE gateway whose tunnel keeps ending, as when `--exit-loc` refuses its exit, is left after two tunnels in a row that each ended within five minutes, rested for five minutes and replaced by a scan, as WireGuard endpoints already were. This holds for gool's gateway too; a gateway named with `--peer` stays.
+            - Only tunnels that end within five minutes count towards leaving a gateway, endpoint or hop, for MASQUE, WireGuard, the classic gool and MASQUE-in-MASQUE. A tunnel that carried traffic for hours and saw two network changes reconnects at once to the same gateway, endpoint or hops, where 2.3.0 rested the WireGuard endpoint, or dropped the hops of the classic gool and MASQUE-in-MASQUE, and scanned.
+
+            Gool
+
+            - `--register gool` makes gool's WireGuard key directly. Where the key was registered does not set the exit: that comes from where the WireGuard hop is dialled, inside WARP.
+            - `--register gool-classic` (also `wiw` and `warp-in-warp`) registers both WireGuard hops of the classic gool, and `--register all` registers all five identities.
+            - `--tor-reverse` and `--psiphon-reverse` carry gool over MASQUE. They refuse only WireGuard and the classic gool, which need UDP to reach WARP.
+            - When gool registers its WireGuard key from inside its tunnel, it no longer changes `AETHER_UPSTREAM` for the whole process, so nothing else goes into the tunnel meanwhile.
+
+            Ports held from the start
+
+            - Aether binds the ports you dial as it starts and keeps them until it ends: its SOCKS5 proxy (`--bind`) and HTTP proxy (`--http-proxy`), and those of Tor and Psiphon, inside the tunnel and on their own (`--tor-bind`, `--tor-http`, `--psiphon-bind`, `--psiphon-http`). In 2.3.0 most were bound only once the tunnel, Tor or Psiphon was up, and aether's own were let go whenever the tunnel dropped, so while aether connected or reconnected another program could take one and receive what your browser or system proxy sent there. A client that connects before the tunnel is up now waits for it instead of being refused.
+            - Psiphon listens on a private loopback port behind the port aether holds for it.
+            - When Tor or Psiphon inside the tunnel stops, or a held port breaks, aether ends with its error instead of running on without the proxy you dial. When the tunnel cannot be dialled through Tor or Psiphon around it, aether ends rather than go around them.
+            - A listener on port 0 is dialled on the port the system gave it, and one on every address (0.0.0.0 or ::) on the loopback address, which Windows needs, so Tor or Psiphon inside the tunnel, the tunnel through Tor or Psiphon around it, and the look at the exit location all reach it.
+            - An error about a port in use names the option that sets that port, such as `--psiphon-bind`, instead of always `--bind`.
+            - A proxy that runs short of sockets or buffers for a moment on Windows, or meets a connection that failed while it waited on Linux and Android, tries again instead of stopping.
+            - Where a program runs aether through its C library, Tor and Psiphon stop when aether does.
+
+            TLS fingerprint
+
+            - Aether is built on boring 5.3.0, Cloudflare's bindings to BoringSSL, with the BoringSSL of 2026-09-29 and Cloudflare's post-quantum patch. Without the options below every ClientHello is as it was, but for one change of the newer BoringSSL, which Chrome's has as well: a ClientHello of 256 to 511 bytes is no longer padded to 512.
+            - `--tls13-ciphers` sets the TLS 1.3 cipher suites, in order, by their standard names; without it they keep Chrome's order. `--tls-key-shares` sets the groups the ClientHello sends key shares for, in order, each one of `--tls-groups`; without it BoringSSL picks them as Chrome does.
+            - `--tls-sigalgs` sets the signature algorithms, in order, by BoringSSL's names, and `--enable-grease-sigalgs` puts a GREASE value first among them, as Chrome does.
+            - `--tls-cert-compression` offers certificate compression (RFC 8879) with zlib, brotli and zstd, in the order given: `brotli` as Chrome offers it, `zlib:brotli:zstd` as Firefox does.
+            - `--tls-alps new` or `--tls-alps old` offers application settings (ALPS) for HTTP/2 and HTTP/3, under the codepoint Chrome sends now (0x44cd) or the one it sent before (0x4469).
+            - `--tls-trust-anchors` asks for a certificate from the trust anchors it names, by their IDs in dotted decimal, and `--tls-server-padding` asks the server for padding in its handshake, as Chrome does.
+            - `--enable-ech-grease` sends a GREASE ECH extension, which looks like ECH and hides nothing, when there is no ECH config to offer, as Chrome and Firefox do.
+            - `--disable-ocsp-stapling`, `--disable-sct` and `--disable-session-ticket` leave out the request for OCSP, the request for signed certificate timestamps and the session ticket, which the handshakes otherwise send as Chrome does. `--disable-extension-permutation` keeps one order of the extensions on every handshake, as Firefox, Python and Go do.
+            - All of them shape every TLS handshake the fingerprint shapes: MASQUE over HTTP/2 and over HTTP/3, the WARP API and the DoH lookup of the ECH key. A value BoringSSL does not take stops aether as it starts, with the option named.
 
             Fixes
 
-            - Psiphon finds a CA store on Android and Termux on its own, so its TLS no longer fails there without a manually exported SSL_CERT_FILE.
-            - The HTTP/2 scan was slow to find anything. Its data-plane probe was sent once and never repeated, so a single lost packet cost the whole per-probe budget instead of 700ms. The first gateway now turns up in about a second.
-            - `--noize firewall` and `--noize gfw` were advertised but never implemented and fell through to balanced. Since firewall is the default for MASQUE, the default profile did not exist. Both are real now, and the `<c>` counter tag emits a counter instead of repeating the timestamp.
-            - `--mark` never reached the registration calls, which hung for twenty seconds on a router that routes unmarked traffic into a TUN. Registration now takes the route that carries the mark.
-            - A fourth API fingerprint, TLS 1.3 with a fragmented ClientHello, for networks that block TLS 1.2 outright. Fragmenting now splits inside the server name rather than at a random offset.
-            - Gool's inner tunnel latched onto the first source port it saw and silently dropped everything from any other, which killed the tunnel when the inner engine rebound.
-            - Reconnects remember the last eight working gateways instead of one, and a gateway proved on HTTP/3 is no longer reused on HTTP/2, where its port may not answer at all.
+            - With `--team`, the TLS of every MASQUE handshake, over HTTP/3 and HTTP/2, is verified by default: the gateway's certificate has to match one of the pinned Cloudflare keys, one more of which joins them. A middlebox that answers with a certificate of its own can no longer stand in for the gateway and see the traffic inside the Zero Trust tunnel. `AETHER_TLS_VERIFY=0` turns the check off; without `--team` it stays off unless `--tls-verify` turns it on.
+            - Psiphon dialled through a proxy, as `--psiphon` inside the tunnel is, no longer takes tactics from its servers: they had it attach a BPF program to every TCP dial, which needs root, so without it each dial of the chain failed with "operation not permitted" and the chain took a long way around to come up.
 
-            Changes
+            Builds and docs
 
-            - The crate needs Rust 1.98.
+            - `aether.exe` no longer needs the Microsoft Visual C++ Redistributable: the C runtime is built into it, so it needs only the DLLs that come with Windows.
+            - Every archive has a LICENSES folder next to aether, with the licenses of aether (AGPL-3.0), psiphon-tunnel-core and lyrebird, THIRD-PARTY-NOTICES.txt for the Rust crates and the Rust standard library linked into aether, and a notice each for the Go modules and the Go standard library linked into psiphon-tunnel-core and lyrebird.
+            - Every release archive and the Docker image build with the latest stable release of Rust, and the crate no longer declares a minimum Rust version (2.3.0 needed 1.98); the README asks for the latest stable release to build from source.
+            - The READMEs, docs and guides, in English and Persian, describe gool, WireGuard inside MASQUE, and the classic gool on `--gool-classic`. Two new guides: Docs/OPENWRT.en.md, linked from the README, runs aether on an OpenWrt router as a service that starts on boot, and a section of Docs/DOCS.fa.md runs it in Termux inside tmux, so it outlives the terminal, and shares its proxy with other devices on the network through `--bind 0.0.0.0:1819`.
 
             Every archive ships with a matching .sha256 file, and SHA256SUMS.txt lists them all.
 
-            See README.md and the Docs directory for install steps, transport selection, obfuscation profiles, and the full environment-variable reference.
+            See README.md and the Docs directory for transport selection, obfuscation profiles, and the full environment-variable reference.
 
   # ------------------------------------------------------------------
   # Build and push the Docker image to GitHub Container Registry (GHCR)
@@ -643,6 +728,9 @@ jobs:
   docker:
     name: Build and push Docker image
     runs-on: ubuntu-latest
+    # Only a release pushes the image: a manual run from a branch is a build check
+    # and must not move the "latest" tag.
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
     permissions:
       contents: read
       packages: write

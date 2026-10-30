@@ -27,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -50,6 +52,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -586,6 +589,9 @@ fun <T> SettingsChoiceRow(
      * so every existing caller renders unchanged.
      */
     optionDescription: (@Composable (T) -> String?)? = null,
+    /** Shows a search field above the option list (used by the 56-row exit-country picker). */
+    searchable: Boolean = false,
+    searchPlaceholder: String = "",
 ) {
     var open by remember { mutableStateOf(false) }
     BaseRow(
@@ -641,6 +647,47 @@ fun <T> SettingsChoiceRow(
             //
             // Lazily composed: the exit-country picker is 56 rows and only about
             // eight of them are ever on screen.
+            var query by remember { mutableStateOf("") }
+            val shownOptions: List<T> = if (searchable && query.isNotBlank()) {
+                val needle = query.trim()
+                options.filter { label(it).contains(needle, ignoreCase = true) }
+            } else {
+                options
+            }
+            if (searchable) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = { Text(searchPlaceholder, color = OnDarkMuted) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = OnDarkDim,
+                        )
+                    },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            androidx.compose.material3.IconButton(onClick = { query = "" }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = null,
+                                    tint = OnDarkDim,
+                                )
+                            }
+                        }
+                    },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        textDirection = androidx.compose.ui.text.style.TextDirection.Ltr,
+                    ),
+                    shape = RoundedCornerShape(SheetItemRadius),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                        .testTag("sheet-search"),
+                )
+            }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -648,8 +695,8 @@ fun <T> SettingsChoiceRow(
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(options.size) { index ->
-                    val option = options[index]
+                items(shownOptions.size) { index ->
+                    val option = shownOptions[index]
                     val isSelected = option == selected
                     Row(
                         modifier = Modifier

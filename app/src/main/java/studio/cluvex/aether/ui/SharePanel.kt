@@ -1,5 +1,7 @@
 package studio.cluvex.aether.ui
 
+import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.ui.ai.AiTopicIcon
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.provider.Settings
@@ -57,7 +59,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -140,9 +141,12 @@ fun SharePanel(
 
     // Which modes have a live network right now - refreshed while the card is
     // open so "turn on your hotspot" turns into the addresses by itself.
-    val available by produceState(initialValue = emptySet<ShareLeakGuard.Mode>(), expanded) {
+    // Explicit state + keyed effect is equivalent to produceState here and avoids
+    // the Kotlin 2/Compose lint false positive on implicit producer.value writes.
+    var available by remember { mutableStateOf(emptySet<ShareLeakGuard.Mode>()) }
+    LaunchedEffect(expanded) {
         while (expanded) {
-            value = withContext(Dispatchers.IO) { ShareBridge.availableModes() }
+            available = withContext(Dispatchers.IO) { ShareBridge.availableModes() }
             delay(3_000)
         }
     }
@@ -190,6 +194,8 @@ fun SharePanel(
                         },
                     )
                 }
+                AiTopicIcon(AiTopic.SHARE)
+                Spacer(Modifier.width(8.dp))
                 Icon(
                     Icons.Rounded.ExpandMore,
                     contentDescription = null,
@@ -206,6 +212,7 @@ fun SharePanel(
 
                     // ---- master switch ------------------------------------
                     SwitchLine(
+                        topic = AiTopic.SHARE,
                         title = stringResource(R.string.share_toggle),
                         summary = stringResource(R.string.share_toggle_desc),
                         checked = profile.lanShare,
@@ -226,7 +233,7 @@ fun SharePanel(
 
                     // ---- mode picker --------------------------------------
                     Spacer(Modifier.height(8.dp))
-                    SectionLabel(stringResource(R.string.share_mode_title))
+                    SectionLabel(stringResource(R.string.share_mode_title), AiTopic.SHARE_MODE)
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                         ModeCard(
                             modifier = Modifier.weight(1f),
@@ -417,7 +424,7 @@ private fun ReadyBlock(
     // r6: WebRTC. Browsers send it OUTSIDE a proxy unless locked; the setup page
     // tests it live against the tunnel exit and serves the one-click locks.
     Spacer(Modifier.height(12.dp))
-    SectionLabel(stringResource(R.string.share_webrtc_title))
+    SectionLabel(stringResource(R.string.share_webrtc_title), AiTopic.SHARE_WEBRTC)
     Notice(Icons.Rounded.Shield, stringResource(R.string.share_webrtc_desc), AetherAmber)
     ValueRow(label = stringResource(R.string.share_setup_label), value = setup)
 
@@ -497,6 +504,7 @@ private fun AuthSection(
 
     SwitchLine(
         icon = Icons.Rounded.Lock,
+        topic = AiTopic.SHARE_AUTH,
         title = stringResource(R.string.share_auth_toggle),
         summary = stringResource(
             if (recommend) R.string.share_auth_toggle_desc_home else R.string.share_auth_toggle_desc,
@@ -540,7 +548,10 @@ private fun AuthSection(
         val saved = stringResource(R.string.share_auth_saved)
         AlertDialog(
             onDismissRequest = { editing = false },
-            title = { Text(stringResource(R.string.share_auth_edit_title)) },
+            title = { Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.share_auth_edit_title), Modifier.weight(1f))
+                AiTopicIcon(AiTopic.SHARE_AUTH)
+            } },
             text = {
                 Column {
                     OutlinedTextField(
@@ -616,18 +627,19 @@ private fun Divider() {
 }
 
 @Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text = text,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.padding(top = 4.dp, bottom = 6.dp),
-    )
+private fun SectionLabel(text: String, topic: AiTopic = AiTopic.SHARE) {
+    Row(verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 6.dp)) {
+        Text(text = text, style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f))
+        AiTopicIcon(topic)
+    }
 }
 
 @Composable
 private fun SwitchLine(
+    topic: AiTopic,
     title: String,
     summary: String,
     checked: Boolean,
@@ -649,8 +661,9 @@ private fun SwitchLine(
             Text(text = title, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurface)
             Text(text = summary, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+        AiTopicIcon(topic)
         Spacer(Modifier.width(8.dp))
-                        Switch(checked = checked, onCheckedChange = null)
+        Switch(checked = checked, onCheckedChange = null)
     }
 }
 

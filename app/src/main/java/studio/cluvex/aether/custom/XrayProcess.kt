@@ -32,7 +32,11 @@ class XrayProcess(
     fun available(): Boolean = File(nativeLibDir, BINARY).exists()
 
     fun start(configJson: String, tag: String) {
-        val bin = File(nativeLibDir, BINARY)
+        val hasLeafPin = Regex("\"pinnedPeerCertSha256\"\\s*:").containsMatchIn(configJson)
+        val modern = File(nativeLibDir, "libxray-pinned.so")
+        if (hasLeafPin && !modern.exists()) throw IllegalStateException(
+            "This config requires leaf-certificate pinning, unsupported by bundled Xray v25.12.8. A compatible libxray-pinned.so is required; the pin was NOT bypassed.")
+        val bin = if (hasLeafPin) modern else File(nativeLibDir, BINARY)
         if (!bin.exists()) throw IllegalStateException(MISSING)
         stop()
         val dir = File(workDir, "xray").apply { mkdirs() }

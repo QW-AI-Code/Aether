@@ -70,7 +70,7 @@ class AetherWidgetProvider : AppWidgetProvider() {
             val (text, color) = when (state) {
                 is ConnectionState.Connected ->
                     context.getString(R.string.state_connected) to 0xFF34C759.toInt()
-                is ConnectionState.Launching, is ConnectionState.Connecting, is ConnectionState.Verifying ->
+                is ConnectionState.Selecting, is ConnectionState.Launching, is ConnectionState.Connecting, is ConnectionState.Verifying ->
                     context.getString(R.string.state_connecting) to 0xFFFF9500.toInt()
                 is ConnectionState.Reconnecting ->
                     context.getString(R.string.state_reconnecting) to 0xFFFF9500.toInt()

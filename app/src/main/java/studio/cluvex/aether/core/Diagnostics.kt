@@ -312,6 +312,15 @@ object Diagnostics {
      * a network that silently drops Tor would hold the UI at "Connecting" for the
      * whole budget.
      */
+    /** Public wait for a SOCKS5 listener that binds early but answers late (see [awaitSocksHandshake]). */
+    suspend fun awaitProxyReady(
+        host: String,
+        port: Int,
+        graceMs: Long,
+        alive: () -> Boolean = { true },
+        abort: () -> Boolean = { false },
+    ): Boolean = awaitSocksHandshake(host, port, graceMs, alive, abort)
+
     private suspend fun awaitSocksHandshake(
         host: String,
         port: Int,

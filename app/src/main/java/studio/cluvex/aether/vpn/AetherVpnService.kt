@@ -19,6 +19,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import studio.cluvex.aether.AetherApp
@@ -97,6 +98,125 @@ class AetherVpnService : VpnService() {
      * status text would follow the phone's locale while the app showed another
      * language.
      */
+    /**
+     * 1.6.0: monotonic session counter. Bumped at every connect start and inside
+     * every cleanupNativeOnly(reason), so an exit-IP enrichment (country, second
+     * address family) that arrives after the session changed can never be
+     * attributed to the next session's card.
+     */
+    private val sessionEpoch = java.util.concurrent.atomic.AtomicLong(0L)
+
+    override fun onCreate() {
+        super.onCreate()
+        scope.launch {
+            studio.cluvex.aether.core.TunnelExitMonitor.watch(
+                AetherController.state,
+                currentIp = { AetherController.ipInfo.value },
+                loading = AetherController::setIpLoading,
+                offer = AetherController::offerTunnelIpInfo,
+                clear = { AetherController.setIpInfo(null) },
+                fetch = { endpoint -> fetchTunnelExit(endpoint.host, endpoint.port) },
+                refine = { endpoint, known ->
+                    val cc = kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
+                        studio.cluvex.aether.core.NetProbe.enrichCountry(endpoint.host, endpoint.port, known.ip)
+                    }
+                    cc?.let { known.copy(countryCode = it) }
+                },
+            )
+        }
+    }
+
+    /**
+     * 1.6.0 (validation findings #1/#2). NetProbe answers twice: the raced first
+     * answer (IP, maybe country=null, maybe one address family) is returned here and
+     * reaches the card at once through the monitor; `onEnriched` fires later, from
+     * NetProbe's own pool, with the country (and dual-stack data) for THAT IP. The
+     * first answer already carries alternateIp through the four-argument IpEndpoint,
+     * so the second family is shown as soon as the race has it.
+     *
+     * The epoch is captured BEFORE the race starts: a callback that lands after a
+     * cleanup / reconnect / new connect is dropped in [applyExitEnrichment].
+     */
+    private suspend fun fetchTunnelExit(host: String, port: Int): studio.cluvex.aether.core.IpEndpoint? {
+        val epoch = sessionEpoch.get()
+        val published = java.util.concurrent.atomic.AtomicReference<String?>(null)
+        val first = kotlinx.coroutines.runInterruptible(Dispatchers.IO) {
+            studio.cluvex.aether.core.NetProbe.fetchIpInfoViaSocksRaced(
+                host,
+                port,
+                onEnriched = { enriched -> onExitEnriched(epoch, published.get(), enriched) },
+            )
+        } ?: return null
+        published.set(first.ip)
+        return studio.cluvex.aether.core.IpEndpoint(first.ip, first.countryCode, true, alternateIp = first.alternateIp)
+    }
+
+    /**
+     * Shape-tolerant entry for NetProbe's enrichment callback: a full IpInfo carries
+     * its own IP (and is matched against it); a bare country code can only belong
+     * to the IP this very race published, so it is matched against that.
+     */
+    private fun onExitEnriched(epoch: Long, publishedIp: String?, enriched: Any?) {
+        when (enriched) {
+            is studio.cluvex.aether.core.IpInfo -> {
+                if (AetherController.ipInfo.value?.let { it.viaTunnel && it.ip == enriched.ip } == true) {
+                    applyExitEnrichment(epoch, enriched.ip, enriched.countryCode, enriched.alternateIp)
+                } else scope.launch {
+                    // The provider can finish BEFORE the monitor publishes the first
+                    // IP. Wait for that publication without blocking the geo pool.
+                    val ready = withTimeoutOrNull(10_000L) {
+                        AetherController.ipInfo.first { it?.viaTunnel == true && it.ip == enriched.ip }
+                    }
+                    if (ready != null) applyExitEnrichment(epoch, enriched.ip, enriched.countryCode, enriched.alternateIp)
+                }
+            }
+            is String -> applyExitEnrichment(epoch, publishedIp, enriched, null)
+            else -> DiagnosticsLog.d(TAG, "Exit enrichment of an unexpected shape was ignored.")
+        }
+    }
+
+    /**
+     * Applies a late enrichment ONLY IF (a) the session epoch is unchanged - no
+     * cleanup, reconnect or new connect happened in between - and (b) the card
+     * still shows the very tunnel IP the enrichment belongs to. A country measured
+     * for another IP, or a callback from a previous session, is dropped and logged.
+     * Goes through setIpInfo because offerTunnelIpInfo does not upgrade the
+     * metadata of an IP it already holds.
+     */
+    private fun applyExitEnrichment(epoch: Long, ip: String?, countryCode: String?, alternateIp: String?) {
+        val now = sessionEpoch.get()
+        if (epoch != now) {
+            DiagnosticsLog.d(TAG, "Exit enrichment for ${ip ?: "the exit"} arrived after the session changed (epoch $epoch != $now) - dropped.")
+            return
+        }
+        val current = AetherController.ipInfo.value
+        if (current == null || !current.viaTunnel) {
+            DiagnosticsLog.d(TAG, "Exit enrichment for ${ip ?: "the exit"} arrived while no tunnel IP is shown - dropped.")
+            return
+        }
+        if (ip != null && current.ip != ip) {
+            DiagnosticsLog.d(TAG, "Exit enrichment for $ip does not match the shown tunnel IP ${current.ip} - dropped.")
+            return
+        }
+        if (ip == null && current.countryCode != null) {
+            // A bare country code without a known target IP may only ever fill a blank.
+            return
+        }
+        val merged = studio.cluvex.aether.core.IpEndpoint(
+            current.ip,
+            studio.cluvex.aether.core.NetProbe.normalizeCountryCode(countryCode) ?: current.countryCode,
+            true,
+            alternateIp = alternateIp?.takeIf { it.isNotBlank() } ?: current.alternateIp,
+        )
+        if (merged == current) return
+        AetherController.setIpInfo(merged)
+        DiagnosticsLog.i(
+            TAG,
+            "Exit enriched: ${merged.ip} (${merged.countryCode ?: "??"})" +
+                (merged.alternateIp?.let { ", second family $it" } ?: ""),
+        )
+    }
+
     override fun attachBaseContext(base: android.content.Context?) {
         super.attachBaseContext(base?.let { LanguagePrefs.wrap(it) } ?: base)
     }
@@ -164,6 +284,7 @@ class AetherVpnService : VpnService() {
     /** The custom chain this session runs, or null for an ordinary session. */
     @Volatile
     private var customSelection: CustomSelection? = null
+    private var sessionExitPort: Int = 0
 
     /** The running Xray hop of a custom chain, and the watchdog that restarts it. */
     @Volatile
@@ -343,7 +464,7 @@ class AetherVpnService : VpnService() {
                 // the new connect for as long as the old session's engine wait
                 // still had to run.
                 previousRun.cancel()
-                cleanupNativeOnly()
+                cleanupNativeOnly("superseded-by-new-connect")
                 stopCustom()
                 previousRun.join()
             }
@@ -351,13 +472,22 @@ class AetherVpnService : VpnService() {
             try {
                 connectFlow(profile)
             } catch (e: CancellationException) {
+                ChainTrace.end("cancelled")
                 throw e
             } catch (e: Exception) {
+                // 1.6.0: this used to be the one failure path that wrote NOTHING to
+                // the diagnostics log - the engine simply vanished from the timeline.
+                DiagnosticsLog.e(
+                    TAG,
+                    "Connect failed: ${e.javaClass.simpleName}: ${e.message}" +
+                        (e.cause?.message?.let { " (cause: $it)" } ?: ""),
+                )
+                ChainTrace.end("failed", "${e.javaClass.simpleName}: ${e.message}")
                 AetherController.setState(
                     ConnectionState.Error(e.message ?: getString(R.string.state_error)),
                 )
                 updateNotification(getString(R.string.state_error))
-                cleanupNativeOnly()
+                cleanupNativeOnly("connect-failed")
                 stopCustom()
             }
         }
@@ -391,11 +521,72 @@ class AetherVpnService : VpnService() {
         // 1.5.0 CUSTOM CONFIGS. Only when the user switched a custom config on in
         // Settings -> Custom configs; otherwise customSelection is null, every
         // hook below is a no-op and the session runs exactly as it always has.
-        val custom = runCatching { CustomConfigStore.selection(applicationContext) }.getOrNull()
+        val selectedTab = CustomConfigStore.load(applicationContext).activeTab
+        var custom = CustomConfigStore.selection(applicationContext)
+        // Empty/stale scope must never silently run the engine or another tab.
+        if (CustomConfigStore.state.value.enabled && custom == null) {
+            throw IllegalStateException(getString(R.string.cc_err_active_tab_empty))
+        }
+        if (custom != null && CustomConfigStore.state.value.autoSelect) {
+            AetherController.setState(ConnectionState.Selecting)
+            updateNotification(getString(R.string.state_selecting))
+            chooseBestCustom(custom.config, initial = true)?.let {
+                check(CustomConfigStore.selectInTab(this, it.id, selectedTab)) { getString(R.string.cc_err_active_tab_empty) }
+                custom = CustomConfigStore.selection(this)
+            }
+            AetherController.setState(ConnectionState.Launching)
+            updateNotification(getString(R.string.state_launching))
+        }
+        check(CustomConfigStore.state.value.activeTab == selectedTab) { getString(R.string.cc_err_active_tab_empty) }
         customSelection = custom
+        // 1.6.0 CHAIN TRACE: one timeline per connect; every stage, failure and
+        // native teardown below is recorded with its offset from this point.
+        ChainTrace.begin(
+            sessionEpoch.incrementAndGet(),
+            profile.backend.pipelineLabel +
+                (custom?.let { " + custom ${it.config.protocol.short} [${it.mode.label(it.config.chainLabel)}]" } ?: ""),
+        )
         CustomSession.set(null)
         if (custom != null) {
-            connectCustom(profile, custom)
+            var selection = custom
+            var failedAttempts = 0
+            while (currentScopeActive()) {
+                var switched = false
+                try {
+                    kotlinx.coroutines.coroutineScope {
+                        val session = launch { connectCustom(profile, selection!!) }
+                        val monitor = launch {
+                            while (true) {
+                                delay(CustomConfigStore.state.value.healthIntervalSeconds * 1_000L)
+                                if (!CustomConfigStore.state.value.autoSelect ||
+                                    AetherController.state.value !is ConnectionState.Connected) continue
+                                val current = selection!!.config
+                                val best = chooseBestCustom(current) ?: continue
+                                if (best.id != current.id) {
+                                    if (!CustomConfigStore.selectInTab(this@AetherVpnService, best.id, selectedTab)) continue
+                                    switched = true
+                                    session.cancel()
+                                    break
+                                }
+                            }
+                        }
+                        try { session.join() } finally { monitor.cancel(); monitor.join() }
+                    }
+                } catch (e: CancellationException) { throw e
+                } catch (e: Exception) {
+                    if (!CustomConfigStore.state.value.autoSelect || ++failedAttempts > 3) throw e
+                    delay(2_000L)
+                    val best = chooseBestCustom(selection!!.config, excludeCurrent = true) ?: throw e
+                    check(CustomConfigStore.selectInTab(this, best.id, selectedTab)) { getString(R.string.cc_err_active_tab_empty) }
+                    switched = true
+                }
+                if (!switched) return
+                AetherController.setState(ConnectionState.Reconnecting(1, 1))
+                cleanupNativeOnly("custom-auto-switch")
+                stopCustom()
+                selection = CustomConfigStore.selection(this) ?: return
+                customSelection = selection
+            }
             return
         }
         connectEngineFlow(profile)
@@ -475,6 +666,26 @@ class AetherVpnService : VpnService() {
                 AetherController.setState(ConnectionState.Connecting)
                 updateNotification(getString(R.string.state_tor_bootstrap))
                 runLadder(reversePlan(profile), getString(R.string.err_protocol_failed))
+            } else if (studio.cluvex.aether.custom.CustomChainPolicy.usesTcpCarrier(profile, customSelection?.mode)) {
+                AetherController.setState(ConnectionState.Connecting)
+                // 1.6.0 Config -> Aether (field log 2026-10-15): two rungs behind a TCP
+                // carrier instead of one pass in the user's scan mode; see
+                // [customUpstreamPlan] for why the scan SHAPE is what failed.
+                try {
+                    runLadder(customUpstreamPlan(profile), getString(R.string.err_protocol_failed))
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: IllegalStateException) {
+                    DiagnosticsLog.e(
+                        TAG,
+                        "No WARP gateway is reachable THROUGH this custom config. The config itself " +
+                            "passed its readiness check; the hop behind it is what fails. A config whose " +
+                            "exit is itself behind a CDN (e.g. a Cloudflare-fronted WebSocket/gRPC VLESS) " +
+                            "often cannot reach Cloudflare's MASQUE gateways at all - use a config with a " +
+                            "plain VPS exit for this chain, or run the config SOLO / as the LAST hop.",
+                    )
+                    throw e
+                }
             } else if (profile.protocol == Protocol.AUTO) {
                 // ONE automatic mode, two implementations, chosen by what the
                 // backend allows. The race needs two engine processes with two
@@ -509,9 +720,10 @@ class AetherVpnService : VpnService() {
         EngineMeta.setProtocol(resolved.protocol.name)
         if (resolved.manualPeer.isNotBlank()) EngineMeta.setEndpoint(resolved.manualPeer)
 
-        AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
+        ChainTrace.end("ok", "exit=$SOCKS_HOST:${sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT}")
+        AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:${sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT}"))
         updateNotification(getString(R.string.state_connected))
-        DiagnosticsLog.i(TAG, "All checks passed — tunnel is ready.")
+        DiagnosticsLog.i(TAG, "Tunnel is ready; configured initial verification policy applied.")
 
         superviseEngine(resolved)
     }
@@ -545,7 +757,7 @@ class AetherVpnService : VpnService() {
     private suspend fun connectExternal(profile: ConnectionProfile) {
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_connecting))
-        cleanupNativeOnly()
+        cleanupNativeOnly("external-prestart")
 
         // 1.4.0-r1: the engine's Psiphon needs a CA bundle and its embedded server
         // list on disk BEFORE stage 1 launches the engine that spawns it. See
@@ -593,7 +805,7 @@ class AetherVpnService : VpnService() {
             DiagnosticsLog.w(TAG, e.message ?: "Psiphon could not serve the chosen exit - retrying automatically.")
             runCatching { transport.stop() }
             externalTransport = null
-            cleanupNativeOnly()
+            cleanupNativeOnly("psiphon-region-fallback")
             connectExternal(profile.copy(exitRegion = ""))
             return
         }
@@ -619,12 +831,8 @@ class AetherVpnService : VpnService() {
             if (profile.lanShare) ShareBridge.start(localOnly = false, upstreamPort = port)
         }
 
-        AetherController.setState(ConnectionState.Verifying)
-        updateNotification(getString(R.string.state_verifying))
         val diagPort = if (profile.proxyMode) ShareBridge.socksPort.value ?: port else port
-        val healthy = runCatching {
-            Diagnostics.run(port = diagPort, graceMs = Diagnostics.EXTERNAL_GRACE_MS)
-        }.getOrDefault(false)
+        val healthy = probeOrFalse { verifyFinal(profile, diagPort, Diagnostics.EXTERNAL_GRACE_MS) }
         check(healthy) { getString(R.string.err_selftest) }
 
         // 1.3.1-r2 LABEL FIX: the ENGINE's transport only, never the pipeline.
@@ -646,6 +854,7 @@ class AetherVpnService : VpnService() {
         // server rotation invalidates it. Dropping it here costs one dial and
         // stops the badge reporting a dead connection's timeout as latency.
         PingMonitor.reset()
+        ChainTrace.end("ok", "exit=$SOCKS_HOST:$port")
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$port"))
         updateNotification(getString(R.string.state_connected))
         DiagnosticsLog.i(
@@ -775,7 +984,7 @@ class AetherVpnService : VpnService() {
     private suspend fun connectTor(profile: ConnectionProfile) {
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_connecting))
-        cleanupNativeOnly()
+        cleanupNativeOnly("tor-prestart")
 
         val engineProfile = connectAetherStage(profile)
 
@@ -787,7 +996,7 @@ class AetherVpnService : VpnService() {
         val torPort = profile.backend.torSocksPort
             ?: error("${profile.backend} has no Tor listener")
         if (torPort != SOCKS_PORT) {
-            AetherController.setState(ConnectionState.Verifying)
+            AetherController.setState(ConnectionState.Connecting)
             updateNotification(getString(R.string.state_tor_bootstrap))
             DiagnosticsLog.i(
                 TAG,
@@ -826,15 +1035,11 @@ class AetherVpnService : VpnService() {
             if (profile.lanShare) ShareBridge.start(localOnly = false, upstreamPort = frontPort)
         }
 
-        AetherController.setState(ConnectionState.Verifying)
-        updateNotification(getString(R.string.state_verifying))
         val diagPort = if (profile.proxyMode) ShareBridge.socksPort.value ?: frontPort else frontPort
         // The same grace an external stage gets. A Tor circuit is built lazily per
         // stream, so the first request through a freshly bootstrapped Tor is slow
         // in a way that says nothing about whether the session works.
-        val healthy = runCatching {
-            Diagnostics.run(port = diagPort, graceMs = Diagnostics.EXTERNAL_GRACE_MS)
-        }.getOrDefault(false)
+        val healthy = probeOrFalse { verifyFinal(profile, diagPort, Diagnostics.EXTERNAL_GRACE_MS) }
         check(healthy) { getString(R.string.err_selftest) }
 
         // Same fix as in the external-chain path above: the transport alone.
@@ -845,6 +1050,7 @@ class AetherVpnService : VpnService() {
         EngineMeta.setProtocol(engineProfile.protocol.name)
         PingMonitor.setTunnelPort(frontPort)
         PingMonitor.reset()
+        ChainTrace.end("ok", "exit=$SOCKS_HOST:$frontPort")
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$frontPort"))
         updateNotification(getString(R.string.state_connected))
         DiagnosticsLog.i(TAG, "${profile.backend.pipelineLabel} tunnel ready (exit = a Tor exit node).")
@@ -931,6 +1137,10 @@ class AetherVpnService : VpnService() {
                     "MASQUE \u00b7 h2 \u00b7 through Tor",
                 ),
             )
+            // 1.6.0: `Config -> Aether -> Psiphon|Tor` - the engine is dialled through
+            // a TCP-only carrier, so the UDP rungs of the AUTO ladder can never work.
+            studio.cluvex.aether.custom.CustomChainPolicy.usesTcpCarrier(stage, customSelection?.mode) ->
+                customUpstreamPlan(stage)
             stage.protocol == Protocol.AUTO -> {
                 AetherController.setState(ConnectionState.Launching)
                 updateNotification(getString(R.string.state_analyzing))
@@ -996,6 +1206,52 @@ class AetherVpnService : VpnService() {
             "MASQUE \u00b7 h2 \u00b7 through Tor",
         ),
     )
+
+    /**
+     * 1.6.0: the engine BEHIND a custom config (`Config -> Aether` and every chain
+     * CustomChainPolicy.usesTcpCarrier says yes to) climbs two rungs instead of one.
+     *
+     * Field log 2026-10-15: the upstream mapping was right (the engine dialled
+     * 127.0.0.1:18830 and registered WARP through it) and the budget was right
+     * (180 s service wait > 120 s engine scan). What cannot work is the SCAN SHAPE:
+     * BALANCED is sized for a direct UDP path - 2011 candidates, four at a time,
+     * 20 s each. Through a TCP carrier every probe is a proxied TCP+TLS+h2
+     * CONNECT-IP handshake, so four-wide coverage reaches about 1 % of the space
+     * before any budget ends. The reverse chain hit the same wall in 1.3.x and was
+     * fixed the same way (see [reversePlan]): the quickest scan the engine has,
+     * known gateways first, first verified answer wins, no DPI-derived ranges
+     * (those were measured on the DIRECT path and say nothing about what the
+     * config's exit can reach).
+     *
+     * Rung 1 is that quick scan on a capped budget; rung 2 is the user's own scan
+     * mode on the full chain budget, so nothing that used to work is lost. A user
+     * already on TURBO gets the single full-budget rung as before.
+     */
+    private fun customUpstreamPlan(profile: ConnectionProfile): List<AutoCandidate> {
+        val fullBudget = studio.cluvex.aether.custom.CustomChainPolicy.connectBudgetMs(profile)
+        val behindConfig = profile.copy(endpointMode = EndpointMode.AUTO, manualRange = "")
+        if (profile.scanMode == ScanMode.TURBO) {
+            return listOf(
+                AutoCandidate(behindConfig, fullBudget, "MASQUE · h2 · through custom config · turbo scan"),
+            )
+        }
+        return listOf(
+            AutoCandidate(
+                behindConfig.copy(scanMode = ScanMode.TURBO),
+                fullBudget.coerceAtMost(UPSTREAM_QUICK_PASS_MAX_MS),
+                "MASQUE · h2 · through custom config · quick scan (known gateways first)",
+            ),
+            AutoCandidate(
+                behindConfig,
+                fullBudget,
+                "MASQUE · h2 · through custom config · ${profile.scanMode.name.lowercase()} scan",
+            ),
+        )
+    }
+
+    /** upstreamProxy as a trimmed, never-null string, whatever its declared nullability. */
+    private fun upstreamOf(profile: ConnectionProfile): String =
+        listOfNotNull(profile.upstreamProxy).joinToString("").trim()
 
     /**
      * SMART PLUS: remember what worked here, and race what is left.
@@ -1083,7 +1339,7 @@ class AetherVpnService : VpnService() {
                             "Smart Plus: the remembered route did not come up (${e.message}) - racing.",
                         )
                         SmartPlusMemory.noteFailure(this, networkKey, step.tactic.id)
-                        cleanupNativeOnly()
+                        cleanupNativeOnly("smartplus-remembered-failed")
                         Diagnostics.resetChecks()
                         false
                     }
@@ -1112,7 +1368,7 @@ class AetherVpnService : VpnService() {
                             "Smart Plus: ${winner.id} proved itself but the session did not come up " +
                                 "(${e.message}) - falling back to the Smart ladder.",
                         )
-                        cleanupNativeOnly()
+                        cleanupNativeOnly("smartplus-confirm-failed")
                         Diagnostics.resetChecks()
                         false
                     }
@@ -1380,14 +1636,26 @@ class AetherVpnService : VpnService() {
                 DiagnosticsLog.i(TAG, "Connected using ${candidate.label}")
                 return candidate.profile
             } catch (e: CancellationException) {
+                // 1.6.0: the one exit that used to leave no trace at all. Field log
+                // 2026-10-15 ended exactly like this - engine and Xray closed 75 s
+                // in, inside a 180 s wait, with no verdict line.
+                ChainTrace.warn(
+                    "ladder-cancelled",
+                    "candidate=${index + 1}/${plan.size} label=${candidate.label} " +
+                        "(cancelled from outside this attempt - see the cleanup-native reason that follows)",
+                )
                 throw e
             } catch (e: Exception) {
                 lastError = e
+                ChainTrace.warn(
+                    "ladder-fail",
+                    "candidate=${index + 1}/${plan.size} label=${candidate.label} error=${e.message}",
+                )
                 DiagnosticsLog.w(
                     TAG,
                     "${candidate.label} failed (${e.message}) — moving to the next strategy.",
                 )
-                cleanupNativeOnly()
+                cleanupNativeOnly("ladder-next-candidate (${candidate.label})")
                 Diagnostics.resetChecks()
             }
         }
@@ -1414,16 +1682,41 @@ class AetherVpnService : VpnService() {
         // is about to disappear.
         // Leaving lockdown (if any): the blackhole TUN is torn down here.
         lockdownTunActive = false
-        cleanupNativeOnly()
+        cleanupNativeOnly("attempt-prestart")
         if (!PortProbe.awaitClosed(SOCKS_HOST, SOCKS_PORT, PORT_RELEASE_WAIT_MS)) {
             DiagnosticsLog.w(
                 TAG,
                 "Local port $SOCKS_PORT is still busy after ${PORT_RELEASE_WAIT_MS / 1000}s — starting anyway.",
             )
         }
+        // 1.6.0 Config -> Aether: when the engine is told to dial through a local
+        // carrier, prove that the carrier answers a SOCKS5 greeting NOW and name the
+        // mapping in the log. A carrier that died between its readiness check and
+        // the engine launch used to burn the whole scan budget silently.
+        val upstream = upstreamOf(profile)
+        if (upstream.isNotBlank()) {
+            val upstreamHost = upstream.substringAfter("://").substringBeforeLast(':')
+            val upstreamPort = upstream.substringAfterLast(':').toIntOrNull()
+            val greets = upstreamPort != null && withContext(Dispatchers.IO) {
+                studio.cluvex.aether.core.NetProbe.checkSocksHandshake(upstreamHost, upstreamPort, 2_000)
+            }
+            ChainTrace.stage(
+                "engine-upstream",
+                "engine $SOCKS_HOST:$SOCKS_PORT dials through $upstream socks-greeting=${if (greets) "ok" else "FAILED"}",
+            )
+            if (!greets) {
+                DiagnosticsLog.e(TAG, "The custom config's listener ($upstream) stopped answering SOCKS5 before the engine was launched.")
+                throw IllegalStateException(getString(R.string.cc_err_unreachable))
+            }
+        }
         DiagnosticsLog.i(TAG, "Launching engine (libaether.so)…")
         val launchedAt = SystemClock.elapsedRealtime()
-        engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile) }
+        ChainTrace.stage(
+            "engine-start",
+            "protocol=${profile.protocol} scan=${profile.scanMode} h2=${profile.masqueHttp2} budget=${timeoutMs}ms" +
+                (if (upstream.isNotBlank()) " upstream=$upstream" else ""),
+        )
+        engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile, studio.cluvex.aether.custom.CustomChainPolicy.runtimeEnvironment(profile, customSelection?.mode)) }
 
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_connecting))
@@ -1434,25 +1727,33 @@ class AetherVpnService : VpnService() {
             "Waiting for SOCKS5 on $SOCKS_HOST:$SOCKS_PORT… (scan=${profile.scanMode}, timeout=${timeoutMs / 1000}s)",
         )
         val opened = PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, timeoutMs) { engine?.isAlive() == true }
+        val waited = SystemClock.elapsedRealtime() - launchedAt
         if (!opened) {
             val engineDied = engine?.isAlive() != true
             if (engineDied) {
-                DiagnosticsLog.e(TAG, "Engine exited before it opened the SOCKS5 port.")
+                ChainTrace.warn("engine-fail", "category=died after=${waited}ms budget=${timeoutMs}ms")
+                DiagnosticsLog.e(TAG, "Engine exited before it opened the SOCKS5 port (after ${waited / 1000}s of a ${timeoutMs / 1000}s budget).")
                 throw IllegalStateException(getString(R.string.err_engine_died))
             }
+            ChainTrace.warn("engine-fail", "category=timeout after=${waited}ms budget=${timeoutMs}ms (engine alive; stopped by the caller)")
             DiagnosticsLog.e(TAG, "Engine still scanning after ${timeoutMs / 1000}s — SOCKS5 port never opened.")
             throw IllegalStateException(getString(R.string.err_engine_timeout))
         }
+        ChainTrace.stage("engine-socks-open", "after=${waited}ms")
         DiagnosticsLog.i(TAG, "SOCKS5 port is up.")
 
         if (stageOnly) {
+            if (!profile.verifyConnection && profile.backend.torMode !in listOf(TorMode.ONLY, TorMode.REVERSE)) {
+                DiagnosticsLog.i(TAG, "Optional stage verification skipped; listener and process remain required.")
+                return
+            }
             // CHAINED STAGE 1. An open port is not a working proxy: the engine's
             // inner tunnel can still be building, and handing a half-ready proxy
             // to Psiphon makes stage 2 fail for a reason that looks like
             // stage 2's fault. Gate on real outbound TCP, then stop -- no TUN,
             // no DNS/geo lookup, because the exit belongs to stage 2.
-            AetherController.setState(ConnectionState.Verifying)
-            updateNotification(getString(R.string.state_verifying))
+            AetherController.setState(if (profile.verifyConnection) ConnectionState.Verifying else ConnectionState.Connecting)
+            updateNotification(getString(if (profile.verifyConnection) R.string.state_verifying else R.string.state_connecting))
             // 1.3.0 FIELD FIX. When stage 1 IS Tor (`Tor`, `Tor -> Psiphon`, and
             // the reverse chain), the listener exists from the first millisecond
             // but cannot answer until the bootstrap has reached the network. The
@@ -1463,7 +1764,7 @@ class AetherVpnService : VpnService() {
             val torFronted = profile.backend.torMode.let {
                 it == TorMode.ONLY || it == TorMode.REVERSE
             }
-            val handshakeGrace = if (torFronted) {
+            val handshakeGrace = if (torFronted || upstreamOf(profile).isNotBlank()) {
                 (timeoutMs - (SystemClock.elapsedRealtime() - launchedAt)).coerceAtLeast(0L)
             } else {
                 0L
@@ -1503,9 +1804,40 @@ class AetherVpnService : VpnService() {
             return
         }
 
+        // 1.6.0 FIELD FIX (`Tor -> Aether`, `Tor -> Aether -> Config`, `Config -> ...`):
+        // the engine opens its listener at once but only answers SOCKS5 after the
+        // tunnel is validated, i.e. after Tor has bootstrapped (reverse chain) or
+        // after WARP was reached THROUGH the custom config. The self-test and the
+        // config probe used to start immediately and gave up after 4 s.
+        val reverseTor = profile.backend.torMode == TorMode.REVERSE
+        if (reverseTor || upstreamOf(profile).isNotBlank()) {
+            val grace = (timeoutMs - (SystemClock.elapsedRealtime() - launchedAt)).coerceAtLeast(0L)
+            val stallMs = if (profile.torBridges != TorBridges.OFF) TOR_STALL_BRIDGED_MS else TOR_STALL_DIRECT_MS
+            val ticker = if (reverseTor) launchBootstrapTicker(profile.torBridges != TorBridges.OFF) else null
+            val answered = try {
+                probeOrFalse {
+                    Diagnostics.awaitProxyReady(
+                        SOCKS_HOST,
+                        SOCKS_PORT,
+                        graceMs = grace,
+                        alive = { engine?.isAlive() == true },
+                        abort = { reverseTor && TorBootstrap.stalled(stallMs) },
+                    )
+                }
+            } finally {
+                ticker?.cancel()
+            }
+            if (!answered) {
+                DiagnosticsLog.e(TAG, "The engine's SOCKS5 port never started answering within its budget.")
+                throw IllegalStateException(getString(R.string.err_selftest))
+            }
+        }
+
         // 1.5.0: a `... -> Config` chain puts the custom config behind the
         // engine's listener; for every other session this is SOCKS_PORT itself.
         val exitPort = customExit(SOCKS_PORT)
+        sessionExitPort = exitPort
+        PingMonitor.setTunnelPort(exitPort)
 
         if (profile.proxyMode) {
             // Proxy mode: DON'T capture the whole device through a system TUN.
@@ -1552,13 +1884,7 @@ class AetherVpnService : VpnService() {
         // traffic (and before the IP + flag appeared). The state is now held at
         // Verifying, and Connected is reported ONLY after all four checks pass,
         // so Connected == genuinely ready to browse.
-        AetherController.setState(ConnectionState.Verifying)
-        updateNotification(getString(R.string.state_verifying))
-        DiagnosticsLog.i(
-            TAG,
-            if (profile.proxyMode) "Proxy started. Verifying end-to-end connectivity…"
-            else "TUN + hev tunnel started. Verifying end-to-end connectivity…",
-        )
+        DiagnosticsLog.i(TAG, "Local tunnel/proxy started; applying configured readiness policy.")
 
         // In proxy mode, test THROUGH the shared SOCKS5 listener — the exact
         // endpoint external apps connect to — so a dead bridge can no longer
@@ -1566,7 +1892,9 @@ class AetherVpnService : VpnService() {
         val diagPort =
             if (profile.proxyMode) ShareBridge.socksPort.value ?: exitPort
             else exitPort
-        val healthy = probeOrFalse { Diagnostics.run(port = diagPort) }
+        val healthy = probeOrFalse {
+            verifyFinal(profile, diagPort)
+        }
         if (!healthy) {
             DiagnosticsLog.e(TAG, "Self-test failed — refusing to report Connected.")
             throw IllegalStateException(getString(R.string.err_selftest))
@@ -1608,7 +1936,7 @@ class AetherVpnService : VpnService() {
                 // probeTunnelCycle() for why the bar is deliberately high.
                 if (engine?.isAlive() == true) {
                     val dataPathMoving = dataPathIsMoving()
-                    if (probeTunnelCycle()) {
+                    if (probeTunnelCycle(sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT)) {
                         probeFailures = 0
                     } else if (dataPathMoving) {
                         // Same rule as the chained watchdog: see the comment
@@ -1649,15 +1977,14 @@ class AetherVpnService : VpnService() {
             updateNotification(getString(R.string.state_reconnecting))
             delay(backoff)
 
-            engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile) }
+            engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile, studio.cluvex.aether.custom.CustomChainPolicy.runtimeEnvironment(profile, customSelection?.mode)) }
             if (PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, profile.connectTimeoutMs()) { engine?.isAlive() == true }) {
                 // Same gate as the initial connect: never claim Connected after
                 // a silent engine restart until traffic really flows again.
-                AetherController.setState(ConnectionState.Verifying)
-                updateNotification(getString(R.string.state_verifying))
-                if (runCatching { Diagnostics.run() }.getOrDefault(false)) {
+                if (probeOrFalse { verifyFinal(profile, sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT) }) {
                     attempt = 0
-                    AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$SOCKS_PORT"))
+                    ChainTrace.end("ok", "reconnected exit=$SOCKS_HOST:${sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT}")
+                    AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:${sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT}"))
                     updateNotification(getString(R.string.state_connected))
                 } else {
                     DiagnosticsLog.w(TAG, "Self-test failed after engine restart — retrying.")
@@ -1681,6 +2008,48 @@ class AetherVpnService : VpnService() {
     // outside the VPN (applyAppFilter excludes this package) and never loops
     // back into its own tunnel.
     // ------------------------------------------------------------------------
+
+    /** Direct-outbound ranking; never compares TCP-connect-only fallback values. */
+    private suspend fun chooseBestCustom(current: CustomConfig, initial: Boolean = false,
+        excludeCurrent: Boolean = false): CustomConfig? {
+        val snapshot = CustomConfigStore.state.value
+        val candidates = snapshot.configs.filter {
+            studio.cluvex.aether.custom.ConfigCatalog.contains(snapshot.activeTab, it) &&
+                !it.isExpired() && (!it.mobileOnly || onMobileData()) &&
+                (!excludeCurrent || it.id != current.id)
+        }
+        val reports = studio.cluvex.aether.custom.ConfigPingStore.measureForSelection(this, candidates)
+        if (CustomConfigStore.state.value.activeTab != snapshot.activeTab) return null
+        val live = CustomConfigStore.state.value.configs
+        return studio.cluvex.aether.custom.AutoSelectPolicy.choose(
+            candidates.filter { it in live }, reports,
+            if (initial || excludeCurrent) null else current.id,
+        )
+    }
+
+    private suspend fun verifyFinal(profile: ConnectionProfile, port: Int, graceMs: Long? = null,
+        alive: () -> Boolean = { xray?.isAlive() == true }): Boolean {
+        val enabled = studio.cluvex.aether.model.VerificationPolicy.enabled(profile,
+            if (customSelection != null) CustomConfigStore.state.value.verifyConnection else null)
+        if (!enabled) {
+            DiagnosticsLog.i(TAG, "Optional connection verification skipped; exit-IP lookup and liveness remain active.")
+            return true
+        }
+        AetherController.setState(ConnectionState.Verifying)
+        updateNotification(getString(R.string.state_verifying))
+        return if (customSelection != null) customReady(port, alive)
+            else if (graceMs != null) Diagnostics.run(port = port, graceMs = graceMs)
+            else Diagnostics.run(port = port)
+    }
+
+    private suspend fun customReady(port: Int, alive: () -> Boolean): Boolean {
+        if (!CustomConfigStore.state.value.verifyConnection) return true
+        // A small HTTP GET through the actual outbound is sufficient for custom
+        // configs. Geo-IP services and UDP support are NOT readiness gates here.
+        // Each socket operation has a timeout; a peer drip-feeding bytes is also
+        // stopped by an absolute deadline inside the probe.
+        return studio.cluvex.aether.custom.CustomReadiness.check(port, alive)
+    }
 
     private suspend fun connectCustom(profile: ConnectionProfile, selection: CustomSelection) {
         val cfg = selection.config
@@ -1707,17 +2076,22 @@ class AetherVpnService : VpnService() {
             ChainPlacement.FIRST -> {
                 AetherController.setState(ConnectionState.Connecting)
                 updateNotification(getString(R.string.state_connecting))
-                cleanupNativeOnly()
+                cleanupNativeOnly("custom-first-prestart")
+                ChainTrace.stage("xray-launch", "placement=first config=${cfg.protocol.short}")
                 val port = startXray(runner, cfg, dialVia = null)
-                val reachable = probeOrFalse {
-                    Diagnostics.runProxyStage(SOCKS_HOST, port, alive = { runner.isAlive() })
-                }
+                val reachable = customReady(port) { runner.isAlive() }
                 if (!reachable) {
+                    ChainTrace.warn("xray-unreachable", "socks5=$SOCKS_HOST:$port")
                     DiagnosticsLog.e(TAG, "The custom config opens no outbound connection.")
                     throw IllegalStateException(getString(R.string.cc_err_unreachable))
                 }
+                ChainTrace.stage("xray-ready", "socks5=$SOCKS_HOST:$port (loopback only; the engine is its only client)")
                 DiagnosticsLog.i(TAG, "Custom config is up on $SOCKS_HOST:$port - the engine dials through it.")
-                val chained = profile.copy(upstreamProxy = "socks5://$SOCKS_HOST:$port")
+                val chained = studio.cluvex.aether.custom.CustomChainPolicy.engineProfile(
+                    profile.copy(upstreamProxy = "socks5://$SOCKS_HOST:$port"), mode)
+                if (chained.protocol != profile.protocol || chained.masqueHttp2 != profile.masqueHttp2) {
+                    DiagnosticsLog.i(TAG, "Custom upstream: using MASQUE over HTTP/2; direct UDP fingerprint/memory is not applicable.")
+                }
                 if (base == null || base == ChainBase.PSIPHON) {
                     connectPsiphonOnly(chained)
                 } else {
@@ -1742,12 +2116,10 @@ class AetherVpnService : VpnService() {
     ) {
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_connecting))
-        cleanupNativeOnly()
+        cleanupNativeOnly("custom-solo-prestart")
         lockdownTunActive = false
         val port = startXray(runner, cfg, dialVia = null)
-        val reachable = probeOrFalse {
-            Diagnostics.runProxyStage(SOCKS_HOST, port, alive = { runner.isAlive() })
-        }
+        val reachable = customReady(port) { runner.isAlive() }
         if (!reachable) {
             DiagnosticsLog.e(TAG, "The custom config opens no outbound connection.")
             throw IllegalStateException(getString(R.string.cc_err_unreachable))
@@ -1762,7 +2134,7 @@ class AetherVpnService : VpnService() {
     private suspend fun connectPsiphonOnly(profile: ConnectionProfile) {
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_connecting))
-        cleanupNativeOnly()
+        cleanupNativeOnly("psiphon-only-prestart")
         lockdownTunActive = false
         withContext(Dispatchers.IO) { PsiphonBootstrap.prepare(this@AetherVpnService) }
 
@@ -1799,7 +2171,7 @@ class AetherVpnService : VpnService() {
             transport.start()
         } catch (e: PsiphonRegionFallback) {
             DiagnosticsLog.w(TAG, e.message ?: "Psiphon could not serve the chosen exit - retrying automatically.")
-            cleanupNativeOnly()
+            cleanupNativeOnly("psiphon-only-region-fallback")
             connectPsiphonOnly(profile.copy(exitRegion = ""))
             return
         } catch (e: CancellationException) {
@@ -1837,9 +2209,7 @@ class AetherVpnService : VpnService() {
         if (selection.mode.placement != ChainPlacement.LAST) return enginePort
         val runner = xray ?: throw IllegalStateException(getString(R.string.cc_err_no_core))
         val port = startXray(runner, selection.config, dialVia = enginePort)
-        val reachable = probeOrFalse {
-            Diagnostics.runProxyStage(SOCKS_HOST, port, alive = { runner.isAlive() })
-        }
+        val reachable = customReady(port) { runner.isAlive() }
         if (!reachable) {
             DiagnosticsLog.e(TAG, "The custom config answers nothing through $SOCKS_HOST:$enginePort.")
             throw IllegalStateException(getString(R.string.cc_err_unreachable))
@@ -1874,7 +2244,15 @@ class AetherVpnService : VpnService() {
         // fresh handshake to the server, which is the whole of the `Tor -> Config`
         // slowness. A direct (first-hop or solo) config keeps Mux off: there the
         // per-flow cost is a local dial and Mux would only add head-of-line delay.
-        val mux = if (dialVia != null && slowChainBehindEngine()) XrayConfigBuilder.SLOW_CHAIN_MUX else 0
+        //
+        // 1.6.0 FIELD FIX (2026-10-30): Mux is OFF for every chain. Mux.cool is not
+        // implemented by most VLESS/WS servers (Cloudflare-Worker panels such as BPB,
+        // edgetunnel, many CDN fronts): the server drops the very first muxed stream,
+        // so `Tor/Psiphon -> Config`, `Aether -> Tor/Psiphon -> Config` and
+        // `Tor -> Aether -> Config` all answered nothing, while `Aether -> Config`
+        // (no Mux) worked. Verified against a live Worker: plain VLESS/WS returns 204,
+        // the same outbound with `mux.enabled` returns nothing.
+        val mux = 0
         val (port, config) = withContext(Dispatchers.IO) {
             val picked = XrayProcess.pickPort(avoid)
             val dns = if (dialVia == null) underlyingDns() else emptyList()
@@ -1890,6 +2268,13 @@ class AetherVpnService : VpnService() {
         val open = PortProbe.awaitOpen(SOCKS_HOST, port, XRAY_START_TIMEOUT_MS) { runner.isAlive() }
         if (!open) {
             DiagnosticsLog.e(TAG, "Xray did not open $SOCKS_HOST:$port (see the xray lines above).")
+            runner.stop()
+            throw IllegalStateException(getString(R.string.cc_err_core_failed))
+        }
+        val speaksSocks = withContext(Dispatchers.IO) {
+            studio.cluvex.aether.core.NetProbe.checkSocksHandshake(SOCKS_HOST, port, 2_000)
+        }
+        if (!speaksSocks) {
             runner.stop()
             throw IllegalStateException(getString(R.string.cc_err_core_failed))
         }
@@ -1948,17 +2333,13 @@ class AetherVpnService : VpnService() {
             if (profile.lanShare) ShareBridge.start(localOnly = false, upstreamPort = port)
         }
 
-        AetherController.setState(ConnectionState.Verifying)
-        updateNotification(getString(R.string.state_verifying))
         val diagPort = if (profile.proxyMode) ShareBridge.socksPort.value ?: port else port
-        val healthy = probeOrFalse {
-            if (graceMs == null) Diagnostics.run(port = diagPort)
-            else Diagnostics.run(port = diagPort, graceMs = graceMs)
-        }
+        val healthy = verifyFinal(profile, diagPort, graceMs, alive)
         check(healthy) { getString(R.string.err_selftest) }
 
         PingMonitor.setTunnelPort(port)
         PingMonitor.reset()
+        ChainTrace.end("ok", "exit=$SOCKS_HOST:$port")
         AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:$port"))
         updateNotification(getString(R.string.state_connected))
         DiagnosticsLog.i(TAG, "Custom-config tunnel ready on $SOCKS_HOST:$port.")
@@ -2386,7 +2767,12 @@ class AetherVpnService : VpnService() {
         return file
     }
 
-    private fun stopEverything() {
+    private fun stopEverything(reason: String = "user-stop") {
+        // 1.6.0: a disconnect used to leave NO line in the diagnostics log; a log
+        // that ended with "Engine output stream closed" could not say whether the
+        // user, the tile, a revoke or a crash stopped the session.
+        DiagnosticsLog.i(TAG, "Disconnect requested ($reason).")
+        ChainTrace.stage("stop-requested", "reason=$reason")
         AetherController.setState(ConnectionState.Disconnecting)
         updateNotification(getString(R.string.state_disconnecting))
         val job = runJob
@@ -2403,7 +2789,7 @@ class AetherVpnService : VpnService() {
         // left to run — up to a full minute.
         job?.cancel()
         stopJob = scope.launch(Dispatchers.IO) {
-            cleanupNativeOnly()
+            cleanupNativeOnly(reason)
             stopCustom()
             // STALE-CIRCLES FIX (part 2): clear the finished session's results
             // right at disconnect, so the panel never carries green circles
@@ -2595,6 +2981,7 @@ class AetherVpnService : VpnService() {
     /** Stops sharing, the forwarder and the engine but deliberately KEEPS [tun]. */
     private fun cleanupForwardingOnly() {
         activeForwardPort = 0
+        sessionExitPort = 0
         try {
             ShareBridge.stop()
         } catch (_: Throwable) {
@@ -2651,8 +3038,28 @@ class AetherVpnService : VpnService() {
         tun = runCatching { builder.establish() }.getOrNull()
     }
 
-    private fun cleanupNativeOnly() {
+    /**
+     * 1.6.0: every native teardown names its reason. The body is unchanged
+     * ([cleanupNativeOnlyImpl]); this records WHO is tearing down and WHAT is still
+     * alive at that moment, and invalidates the session epoch so a late exit-IP
+     * enrichment cannot land on the next session. No default reason on purpose: a
+     * new call site must say why it kills the natives.
+     */
+    private fun cleanupNativeOnly(reason: String) {
+        val newEpoch = sessionEpoch.incrementAndGet()
+        runCatching {
+            ChainTrace.stage(
+                "cleanup-native",
+                "reason=$reason engine=${engine?.isAlive() == true} xray=${xray?.isAlive() == true} " +
+                    "tun=${tun != null} transport=${externalTransport != null} epoch=$newEpoch",
+            )
+        }
+        cleanupNativeOnlyImpl()
+    }
+
+    private fun cleanupNativeOnlyImpl() {
         activeForwardPort = 0
+        sessionExitPort = 0
         // Stop sharing first: without the tunnel the bridge would leak direct.
         try {
             ShareBridge.stop()
@@ -2743,19 +3150,19 @@ class AetherVpnService : VpnService() {
      * inside the crash path.
      */
     fun killNativesFromCrashHandler() {
-        runCatching { cleanupNativeOnly() }
+        runCatching { cleanupNativeOnly("crash-handler") }
         runCatching { stopCustom() }
     }
 
     override fun onRevoke() {
-        stopEverything()
+        stopEverything("vpn-revoked")
         super.onRevoke()
     }
 
     override fun onDestroy() {
         if (live === this) live = null
         runJob?.cancel()
-        cleanupNativeOnly()
+        cleanupNativeOnly("service-destroyed")
         stopCustom()
         // 1.3.1: the service can also die WITHOUT going through stopEverything -
         // task removal, a system kill, the user revoking VPN consent. Every one of
@@ -3024,6 +3431,12 @@ class AetherVpnService : VpnService() {
          */
         private const val FIRST_PASS_MAX_MS = 75_000L
 
+        /**
+         * 1.6.0: rung 1 of [customUpstreamPlan] - TURBO's engine scan plus the
+         * identity/registration margin measured in the 2026-10-15 field log (1.6 s).
+         */
+        private const val UPSTREAM_QUICK_PASS_MAX_MS = 75_000L
+
         /** 1.5.0: how long Xray may take to open its local SOCKS5 port. */
         private const val XRAY_START_TIMEOUT_MS = 15_000L
 
@@ -3032,5 +3445,76 @@ class AetherVpnService : VpnService() {
 
         /** 1.5.0: consecutive dead checks (1 s apart) before a custom session is rebuilt. */
         private const val CUSTOM_DEAD_CONFIRMATIONS = 5
+    }
+}
+
+/**
+ * 1.6.0 CHAIN TRACE: one monotonic timeline per connect, written to the
+ * diagnostics log the user exports.
+ *
+ * The 2026-10-15 field log of `Config -> Aether` ends with "Engine output stream
+ * closed" 75.2 s after the spawn, inside a 180 s SOCKS wait and a 120 s engine
+ * scan budget, and no line says WHO stopped the engine and Xray within 176 ms of
+ * each other. Every stage, failure category and cleanupNativeOnly(reason) now
+ * lands here with its offset from the connect start, and the timeline is dumped
+ * as one block whenever a chain ends, so a failure reads top to bottom.
+ *
+ * File-private and lock-protected; safe to call from any thread, including the
+ * crash handler.
+ */
+private object ChainTrace {
+    private const val TAG = "chain"
+    private const val MAX_EVENTS = 160
+    private val lock = Any()
+    private var startedAt = 0L
+    private var epoch = 0L
+    private var label = "-"
+    private val events = ArrayDeque<String>()
+
+    fun begin(epoch: Long, label: String) {
+        synchronized(lock) {
+            this.epoch = epoch
+            this.label = label
+            startedAt = SystemClock.elapsedRealtime()
+            events.clear()
+        }
+        DiagnosticsLog.i(TAG, "begin epoch=$epoch chain=$label")
+    }
+
+    fun stage(name: String, detail: String = "") = record(name, detail, warn = false)
+
+    fun warn(name: String, detail: String = "") = record(name, detail, warn = true)
+
+    /**
+     * Closes the current phase and dumps everything recorded since the last dump
+     * as one block. Events keep accumulating afterwards (supervisor restarts, the
+     * final teardown) and the next end() dumps only those.
+     */
+    fun end(outcome: String, detail: String = "") {
+        record("end", "outcome=$outcome $detail".trim(), warn = outcome != "ok")
+        val dump = synchronized(lock) {
+            val text = events.joinToString("\n  ")
+            events.clear()
+            text
+        }
+        DiagnosticsLog.i(TAG, "timeline epoch=$epoch chain=$label\n  $dump")
+    }
+
+    fun elapsedMs(): Long = synchronized(lock) {
+        if (startedAt == 0L) 0L else SystemClock.elapsedRealtime() - startedAt
+    }
+
+    private fun record(name: String, detail: String, warn: Boolean) {
+        val line = "+%6.1fs %s%s".format(
+            java.util.Locale.ROOT,
+            elapsedMs() / 1000.0,
+            name,
+            if (detail.isBlank()) "" else " $detail",
+        )
+        synchronized(lock) {
+            if (events.size >= MAX_EVENTS) events.removeFirst()
+            events.addLast(line)
+        }
+        if (warn) DiagnosticsLog.w(TAG, line) else DiagnosticsLog.i(TAG, line)
     }
 }

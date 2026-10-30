@@ -161,8 +161,9 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
     let mut builder =
         SslConnector::builder(SslMethod::tls()).map_err(|e| AetherError::Tls(e.to_string()))?;
 
-    // The core's TLS fingerprint, with --tls-ciphers, --tls-groups and --disable-grease.
-    tls::Fingerprint::configured().apply(&mut builder, H2_ALPN)?;
+    // The core's TLS fingerprint, with what the TLS options change of it.
+    let fingerprint = tls::Fingerprint::configured();
+    fingerprint.apply(&mut builder, H2_ALPN)?;
 
     let cert = X509::from_pem(&cfg.cert_pem).map_err(|e| AetherError::Tls(e.to_string()))?;
     let key =
@@ -189,6 +190,19 @@ fn build_tls(cfg: &H2TunnelConfig) -> Result<boring::ssl::ConnectConfiguration> 
     // (see tls::install_verification), so the hostname check is skipped too.
     config.set_verify_hostname(false);
     config.set_use_server_name_indication(true);
+    fingerprint.prepare(&mut config, H2_ALPN)?;
+    // >>> AETHER-APP-PATCH custom-tcp-sni
+    // A remote V2Ray server may sniff TLS and REPLACE the SOCKS IP target
+    // with the visible SNI name. That changes a WARP gateway into the public
+    // hostname's address. Omit clear SNI only on the app's explicit custom
+    // TCP path; keep ECH semantics, mTLS and the existing SPKI verification.
+    // The MASQUE pin set already includes the edge's no-SNI certificate.
+    let custom_tcp = std::env::var("AETHER_CUSTOM_TCP_UPSTREAM").as_deref() == Ok("1")
+        && crate::upstream::configured().is_some();
+    if !send_custom_sni(custom_tcp, cfg.ech_config_list.is_some()) {
+        config.set_use_server_name_indication(false);
+    }
+    // <<< AETHER-APP-PATCH custom-tcp-sni
 
     Ok(config)
 }
@@ -811,3 +825,20 @@ mod tests {
         assert!(!rejected_ech("the SSL session has been shut down"));
     }
 }
+
+// >>> AETHER-APP-PATCH custom-tcp-sni-policy-tests
+fn send_custom_sni(custom_tcp: bool, has_ech: bool) -> bool {
+    !custom_tcp || has_ech
+}
+#[cfg(test)]
+mod custom_tcp_sni_tests {
+    use super::*;
+    #[test]
+    fn only_custom_tcp_without_ech_omits_sni() {
+        assert!(!send_custom_sni(true, false));
+        assert!(send_custom_sni(true, true));
+        assert!(send_custom_sni(false, false));
+        assert!(send_custom_sni(false, true));
+    }
+}
+// <<< AETHER-APP-PATCH custom-tcp-sni-policy-tests

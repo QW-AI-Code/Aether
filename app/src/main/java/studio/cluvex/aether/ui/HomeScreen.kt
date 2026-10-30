@@ -1,5 +1,9 @@
 package studio.cluvex.aether.ui
 
+import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.model.ConnectionPreset
+import studio.cluvex.aether.ui.components.PresetSelector
+import studio.cluvex.aether.ui.components.FitLineText
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +33,11 @@ import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
+import studio.cluvex.aether.ai.AiSession
+import studio.cluvex.aether.ui.ai.AiHostContext
+import studio.cluvex.aether.ui.ai.LocalAiHost
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -36,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
@@ -48,8 +58,10 @@ import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
+import studio.cluvex.aether.data.VisualPrefs
 import studio.cluvex.aether.ui.components.AmbientBackground
 import studio.cluvex.aether.ui.components.ButtonMode
+import studio.cluvex.aether.ui.components.LocalHomeAnimationsEnabled
 import studio.cluvex.aether.ui.components.ConnectButton
 import studio.cluvex.aether.ui.components.ConnectionCard
 import studio.cluvex.aether.ui.components.FitToHeight
@@ -71,30 +83,59 @@ fun HomeScreen(
     ipLoading: Boolean,
     onProfileChange: (ConnectionProfile) -> Unit,
     onToggleConnection: () -> Unit,
+    presets: List<ConnectionPreset> = emptyList(),
+    activePresetId: String? = null,
+    onSelectPreset: (String) -> Unit = {},
+    onSavePresetAs: (String) -> Unit = {},
+    onDeletePreset: (String) -> Unit = {},
+    onRenamePreset: (String, String) -> Unit = { _, _ -> },
+    onImportPresets: () -> Unit = {},
+    onExportPresets: () -> Unit = {},
+    presetBusy: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
-    // UI-SPEED, and the single biggest win in this release: settings used to be a
-    // ModalBottomSheet holding a ~900-line, ~50-control card, AND the same card
-    // was a child of the navigation drawer. Now settings is its own screen and
-    // the home screen is DISPOSED while it is open, so the connect button, the
-    // connection card and its animated edge stop composing and animating
-    // entirely while the user is in settings - instead of running behind a sheet
-    // and competing for the same frame budget.
-    var settingsRoute by remember { mutableStateOf<SettingsRoute?>(null) }
-
-    val openRoute = settingsRoute
-    if (openRoute != null) {
-        SettingsHost(
-            start = openRoute,
-            state = state,
-            profile = profile,
-            onProfileChange = onProfileChange,
-            onClose = { settingsRoute = null },
-            modifier = modifier,
-        )
-        return
+    var route by remember { mutableStateOf<SettingsRoute?>(null) }
+    val aiSettings by AiSession.settings.collectAsState()
+    val context = LocalContext.current
+    val homeAnimationsEnabled by VisualPrefs.homeAnimationsFlow(context).collectAsState()
+    CompositionLocalProvider(
+        LocalHomeAnimationsEnabled provides homeAnimationsEnabled,
+        LocalAiHost provides AiHostContext(profile, state, aiSettings.showHints,
+            openAiSettings = { route = SettingsRoute.AI }, openConnection = { route = SettingsRoute.CONNECTION },
+            openChat = { route = SettingsRoute.AI_CHAT }),
+    ) {
+    studio.cluvex.aether.ui.components.HomeSettingsHost(route == null, modifier.fillMaxSize(), home = {
+        HomeSurface(state, profile, connectedSince, ipInfo, ipLoading, onProfileChange, onToggleConnection,
+            presets, activePresetId, onSelectPreset, onSavePresetAs, onDeletePreset, onRenamePreset, onImportPresets, onExportPresets,
+            presetBusy, onOpenSettings = { route = it })
+    }, settings = {
+        route?.let { SettingsHost(it, state, profile, onProfileChange, { route = null }) }
+    })
     }
+}
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HomeSurface(
+    state: ConnectionState,
+    profile: ConnectionProfile,
+    connectedSince: Long?,
+    ipInfo: IpEndpoint?,
+    ipLoading: Boolean,
+    onProfileChange: (ConnectionProfile) -> Unit,
+    onToggleConnection: () -> Unit,
+    presets: List<ConnectionPreset> = emptyList(),
+    activePresetId: String? = null,
+    onSelectPreset: (String) -> Unit = {},
+    onSavePresetAs: (String) -> Unit = {},
+    onDeletePreset: (String) -> Unit = {},
+    onRenamePreset: (String, String) -> Unit = { _, _ -> },
+    onImportPresets: () -> Unit = {},
+    onExportPresets: () -> Unit = {},
+    presetBusy: Boolean = false,
+    onOpenSettings: (SettingsRoute) -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val mode = when {
         state.isConnected -> ButtonMode.CONNECTED
         state.isBusy -> ButtonMode.BUSY
@@ -146,7 +187,7 @@ fun HomeScreen(
                     Spacer(Modifier.height(22.dp))
 
                     val go: (SettingsRoute) -> Unit = { route ->
-                        settingsRoute = route
+                        onOpenSettings(route)
                         drawerScope.launch { drawerState.close() }
                     }
 
@@ -155,6 +196,7 @@ fun HomeScreen(
                     // feature nobody can find is a feature that does not exist.
                     SettingsGroup {
                         SettingsNavRow(
+                            aiTopic = AiTopic.AI_CHAT,
                             title = stringResource(R.string.ai_title),
                             summary = stringResource(R.string.ai_subtitle),
                             icon = Icons.Rounded.AutoAwesome,
@@ -162,6 +204,7 @@ fun HomeScreen(
                         )
                         RowDivider()
                         SettingsNavRow(
+                            aiTopic = AiTopic.AI_CHAT,
                             title = stringResource(R.string.ai_chat_open),
                             summary = stringResource(R.string.ai_chat_subtitle),
                             icon = Icons.Rounded.Chat,
@@ -173,6 +216,7 @@ fun HomeScreen(
 
                     SettingsGroup {
                         SettingsNavRow(
+                            aiTopic = AiTopic.SETTINGS,
                             title = stringResource(R.string.settings_title),
                             summary = stringResource(R.string.settings_subtitle),
                             icon = Icons.Rounded.Settings,
@@ -180,6 +224,7 @@ fun HomeScreen(
                         )
                         RowDivider()
                         SettingsNavRow(
+                            aiTopic = AiTopic.DIAGNOSTICS,
                             title = stringResource(R.string.diag_title),
                             summary = stringResource(R.string.diag_subtitle),
                             icon = Icons.Rounded.BugReport,
@@ -187,6 +232,7 @@ fun HomeScreen(
                         )
                         RowDivider()
                         SettingsNavRow(
+                            aiTopic = AiTopic.SHARE,
                             title = stringResource(R.string.share_title),
                             summary = stringResource(R.string.share_subtitle),
                             icon = Icons.Rounded.Wifi,
@@ -194,6 +240,7 @@ fun HomeScreen(
                         )
                         RowDivider()
                         SettingsNavRow(
+                            aiTopic = AiTopic.ABOUT,
                             title = stringResource(R.string.about_title),
                             summary = stringResource(R.string.about_subtitle),
                             icon = Icons.Rounded.Info,
@@ -205,20 +252,11 @@ fun HomeScreen(
         },
     ) {
         Box(modifier = modifier.fillMaxSize()) {
-            AmbientBackground(accent = accent, active = state.isConnected)
+            AmbientBackground(accent = accent, active = state.isConnected && studio.cluvex.aether.ui.components.LocalHomeVisible.current)
 
-            // NO SCROLLING ON THE HOME SCREEN, BY CONSTRUCTION.
-            //
-            // FitToHeight measures what this content naturally wants and, if the
-            // viewport is smaller, scales the whole subtree's density down by one
-            // measured factor - type, paddings, icons, radii and stroke widths
-            // together - until it fits exactly. Everything stays on screen on
-            // every device, at full rendering sharpness, and there is nothing
-            // left to scroll. See FitToHeight.
+            // Measure and place the uniform fit synchronously, before first draw.
+            // No delayed density search or connection-state-triggered size epoch.
             FitToHeight(
-                // r2: every connection-state change re-opens the fit, so a size
-                // forced down by a transient is restored as soon as it passes.
-                epochKey = state::class,
                 modifier = Modifier
                     .fillMaxSize()
                     // Insets are applied OUTSIDE the scaled subtree: system bars
@@ -232,18 +270,19 @@ fun HomeScreen(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Top,
                 ) {
-                    Text(
-                        text = stringResource(R.string.app_name),
+                    FitLineText(text = stringResource(R.string.app_name),
                         style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onBackground,
-                    )
-                    Text(
-                        text = stringResource(R.string.tagline),
+                        color = MaterialTheme.colorScheme.onBackground, modifier = Modifier.fillMaxWidth())
+                    FitLineText(text = stringResource(R.string.tagline),
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center,
-                    )
+                        color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.fillMaxWidth())
 
+                    run {
+                        Spacer(Modifier.height(6.dp))
+                        PresetSelector(presets, activePresetId, presets.isEmpty() || state.isConnected || state.isBusy || presetBusy || !studio.cluvex.aether.ui.components.LocalHomeVisible.current,
+                            onSelectPreset, onSavePresetAs, onDeletePreset,
+                            onImport = onImportPresets, onExport = onExportPresets, onRename = onRenamePreset)
+                    }
                     Spacer(Modifier.height(8.dp))
 
                     ConnectButton(
@@ -302,14 +341,14 @@ fun HomeScreen(
                     .padding(horizontal = 4.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { settingsRoute = SettingsRoute.AI_CHAT }) {
+                IconButton(onClick = { onOpenSettings(SettingsRoute.AI_CHAT) }) {
                     Icon(
                         imageVector = Icons.Rounded.AutoAwesome,
                         contentDescription = stringResource(R.string.ai_title),
                         tint = AetherViolet,
                     )
                 }
-                IconButton(onClick = { settingsRoute = SettingsRoute.QUICK }) {
+                IconButton(onClick = { onOpenSettings(SettingsRoute.QUICK) }) {
                     Icon(
                         imageVector = Icons.Rounded.Tune,
                         contentDescription = stringResource(R.string.advanced_open),
@@ -324,6 +363,7 @@ fun HomeScreen(
 @Composable
 private fun stateTitle(state: ConnectionState): String = when (state) {
     is ConnectionState.Idle -> stringResource(R.string.state_idle)
+    is ConnectionState.Selecting -> stringResource(R.string.state_selecting)
     is ConnectionState.Launching -> stringResource(R.string.state_launching)
     is ConnectionState.Connecting -> stringResource(R.string.state_connecting)
     is ConnectionState.Verifying -> stringResource(R.string.state_verifying)

@@ -2796,7 +2796,7 @@ assert!(
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn flush_tx_holds_a_burst_back_instead_of_shredding_it() {
-        let (outbound_tx, outbound_rx) = mpsc::channel::<Vec<u8>>(2);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(2);
         let mut stack = bare_stack();
 
         for _ in 0..10 {
@@ -2847,6 +2847,10 @@ assert!(
                     pending,
                     established: true,
                     half_closed: false,
+                    // >>> AETHER-APP-PATCH netstack-test-fixture-fields
+                    connect_deadline: std::time::Instant::now() + std::time::Duration::from_secs(12),
+                    orphaned_at: None, aborted: false, carrier: false,
+                    // <<< AETHER-APP-PATCH netstack-test-fixture-fields
                     last_progress: std::time::Instant::now(),
                     send_queue_high: 0,
                     accepted_total: 0,
@@ -2929,6 +2933,10 @@ assert!(
                 pending: Vec::new(),
                 established: true,
                 half_closed: false,
+                // >>> AETHER-APP-PATCH netstack-test-fixture-fields
+                connect_deadline: std::time::Instant::now() + std::time::Duration::from_secs(12),
+                orphaned_at: None, aborted: false, carrier: false,
+                // <<< AETHER-APP-PATCH netstack-test-fixture-fields
                 last_progress: std::time::Instant::now(),
                 send_queue_high: 0,
                 accepted_total: 0,

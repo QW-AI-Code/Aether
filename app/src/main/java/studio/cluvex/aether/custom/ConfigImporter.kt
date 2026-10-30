@@ -33,6 +33,14 @@ object ConfigImporter {
     @Volatile
     private var cachedTables: NpvtCodec.Tables? = null
 
+    private val gen2Lock = Any()
+    @Volatile private var cachedGen2: NpvtCodec.Tables? = null
+    fun gen2Tables(context: Context): NpvtCodec.Tables = cachedGen2 ?: synchronized(gen2Lock) {
+        cachedGen2 ?: context.assets.open("npvs/gen2-wb.bin").use {
+            NpvtCodec.Tables.parse(it.readBytes())
+        }.also { cachedGen2 = it }
+    }
+
     /** The NapsternetV white-box tables, read once from `assets/npvt/wb.bin`. */
     fun tables(context: Context): NpvtCodec.Tables =
         cachedTables ?: synchronized(this) {
@@ -53,7 +61,8 @@ object ConfigImporter {
         val t = ConfigParser.cleanInput(text)
         if (ConfigParser.looksLikeMtProto(t)) throw ConfigImportException(ConfigParser.MTPROTO_UNSUPPORTED)
         val body = if (t.startsWith("https://", ignoreCase = true) || t.startsWith("http://", ignoreCase = true)) {
-            if (t.lines().size > 1) t else download(t)
+            if (t.lines().size > 1) t else return@withContext ConfigParser.parseBytes(
+                download(t), source, { tables(context) }, { gen2Tables(context) }, password)
         } else {
             t
         }
@@ -72,7 +81,7 @@ object ConfigImporter {
                 val text = decodeQr(bytes) ?: throw ConfigImportException("no QR code found in the image")
                 return@withContext ConfigParser.parse(text, ConfigSource.QR, { tables(context) }, password)
             }
-            ConfigParser.parse(String(bytes, Charsets.UTF_8), ConfigSource.FILE, { tables(context) }, password)
+            ConfigParser.parseBytes(bytes, ConfigSource.FILE, { tables(context) }, { gen2Tables(context) }, password)
         }
 
     /** An image holding a QR code (a screenshot, a photo of a screen, a saved picture). */
@@ -88,12 +97,13 @@ object ConfigImporter {
     suspend fun reparse(context: Context, old: CustomConfig, newRaw: String): CustomConfig =
         withContext(Dispatchers.IO) {
             val parsed = ConfigParser.parse(newRaw, old.source, { tables(context) }).first()
-            parsed.copy(id = old.id, name = old.name, addedAt = old.addedAt)
+            parsed.copy(id = old.id, name = old.name, addedAt = old.addedAt,
+                groupId = old.groupId, subscriptionId = old.subscriptionId)
         }
 
     // ------------------------------------------------------------- helpers
 
-    private fun download(url: String): String {
+    private fun download(url: String): ByteArray {
         // The app is excluded from its own VPN, so a plain connection would fetch
         // the subscription on the bare network even while connected: the operator
         // would see (and could block) the subscription host. While a session runs
@@ -115,7 +125,7 @@ object ConfigImporter {
         try {
             val code = conn.responseCode
             if (code !in 200..299) throw ConfigImportException("the address answered HTTP $code")
-            return conn.inputStream.use { String(readLimited(it), Charsets.UTF_8) }
+            return conn.inputStream.use { readLimited(it) }
         } catch (e: ConfigImportException) {
             throw e
         } catch (e: Exception) {

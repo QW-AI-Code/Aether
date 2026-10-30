@@ -1,8 +1,11 @@
 package studio.cluvex.aether.ui.components
 
+import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.ui.ai.AiTopicIcon
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -96,6 +99,8 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier, startExpanded: Boolean = fal
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                AiTopicIcon(AiTopic.DIAGNOSTICS)
+                Spacer(Modifier.width(8.dp))
                 Icon(
                     imageVector = Icons.Rounded.ExpandMore,
                     contentDescription = null,

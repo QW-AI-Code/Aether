@@ -80,3 +80,20 @@ app/src/main/java/studio/cluvex/aether/transport/PsiphonHealth.kt
 #     became https.rs. A leftover apifront.rs is not compiled (lib.rs no longer
 #     declares it) but must not linger next to its replacement. ---
 native/aether/aether/src/apifront.rs
+
+# --- removed in the 1.6.0 release (present in 1.5.0): the first-run onboarding
+#     pager (replaced by the "What's new" dialog) and the core auto-update
+#     rollback/test scripts (automatic core update from GitHub was removed). ---
+app/src/main/java/studio/cluvex/aether/data/OnboardingStore.kt
+app/src/main/java/studio/cluvex/aether/ui/OnboardingScreen.kt
+scripts/core-rollback.sh
+scripts/test-core-sync.sh
+
+# --- 1.6.0 automatic cleanup of non-source leftovers from 1.5.0 -------------
+#     Removed with `git rm` by scripts/purge-stale-sources.sh on the first
+#     push/Actions run. Only these exact paths are accepted outside the source
+#     trees. Missing files are ignored, so this is safe to run any number of times.
+BUILD_VALIDATION.md
+PROJECT_STATUS.md
+_META/TODO/bhs.md
+native/aether/Docs/Aether.png

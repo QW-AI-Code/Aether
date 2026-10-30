@@ -156,6 +156,26 @@ fn random_scid() -> [u8; 16] {
     scid
 }
 
+/// A QUIC connection to `peer`, named `sni` in its ClientHello, ready for its first packet: on it
+/// what the fingerprint sets on each connection (see `tls::prepare_quic`), and the ECH key `ech`
+/// when there is one. A key that cannot be set fails the connection.
+fn connect(
+    sni: &str,
+    local: SocketAddr,
+    peer: SocketAddr,
+    config: &mut quiche::Config,
+    ech: Option<&[u8]>,
+) -> Result<quiche::Connection> {
+    let scid_bytes = random_scid();
+    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+    let mut conn = quiche::connect(Some(sni), &scid, local, peer, config)?;
+    tls::prepare_quic(&mut conn)?;
+    if let Some(ech) = ech {
+        tls::inject_ech(&mut conn, ech)?;
+    }
+    Ok(conn)
+}
+
 const QUIC_V2_VERSION: u32 = 0x6b33_43cf;
 const QUIC_V2_BAIT_WAIT: Duration = Duration::from_millis(600);
 const QUIC_V2_BAIT_LEN: usize = 1200;
@@ -326,13 +346,8 @@ pub async fn run(
 
     let mut current_ech = cfg.ech_config_list.clone();
 
-    let scid_bytes = random_scid();
-    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-
-    let mut conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
-
+    let mut conn = connect(&cfg.sni, local, peer, &mut config, current_ech.as_deref())?;
     if let Some(ref ech) = current_ech {
-        tls::inject_ech(&mut conn, ech)?;
         log::info!("ech config injected ({} bytes)", ech.len());
     }
 
@@ -536,12 +551,7 @@ pub async fn run(
                 ech_retried = true;
                 current_ech = Some(retry);
 
-                let scid_bytes = random_scid();
-                let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-                conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
-                if let Some(ref ech) = current_ech {
-                    tls::inject_ech(&mut conn, ech)?;
-                }
+                conn = connect(&cfg.sni, local, peer, &mut config, current_ech.as_deref())?;
 
                 h3_conn = None;
                 req_stream = None;
@@ -795,8 +805,34 @@ pub fn default_path() -> &'static str {
     "/"
 }
 
+/// The server name the MASQUE handshakes send without --masque-sni.
 pub fn default_sni() -> &'static str {
-    consts::CONNECT_SNI
+    consts::DEFAULT_MASQUE_SNI
+}
+
+/// The server name the MASQUE handshakes put in their ClientHello, over HTTP/3 and HTTP/2:
+/// that of --masque-sni (AETHER_MASQUE_SNI), see `masque_sni_of`. Only the TLS name changes;
+/// the HTTP host, the :authority of the CONNECT request, stays `default_authority`.
+pub fn masque_sni() -> Result<String> {
+    masque_sni_of(&std::env::var("AETHER_MASQUE_SNI").unwrap_or_default())
+}
+
+/// The server name `value`, given to --masque-sni, makes the MASQUE handshakes send: none
+/// given, `default_sni`; else that domain name, without a trailing dot, as SNI has it
+/// (RFC 6066). An address or anything else that is no domain name is refused, rather than
+/// have the handshakes send the default name in its place.
+pub fn masque_sni_of(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default_sni().to_string());
+    }
+    let name = value.strip_suffix('.').unwrap_or(value);
+    if name.ends_with('.') || name.parse::<IpAddr>().is_ok() || !crate::dns::valid_domain(name) {
+        return Err(AetherError::Tls(format!(
+            "--masque-sni: {value} is no domain name"
+        )));
+    }
+    Ok(name.to_string())
 }
 
 #[derive(Clone)]
@@ -832,14 +868,14 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
         expected_pins: consts::MASQUE_PINS,
     })?;
 
-    let scid_bytes = random_scid();
-    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-    let mut conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
-
     // A key that cannot be set fails the check: left aside, the name would go in the clear.
-    if let Some(ref ech) = p.ech_config_list {
-        tls::inject_ech(&mut conn, ech)?;
-    }
+    let mut conn = connect(
+        &p.sni,
+        local,
+        p.peer,
+        &mut config,
+        p.ech_config_list.as_deref(),
+    )?;
     let mut ech_retried = false;
 
     let h3_config = h3::Config::new()?;
@@ -994,10 +1030,7 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
                 );
                 tls::adopt_ech_retry(&retry);
                 ech_retried = true;
-                let scid_bytes = random_scid();
-                let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-                conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
-                tls::inject_ech(&mut conn, &retry)?;
+                conn = connect(&p.sni, local, p.peer, &mut config, Some(retry.as_slice()))?;
                 h3_conn = None;
                 req_stream = None;
                 flush_connected(&mut conn, &sock).await?;
@@ -1111,5 +1144,59 @@ mod v2_bait_tests {
         client.connect(server_addr).await.unwrap();
         send_version_bait(&client, server_addr, Duration::from_secs(2), 1).await;
         responder.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod masque_sni_tests {
+    use super::*;
+
+    #[test]
+    fn the_masque_sni_is_a_domain_name_or_the_default() {
+        for (given, sent) in [
+            // None given: www.cloudflare.com.
+            ("", "www.cloudflare.com"),
+            ("  ", "www.cloudflare.com"),
+            // The name the WARP client sends.
+            (consts::CONNECT_SNI, consts::CONNECT_SNI),
+            (" front.example.test ", "front.example.test"),
+            // SNI has no trailing dot (RFC 6066).
+            ("front.example.test.", "front.example.test"),
+            ("localhost", "localhost"),
+        ] {
+            assert_eq!(
+                masque_sni_of(given).ok().as_deref(),
+                Some(sent),
+                "{given:?}"
+            );
+        }
+        for refused in [
+            "1.1.1.1",
+            "1.1.1.1.",
+            "2606:4700:4700::1111",
+            "[2606:4700:4700::1111]",
+            "www..cloudflare.com",
+            "www.cloudflare.com..",
+            ".",
+            "www cloudflare com",
+            "www.cloudflare.com:443",
+            "https://www.cloudflare.com",
+        ] {
+            let error = masque_sni_of(refused).expect_err(refused);
+            assert_eq!(
+                error.to_string(),
+                format!("tls: --masque-sni: {refused} is no domain name")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_sni_is_that_of_its_variable() {
+        let _options = tls::hold_options().await;
+        assert_eq!(masque_sni().ok().as_deref(), Some("www.cloudflare.com"));
+        std::env::set_var("AETHER_MASQUE_SNI", consts::CONNECT_SNI);
+        assert_eq!(masque_sni().ok().as_deref(), Some(consts::CONNECT_SNI));
+        std::env::set_var("AETHER_MASQUE_SNI", "1.1.1.1");
+        assert!(masque_sni().is_err());
     }
 }

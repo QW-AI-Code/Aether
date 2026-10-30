@@ -1,0 +1,63 @@
+--- a/infra/conf/transport_internet.go
++++ b/infra/conf/transport_internet.go
+@@ -406,6 +406,7 @@
+ 	CipherSuites                         string           `json:"cipherSuites"`
+ 	Fingerprint                          string           `json:"fingerprint"`
+ 	RejectUnknownSNI                     bool             `json:"rejectUnknownSni"`
++	PinnedPeerCertSha256                 string `json:"pinnedPeerCertSha256"`
+ 	PinnedPeerCertificateChainSha256     *[]string        `json:"pinnedPeerCertificateChainSha256"`
+ 	PinnedPeerCertificatePublicKeySha256 *[]string        `json:"pinnedPeerCertificatePublicKeySha256"`
+ 	CurvePreferences                     *StringList      `json:"curvePreferences"`
+@@ -458,6 +459,22 @@
+ 	}
+ 	config.RejectUnknownSni = c.RejectUnknownSNI
+ 
++	// Aether 1.6.0: exact leaf SHA-256 pin. A tagged 33-byte value uses the
++	// existing protobuf field without changing the wire schema. The private
++	// verifier below interprets it BEFORE any name/chain early return.
++	if c.PinnedPeerCertSha256 != "" {
++		if c.PinnedPeerCertificateChainSha256 != nil || c.PinnedPeerCertificatePublicKeySha256 != nil {
++			return nil, errors.New("leaf and legacy certificate pins cannot be combined")
++		}
++		for _, token := range strings.Split(c.PinnedPeerCertSha256, ",") {
++			hash, err := hex.DecodeString(strings.ReplaceAll(strings.TrimSpace(token), ":", ""))
++			if err != nil || len(hash) != 32 { return nil, errors.New("invalid leaf SHA-256 pin") }
++			config.PinnedPeerCertificateChainSha256 = append(config.PinnedPeerCertificateChainSha256, append([]byte{0xA6}, hash...))
++		}
++		// A pin is an explicit trust anchor; the callback enforces it even for
++		// self-signed certificates. Never allow a mere name match to bypass it.
++		config.AllowInsecure = true
++	}
+ 	if c.PinnedPeerCertificateChainSha256 != nil {
+ 		config.PinnedPeerCertificateChainSha256 = [][]byte{}
+ 		for _, v := range *c.PinnedPeerCertificateChainSha256 {
+--- a/transport/internet/tls/config.go
++++ b/transport/internet/tls/config.go
+@@ -5,6 +5,7 @@
+ 	"context"
+ 	"crypto/hmac"
+ 	"crypto/rand"
++	"crypto/sha256"
+ 	"crypto/tls"
+ 	"crypto/x509"
+ 	"encoding/base64"
+@@ -282,6 +283,19 @@
+ }
+ 
+ func (r *RandCarrier) verifyPeerCert(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
++	leafPins := false
++	for _, pin := range r.PinnedPeerCertificateChainSha256 {
++		if len(pin) == 33 && pin[0] == 0xA6 { leafPins = true }
++	}
++	if leafPins {
++		if len(rawCerts) == 0 { return errors.New("missing peer leaf certificate") }
++		hash := sha256.Sum256(rawCerts[0])
++		for _, pin := range r.PinnedPeerCertificateChainSha256 {
++			if len(pin) == 33 && pin[0] == 0xA6 && hmac.Equal(hash[:], pin[1:]) { return nil }
++		}
++		return errors.New("peer leaf certificate SHA-256 pin mismatch")
++	}
++
+ 	if r.VerifyPeerCertInNames != nil {
+ 		if len(r.VerifyPeerCertInNames) > 0 {
+ 			certs := make([]*x509.Certificate, len(rawCerts))

@@ -59,7 +59,7 @@ class RealDelayTest {
     @Test
     fun `a request answered through the proxy is a delay`() {
         FakeSocks(reply = "HTTP/1.1 204 No Content\r\n\r\n").use { fake ->
-            val result = RealDelay.measurePort(fake.port, timeoutMs = 2_000, user = "u", pass = "p")
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 2_000, user = "u", pass = "p", useTls = false)
             assertTrue(result.toString(), result is RealDelay.Result.Ok)
             assertTrue((result as RealDelay.Result.Ok).ms >= 1)
         }
@@ -68,15 +68,53 @@ class RealDelayTest {
     @Test
     fun `a proxy that accepts and then closes is no reply, not a delay`() {
         FakeSocks(reply = null).use { fake ->
-            val result = RealDelay.measurePort(fake.port, timeoutMs = 2_000, user = "u", pass = "p")
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 2_000, user = "u", pass = "p", useTls = false)
             assertTrue(result.toString(), result is RealDelay.Result.NoReply)
+        }
+    }
+
+    @Test
+    fun `HTTP errors captive portals and redirects are not successful delay`() {
+        for (status in listOf("200 OK", "302 Found", "403 Forbidden", "500 Error", "526 Invalid SSL")) {
+            FakeSocks(reply = "HTTP/1.1 $status\r\n\r\n").use { fake ->
+                val result = RealDelay.measurePort(fake.port, timeoutMs = 1000, user = "u", pass = "p", useTls = false)
+                assertTrue("$status: $result", result is RealDelay.Result.NoReply)
+            }
+        }
+    }
+
+    @Test
+    fun `plaintext endpoint cannot impersonate HTTPS delay target`() {
+        FakeSocks(reply = "HTTP/1.1 204 No Content\r\n\r\n").use { fake ->
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 1000, user = "u", pass = "p")
+            assertTrue(result.toString(), result is RealDelay.Result.NoReply)
+        }
+    }
+
+    @Test
+    fun `remote CONNECT cost is included in measured delay`() {
+        FakeSocks(reply = "HTTP/1.1 204 No Content\r\n\r\n", connectDelayMs = 250).use { fake ->
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 2000, user = "u", pass = "p", useTls = false)
+            assertTrue(result.toString(), result is RealDelay.Result.Ok)
+            assertTrue("CONNECT time was excluded", (result as RealDelay.Result.Ok).ms >= 220)
+        }
+    }
+
+    @Test
+    fun `slow drip cannot extend the absolute request budget`() {
+        FakeSocks(reply = "HTTP/1.1 204 No Content\r\n\r\n", dripMs = 100).use { fake ->
+            val before = System.nanoTime()
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 350, user = "u", pass = "p", useTls = false)
+            val elapsed = (System.nanoTime() - before) / 1_000_000
+            assertTrue(result.toString(), result is RealDelay.Result.NoReply)
+            assertTrue("Slow-drip request exceeded its absolute deadline: $elapsed ms", elapsed < 1500)
         }
     }
 
     @Test
     fun `wrong probe credentials are refused`() {
         FakeSocks(reply = "HTTP/1.1 204 No Content\r\n\r\n").use { fake ->
-            val result = RealDelay.measurePort(fake.port, timeoutMs = 2_000, user = "x", pass = "y")
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 2_000, user = "x", pass = "y", useTls = false)
             assertTrue(result.toString(), result is RealDelay.Result.NoReply)
         }
     }
@@ -95,7 +133,7 @@ class RealDelayTest {
     fun `a proxy that never answers times out as no reply`() {
         FakeSocks(reply = null, hang = true).use { fake ->
             val started = System.nanoTime()
-            val result = RealDelay.measurePort(fake.port, timeoutMs = 700, user = "u", pass = "p")
+            val result = RealDelay.measurePort(fake.port, timeoutMs = 700, user = "u", pass = "p", useTls = false)
             assertTrue(result.toString(), result is RealDelay.Result.NoReply)
             // A timeout ends the measurement; it is not repeated for every target and round.
             assertTrue((System.nanoTime() - started) / 1_000_000 < 3_000)
@@ -217,8 +255,56 @@ class RealDelayTest {
         assertEquals(configs.size, results.size)
     }
 
+    @Test fun `second attempt recovers from transient first connection failure`() {
+        ReusableSocks(failFirst=true).use { fake ->
+            val r=RealDelay.measurePort(fake.port,2000,"u","p",false)
+            assertTrue(r.toString(),r is RealDelay.Result.Ok)
+            assertEquals(2,fake.connections.get())
+        }
+    }
+    @Test fun `second request reuses authenticated channel and excludes cold remote setup`() {
+        ReusableSocks(coldMs=200).use { fake ->
+            val r=RealDelay.measurePort(fake.port,2000,"u","p",false)
+            assertTrue(r.toString(),r is RealDelay.Result.Ok)
+            assertEquals(1,fake.connections.get());assertEquals(2,fake.requests.get())
+            assertTrue("Warm sample unexpectedly includes cold setup",(r as RealDelay.Result.Ok).ms < 150)
+        }
+    }
+    private class ReusableSocks(val failFirst:Boolean=false,val coldMs:Long=0):AutoCloseable {
+        val connections=java.util.concurrent.atomic.AtomicInteger()
+        val requests=java.util.concurrent.atomic.AtomicInteger()
+        val server=ServerSocket(0,50,InetAddress.getByName("127.0.0.1"))
+        val port get()=server.localPort
+        val worker=thread(isDaemon=true) {
+            while(!server.isClosed) {
+                val sock=runCatching{server.accept()}.getOrNull()?:break
+                val index=connections.incrementAndGet()
+                thread(isDaemon=true) { runCatching { sock.use { s ->
+                    if(failFirst && index==1)return@use
+                    val i=s.getInputStream();val o=s.getOutputStream()
+                    i.readNBytes(3);o.write(byteArrayOf(5,2));o.flush()
+                    i.read();val ul=i.read();i.readNBytes(ul);val pl=i.read();i.readNBytes(pl)
+                    o.write(byteArrayOf(1,0));o.flush()
+                    val head=i.readNBytes(5);i.readNBytes(head[4].toInt()+2)
+                    Thread.sleep(coldMs);o.write(byteArrayOf(5,0,0,1,0,0,0,0,0,0));o.flush()
+                    while(true) {
+                        var tail=""
+                        while(!tail.endsWith("\r\n\r\n")) {
+                            val b=i.read();if(b<0)return@use
+                            tail=(tail+b.toChar()).takeLast(4)
+                        }
+                        requests.incrementAndGet();Thread.sleep(15)
+                        o.write("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n".toByteArray());o.flush()
+                    }
+                } } }
+            }
+        }
+        override fun close(){server.close();worker.join(500)}
+    }
+
     /** A loopback SOCKS5 server that answers CONNECT and then replies (or not) to the request. */
-    private class FakeSocks(private val reply: String?, private val hang: Boolean = false) : AutoCloseable {
+    private class FakeSocks(private val reply: String?, private val hang: Boolean = false,
+        private val connectDelayMs: Long = 0, private val dripMs: Long = 0) : AutoCloseable {
         private val server = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
         val port: Int get() = server.localPort
         private val worker = thread(isDaemon = true) {
@@ -239,11 +325,15 @@ class RealDelayTest {
                 o.write(byteArrayOf(1, 0))
                 val head = i.readNBytes(5)
                 i.readNBytes(head[4].toInt() + 2)
+                if (connectDelayMs > 0) Thread.sleep(connectDelayMs)
                 o.write(byteArrayOf(5, 0, 0, 1, 0, 0, 0, 0, 0, 0))
                 val buf = ByteArray(1024)
                 i.read(buf)
                 if (hang) Thread.sleep(5_000)
-                if (reply != null) o.write(reply.toByteArray())
+                if (reply != null) {
+                    if (dripMs == 0L) o.write(reply.toByteArray())
+                    else reply.toByteArray().forEach { byte -> o.write(byte.toInt()); o.flush(); Thread.sleep(dripMs) }
+                }
                 o.flush()
             }
         }

@@ -136,16 +136,21 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
     stats::spawn_reporter();
 
     install_netstack_panic_guard();
-    // A cipher string or a group list BoringSSL does not take, or an address the calls to the
-    // WARP API cannot use, stops the core here, with its option named.
+    // A cipher string or a group list BoringSSL does not take, a --masque-sni that is no domain
+    // name, an --api-address, --api-sni or --api-host the calls to the WARP API cannot use, or an
+    // --upstream aether cannot dial through, stops the core here, with its option named.
     tls::check_tls_options()?;
-    account::check_enroll_address()?;
-    // The key of the WARP API calls of an earlier run of the library is not this run's.
+    quic::masque_sni()?;
+    account::check_api_settings()?;
+    upstream::check_setting()?;
+    // The key of the WARP API calls of an earlier run of the library is not this run's, and
+    // neither is the name of the API that answered them.
     account::forget_api_ech();
+    account::forget_answered_api_host();
 
     let base_config = std::env::var("AETHER_CONFIG").unwrap_or_else(|_| DEFAULT_CONFIG.to_string());
 
-    // A registration serves no proxy, so it needs none of the listeners checked below.
+    // A registration serves no proxy, so it needs none of the listeners bound below.
     if let Some(wanted) = register_request()? {
         return register_identities(wanted, &base_config).await;
     }
@@ -155,18 +160,23 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| "127.0.0.1:1819".parse().unwrap());
 
-    drop(socks::bind_listener("socks5", listen).await?);
-    drop(bind_http_proxy().await?);
+    // What ends the core on its own, with its error, while its tunnels come and go: a listener the
+    // user dials breaking, or Tor or Psiphon inside the tunnel ending.
+    let (core_end, core_ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+    let listeners = Listeners::bind(listen, core_end.clone()).await?;
 
+    // Tor or Psiphon alone serves the socks5 listener the core holds, from its start on.
     if tor::mode() == tor::Mode::Only {
         // >>> AETHER-APP-PATCH tor-only-psiphon-chain
         spawn_psiphon_over_tor_only(listen, &base_config);
         // <<< AETHER-APP-PATCH tor-only-psiphon-chain
-        return tor::run_only(listen, tor::state_dir(&base_config)).await;
+        let state = tor::state_dir(&base_config);
+        return tor::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if psiphon::mode() == psiphon::Mode::Only {
-        return psiphon::run_only(listen, psiphon::state_dir(&base_config)).await;
+        let state = psiphon::state_dir(&base_config);
+        return psiphon::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if tor::mode() == tor::Mode::Reverse && psiphon::mode() == psiphon::Mode::Reverse {
@@ -196,11 +206,13 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         // >>> AETHER-APP-PATCH tor-only-psiphon-chain
         spawn_psiphon_over_tor_only(listen, &base_config);
         // <<< AETHER-APP-PATCH tor-only-psiphon-chain
-        return tor::run_only(listen, tor::state_dir(&base_config)).await;
+        let state = tor::state_dir(&base_config);
+        return tor::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if psiphon::mode() == psiphon::Mode::Only {
-        return psiphon::run_only(listen, psiphon::state_dir(&base_config)).await;
+        let state = psiphon::state_dir(&base_config);
+        return psiphon::run_only(listeners.into_socks(), listen, state).await;
     }
 
     if protocol != Protocol::WarpInWarp && !pinned_wiw.is_empty() {
@@ -217,28 +229,34 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
         );
     }
 
+    // Tor or Psiphon inside the tunnel serves the listener the user dials. Its end leaves nothing
+    // behind that port, so the core ends with it, saying why, rather than run on without it. And
+    // as the core ends, Tor and Psiphon end with it, inside the tunnel or carrying it, letting go
+    // of their listeners, also where the process goes on after it, as through the C API.
+    let mut tor_and_psiphon = TaskGuard::new();
+    // Inside the tunnel, Tor or Psiphon dials the core's own listener: where it is bound, a port 0
+    // asked for being the port the system picked.
+    let held = crate::socks::dialable(listeners.socks.local_addr().unwrap_or(listen));
     match tor::mode() {
         tor::Mode::Chain => {
-            let through = listen;
+            let through = held;
             let state = tor::state_dir(&base_config);
-            tokio::spawn(async move {
-                if let Err(e) = tor::run_chain(through, state).await {
-                    log::error!("[-] tor: {e}");
-                }
-            });
+            let chain = tokio::spawn(tor::run_chain(through, state));
+            watch_chain("tor", chain, core_end.clone(), &mut tor_and_psiphon);
         }
         tor::Mode::Reverse => {
-            if matches!(protocol, Protocol::WireGuard | Protocol::WarpInWarp) {
+            if needs_udp_to_warp(protocol, gool_classic()) {
                 return Err(AetherError::Other(format!(
                     "tor carries tcp only and warp's wireguard endpoints answer on udp alone, so \
-                     {} can never be reached through tor; use --masque, which this mode runs over \
-                     http/2, or put tor inside the tunnel instead with --tor",
+                     {} can never be reached through tor; use --masque or --gool, which this mode \
+                     runs over http/2, or put tor inside the tunnel instead with --tor",
                     protocol.label()
                 )));
             }
 
-            let socks = tor::start_reverse(tor::state_dir(&base_config)).await?;
-            std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+            let (socks, carrier) = tor::start_reverse(tor::state_dir(&base_config)).await?;
+            tor_and_psiphon.push(carrier);
+            std::env::set_var("AETHER_UPSTREAM", carrier_upstream("tor", socks)?);
             std::env::set_var("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through tor on the http/2 carrier");
         }
@@ -247,105 +265,201 @@ pub async fn run_with(args: Vec<String>) -> Result<()> {
 
     match psiphon::mode() {
         psiphon::Mode::Chain => {
-            let through = listen;
+            let through = held;
             let state = psiphon::state_dir(&base_config);
-            tokio::spawn(async move {
-                if let Err(e) = psiphon::run_chain(through, state).await {
-                    log::error!("[-] psiphon: {e}");
-                }
-            });
+            let chain = tokio::spawn(psiphon::run_chain(through, state));
+            watch_chain("psiphon", chain, core_end.clone(), &mut tor_and_psiphon);
         }
         psiphon::Mode::Reverse => {
-            if matches!(protocol, Protocol::WireGuard | Protocol::WarpInWarp) {
+            if needs_udp_to_warp(protocol, gool_classic()) {
                 return Err(AetherError::Other(format!(
                     "psiphon carries tcp only and warp's wireguard endpoints answer on udp alone, \
-                     so {} can never be reached through psiphon; use --masque, which this mode \
-                     runs over http/2, or put psiphon inside the tunnel instead with --psiphon",
+                     so {} can never be reached through psiphon; use --masque or --gool, which this \
+                     mode runs over http/2, or put psiphon inside the tunnel instead with --psiphon",
                     protocol.label()
                 )));
             }
 
-            let socks = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
-            std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+            let (socks, carrier) = psiphon::start_reverse(psiphon::state_dir(&base_config)).await?;
+            tor_and_psiphon.push(carrier);
+            std::env::set_var("AETHER_UPSTREAM", carrier_upstream("psiphon", socks)?);
             std::env::set_var("AETHER_MASQUE_HTTP2", "1");
             log::info!("[+] the tunnel is dialled through psiphon on the http/2 carrier");
         }
         psiphon::Mode::Only | psiphon::Mode::Off => {}
     }
+    drop(core_end);
 
-    match protocol {
-        Protocol::Masque => {
-            select_masque_transport().await;
-            let config_path = masque_config_path(&base_config);
-            let identity = load_or_provision_masque(&config_path).await?;
-            log::info!(
-                "[+] identity ready: device={} ipv4={} ipv6={}",
-                identity.device_id,
-                identity.ipv4,
-                identity.ipv6
-            );
-            // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
-            let _ech = tls::EchSession::start(resolve_ech().await?);
-            let lastconn_path = lastconn_path(&config_path);
-            run_masque(identity, listen, lastconn_path, None).await
-        }
-        Protocol::WireGuard => {
-            let config_path = warp_config_path(&base_config);
-            let identity = load_or_provision_warp(&config_path).await?;
-            log::info!(
-                "[+] identity ready: device={} ipv4={} ipv6={}",
-                identity.device_id,
-                identity.ipv4,
-                identity.ipv6
-            );
+    let session = async {
+        match protocol {
+            Protocol::Masque => {
+                select_masque_transport().await;
+                let config_path = masque_config_path(&base_config);
+                let identity = load_or_provision_masque(&config_path).await?;
+                log::info!(
+                    "[+] identity ready: device={} ipv4={} ipv6={}",
+                    identity.device_id,
+                    identity.ipv4,
+                    identity.ipv6
+                );
+                // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
+                let _ech = tls::EchSession::start(resolve_ech().await?);
+                let lastconn_path = lastconn_path(&config_path);
+                run_masque(identity, listeners, lastconn_path, None).await
+            }
+            Protocol::WireGuard => {
+                let config_path = warp_config_path(&base_config);
+                let identity = load_or_provision_warp(&config_path).await?;
+                log::info!(
+                    "[+] identity ready: device={} ipv4={} ipv6={}",
+                    identity.device_id,
+                    identity.ipv4,
+                    identity.ipv6
+                );
 
-            let lastconn_path = lastconn_path(&config_path);
-            run_wireguard(identity, listen, lastconn_path).await
+                let lastconn_path = lastconn_path(&config_path);
+                run_wireguard(identity, listeners, lastconn_path).await
+            }
+            Protocol::WarpInWarp if !gool_classic() => {
+                select_masque_transport().await;
+                let config_path = masque_config_path(&base_config);
+                let identity = load_or_provision_masque(&config_path).await?;
+                let inner_path = gool_identity_path(&config_path);
+                log::info!(
+                    "[+] gool: masque device={} carries the wireguard identity in {inner_path}",
+                    identity.device_id
+                );
+                let _ech = tls::EchSession::start(resolve_ech().await?);
+                let lastconn_path = lastconn_path(&config_path);
+                run_masque(identity, listeners, lastconn_path, Some(inner_path)).await
+            }
+            Protocol::WarpInWarp => {
+                let primary_path = warp_config_path(&base_config);
+                let secondary_path = derive_sibling_path(&primary_path, "secondary");
+                let primary = load_or_provision_warp(&primary_path).await?;
+                let secondary = load_or_provision_warp(&secondary_path).await?;
+                log::info!(
+                    "[+] outer device={} ipv4={} | inner device={} ipv4={}",
+                    primary.device_id,
+                    primary.ipv4,
+                    secondary.device_id,
+                    secondary.ipv4
+                );
+                run_gool(primary, secondary, listeners).await
+            }
+            Protocol::MasqueInMasque => {
+                select_masque_transport().await;
+                let primary_path = masque_config_path(&base_config);
+                let secondary_path = derive_sibling_path(&primary_path, "secondary");
+                let primary = load_or_provision_masque(&primary_path).await?;
+                let secondary = load_or_provision_masque(&secondary_path).await?;
+                log::info!(
+                    "[+] outer device={} ipv4={} | inner device={} ipv4={}",
+                    primary.device_id,
+                    primary.ipv4,
+                    secondary.device_id,
+                    secondary.ipv4
+                );
+                // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
+                let _ech = tls::EchSession::start(resolve_ech().await?);
+                run_mim(primary, secondary, listeners).await
+            }
         }
-        Protocol::WarpInWarp if !gool_classic() => {
-            select_masque_transport().await;
-            let config_path = masque_config_path(&base_config);
-            let identity = load_or_provision_masque(&config_path).await?;
-            let inner_path = derive_sibling_path(&config_path, "gool");
-            log::info!(
-                "[+] gool: masque device={} carries the wireguard identity in {inner_path}",
-                identity.device_id
-            );
-            let _ech = tls::EchSession::start(resolve_ech().await?);
-            let lastconn_path = lastconn_path(&config_path);
-            run_masque(identity, listen, lastconn_path, Some(inner_path)).await
-        }
-        Protocol::WarpInWarp => {
-            let primary_path = warp_config_path(&base_config);
-            let secondary_path = derive_sibling_path(&primary_path, "secondary");
-            let primary = load_or_provision_warp(&primary_path).await?;
-            let secondary = load_or_provision_warp(&secondary_path).await?;
-            log::info!(
-                "[+] outer device={} ipv4={} | inner device={} ipv4={}",
-                primary.device_id,
-                primary.ipv4,
-                secondary.device_id,
-                secondary.ipv4
-            );
-            run_gool(primary, secondary, listen).await
-        }
-        Protocol::MasqueInMasque => {
-            select_masque_transport().await;
-            let primary_path = masque_config_path(&base_config);
-            let secondary_path = derive_sibling_path(&primary_path, "secondary");
-            let primary = load_or_provision_masque(&primary_path).await?;
-            let secondary = load_or_provision_masque(&secondary_path).await?;
-            log::info!(
-                "[+] outer device={} ipv4={} | inner device={} ipv4={}",
-                primary.device_id,
-                primary.ipv4,
-                secondary.device_id,
-                secondary.ipv4
-            );
-            // Every MASQUE handshake of the session offers it, on either carrier, until it ends.
-            let _ech = tls::EchSession::start(resolve_ech().await?);
-            run_mim(primary, secondary, listen).await
-        }
+    };
+    until_core_end(session, core_ended).await
+}
+
+/// Watches `chain`, the task of Tor or Psiphon (`name`) inside the tunnel, and reports its end on
+/// `core_end` however it ends: with its error, which is logged as "[-] tor: ..." or "[-] psiphon:
+/// ..." under the target "aether", as the apps that run the core read it; or by a panic, which
+/// tokio would otherwise keep to itself while the core ran on without that listener. `guard` ends
+/// this watch and then the chain as the core ends, and a chain ended so is not reported as one
+/// that ended by itself.
+fn watch_chain(
+    name: &'static str,
+    chain: tokio::task::JoinHandle<Result<()>>,
+    core_end: tokio::sync::mpsc::UnboundedSender<AetherError>,
+    guard: &mut TaskGuard,
+) {
+    let chain_task = chain.abort_handle();
+    let watch = tokio::spawn(async move {
+        let e = match chain.await {
+            Ok(Err(e)) => e,
+            Ok(Ok(())) => AetherError::Other(format!("{name} inside the tunnel stopped")),
+            // Ended with the core: nothing to report.
+            Err(failed) if failed.is_cancelled() => return,
+            Err(failed) => AetherError::Other(format!("{name} inside the tunnel failed: {failed}")),
+        };
+        log::error!(target: "aether", "[-] {name}: {e}");
+        let _ = core_end.send(e);
+    });
+    guard.push(watch.abort_handle());
+    guard.push(chain_task);
+}
+
+/// Runs `session` until it ends, or until something the core cannot go on without reports its end
+/// on `core_ended`, which ends the session with that error.
+async fn until_core_end(
+    session: impl std::future::Future<Output = Result<()>>,
+    mut core_ended: tokio::sync::mpsc::UnboundedReceiver<AetherError>,
+) -> Result<()> {
+    tokio::select! {
+        result = session => result,
+        Some(e) = core_ended.recv() => Err(e),
+    }
+}
+
+/// The listeners the user dials, the core's socks5 one and its http proxy when one is asked for,
+/// bound once as the core starts and held until it ends. A tunnel that ends and the one that comes
+/// up in its place serve them in turn, so their ports never come free while the core reconnects,
+/// where the user goes on dialling them and another program could take them; a client that comes
+/// meanwhile waits for the next tunnel.
+struct Listeners {
+    socks: tokio::net::TcpListener,
+    http: Option<tokio::net::TcpListener>,
+    /// Where a listener that breaks is reported, to end the core.
+    broken: tokio::sync::mpsc::UnboundedSender<AetherError>,
+}
+
+impl Listeners {
+    async fn bind(
+        listen: SocketAddr,
+        broken: tokio::sync::mpsc::UnboundedSender<AetherError>,
+    ) -> Result<Self> {
+        Ok(Self {
+            socks: socks::bind_listener("socks5", listen, "--bind").await?,
+            http: bind_http_proxy().await?,
+            broken,
+        })
+    }
+
+    /// The socks5 listener alone, for Tor or Psiphon alone to serve. The http proxy has no part in
+    /// those, and its port is let go at once.
+    fn into_socks(self) -> tokio::net::TcpListener {
+        self.socks
+    }
+
+    /// Serves both through `stack`, the tunnel's, for as long as that tunnel runs. The servers run
+    /// inside this future, so a tunnel that ends, or is dropped, leaves none behind on them. A
+    /// server stops only when its listener itself is broken (see `socks::accept_backoff`), which
+    /// no tunnel could serve again: that is reported on `broken`, to end the core with it, rather
+    /// than end one tunnel after another on it and blame their peers.
+    async fn serve(&self, stack: &netstack::StackHandle) -> std::convert::Infallible {
+        let http = async {
+            match &self.http {
+                Some(listener) => socks::serve_http(listener, stack.clone()).await,
+                None => std::future::pending().await,
+            }
+        };
+        let (what, stopped) = tokio::select! {
+            stopped = socks::serve(&self.socks, stack.clone()) => ("socks5 server", stopped),
+            stopped = http => ("http proxy", stopped),
+        };
+        let _ = self.broken.send(AetherError::Other(match stopped {
+            Err(e) => format!("the {what} stopped: {e}"),
+            Ok(()) => format!("the {what} stopped"),
+        }));
+        std::future::pending().await
     }
 }
 
@@ -523,7 +637,7 @@ fn wiw_endpoints_with_fallback(lookup: &dyn Fn(&str) -> Option<String>) -> Resul
 async fn run_gool(
     primary: account::Identity,
     secondary: account::Identity,
-    listen: SocketAddr,
+    listeners: Listeners,
 ) -> Result<()> {
     let pinned = wiw_endpoints_with_fallback(&env_value)?;
 
@@ -634,19 +748,20 @@ async fn run_gool(
         outer_peer = Some(peer);
         inner_peer = Some(inner_peer_now);
 
+        let started = Instant::now();
         match run_warp_in_warp(
             primary.clone(),
             secondary.clone(),
             peer,
             inner_peer_now,
-            listen,
+            &listeners,
         )
         .await
         {
             Ok(()) => log::warn!("[-] gool tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] gool tunnel ended: {e}; reconnecting"),
         }
-        consecutive_fails += 1;
+        consecutive_fails = count_tunnel_end(consecutive_fails, started.elapsed());
 
         tokio::time::sleep(wg_reconnect_delay()).await;
     }
@@ -881,6 +996,12 @@ fn masque_config_path(base: &str) -> String {
     }
 }
 
+/// Where gool keeps the wireguard identity it carries inside its masque tunnel: beside the masque identity at
+/// `masque_config`, named `<masque config>-gool.toml`. The tunnel and `--register gool` both find it here.
+fn gool_identity_path(masque_config: &str) -> String {
+    derive_sibling_path(masque_config, "gool")
+}
+
 fn derive_sibling_path(base: &str, suffix: &str) -> String {
     let dir_end = base
         .rfind(|c| c == '/' || c == '\\')
@@ -919,26 +1040,24 @@ async fn load_or_provision_warp(config_path: &str) -> Result<account::Identity> 
     log::info!("[+] no warp identity found; provisioning dedicated wireguard account");
     let identity = provision_account().await?;
     let identity = adopt_team_profile(identity).await;
+    enable_warp_on(&identity).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new warp identity to {config_path}");
     Ok(identity)
 }
 
-async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
-    let identity = load_or_enrol_masque(config_path).await?;
-    if identity.refused {
-        return Ok(identity);
-    }
-    match account::enable_warp(&identity.device_id, &identity.access_token).await {
-        Ok(()) => log::info!("[+] warp enabled for the masque device"),
-        Err(error) => log::warn!(
-            "[!] could not enable warp for the masque device, the edge may refuse it: {error}"
-        ),
-    }
-    Ok(identity)
+/// Enables WARP on a device just registered, as the WARP toggle of the app does. A new identity is
+/// saved only once this is done, and an identity file already there is never asked about again;
+/// a failure here fails the registration, and nothing is saved.
+async fn enable_warp_on(identity: &account::Identity) -> Result<()> {
+    account::enable_warp(&identity.device_id, &identity.access_token).await?;
+    log::info!("[+] warp enabled for device {}", identity.device_id);
+    Ok(())
 }
 
-async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
+/// The MASQUE identity saved at `config_path`, used as it is, or a new one registered now and given
+/// its MASQUE key, saved once WARP is enabled on it, see [`enable_warp_on`].
+async fn load_or_provision_masque(config_path: &str) -> Result<account::Identity> {
     if let Some(identity) = config::load(config_path)? {
         log::info!("[+] loaded existing masque identity from {config_path}");
         let refused = if identity.has_masque_credentials() {
@@ -988,19 +1107,30 @@ async fn load_or_enrol_masque(config_path: &str) -> Result<account::Identity> {
         ..identity
     };
     let identity = adopt_team_profile(identity).await;
+    enable_warp_on(&identity).await?;
     config::save(config_path, &identity)?;
     log::info!("[+] provisioned and saved new masque identity to {config_path}");
     Ok(identity)
 }
 
 /// The identities `--register` asks for: those of one protocol, both hops of a two-hop one, or
-/// all four.
+/// all five.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RegisterSet {
     wireguard: bool,
     wireguard_inner: bool,
     masque: bool,
     masque_inner: bool,
+    /// The wireguard identity gool carries inside its masque tunnel, see [`gool_identity_path`].
+    gool: bool,
+}
+
+/// How `--register` makes an identity it does not find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Provision {
+    Warp,
+    Masque,
+    Gool,
 }
 
 impl RegisterSet {
@@ -1010,6 +1140,7 @@ impl RegisterSet {
             wireguard_inner: false,
             masque: false,
             masque_inner: false,
+            gool: false,
         };
         match value.trim().to_lowercase().as_str() {
             "all" => Ok(RegisterSet {
@@ -1017,6 +1148,7 @@ impl RegisterSet {
                 wireguard_inner: true,
                 masque: true,
                 masque_inner: true,
+                gool: true,
             }),
             "masque" => Ok(RegisterSet {
                 masque: true,
@@ -1026,7 +1158,14 @@ impl RegisterSet {
                 wireguard: true,
                 ..none
             }),
-            "gool" | "wiw" | "warp-in-warp" => Ok(RegisterSet {
+            // What --gool runs: wireguard carried inside masque.
+            "gool" | "wg-over-masque" => Ok(RegisterSet {
+                masque: true,
+                gool: true,
+                ..none
+            }),
+            // What --gool-classic runs: wireguard inside wireguard.
+            "gool-classic" | "wiw" | "warp-in-warp" => Ok(RegisterSet {
                 wireguard: true,
                 wireguard_inner: true,
                 ..none
@@ -1037,7 +1176,7 @@ impl RegisterSet {
                 ..none
             }),
             other => Err(AetherError::Other(format!(
-                "--register takes masque, wg, gool, mim or all, not '{other}'"
+                "--register takes masque, wg, gool, gool-classic, mim or all, not '{other}'"
             ))),
         }
     }
@@ -1074,39 +1213,53 @@ async fn register_identities(wanted: RegisterSet, base_config: &str) -> Result<(
         )),
         _ => None,
     };
-    if let Some((name, socks)) = carrier {
-        std::env::set_var("AETHER_UPSTREAM", format!("socks5://{socks}"));
+    // The carrier ends as the registration does.
+    let mut carried = TaskGuard::new();
+    if let Some((name, (socks, carrier))) = carrier {
+        carried.push(carrier);
+        std::env::set_var("AETHER_UPSTREAM", carrier_upstream(name, socks)?);
         log::info!("[+] the identities are registered through {name}");
     }
 
     let wireguard = warp_config_path(base_config);
     let masque = masque_config_path(base_config);
     let identities = [
-        (wanted.wireguard, "wireguard", wireguard.clone(), false),
+        (
+            wanted.wireguard,
+            "wireguard",
+            wireguard.clone(),
+            Provision::Warp,
+        ),
         (
             wanted.wireguard_inner,
             "wireguard inner",
             derive_sibling_path(&wireguard, "secondary"),
-            false,
+            Provision::Warp,
         ),
-        (wanted.masque, "masque", masque.clone(), true),
+        (wanted.masque, "masque", masque.clone(), Provision::Masque),
         (
             wanted.masque_inner,
             "masque inner",
             derive_sibling_path(&masque, "secondary"),
-            true,
+            Provision::Masque,
+        ),
+        (
+            wanted.gool,
+            "gool",
+            gool_identity_path(&masque),
+            Provision::Gool,
         ),
     ];
 
     let mut ready = Vec::new();
-    for (asked, label, path, over_masque) in identities {
+    for (asked, label, path, provision) in identities {
         if !asked {
             continue;
         }
-        let identity = if over_masque {
-            load_or_provision_masque(&path).await?
-        } else {
-            load_or_provision_warp(&path).await?
+        let identity = match provision {
+            Provision::Warp => load_or_provision_warp(&path).await?,
+            Provision::Masque => load_or_provision_masque(&path).await?,
+            Provision::Gool => load_or_provision_gool(&path).await?,
         };
         log::info!(
             "[+] {label} identity ready: device={} ipv4={} ipv6={}",
@@ -1147,7 +1300,7 @@ async fn select_peer(identity: &account::Identity, protocol: Protocol) -> Result
             log::info!("[*] hunting for a working MASQUE gateway (deep connect-ip verification)");
             let mode = prober::ScanMode::parse(&mode_str);
             let probe = prober::MasqueProbe {
-                sni: consts::CONNECT_SNI.to_string(),
+                sni: quic::masque_sni()?,
                 authority: quic::default_authority().to_string(),
                 path: quic::default_path().to_string(),
                 cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
@@ -1298,13 +1451,14 @@ async fn hunt_masque_peer(
     identity: &account::Identity,
     mode_str: &str,
     ip: prober::IpScan,
+    avoid: &HashSet<IpAddr>,
 ) -> Result<SocketAddr> {
     log::info!(
         "[*] hunting for a working MASQUE gateway (deep connect-ip + data-plane verification)"
     );
     let mode = prober::ScanMode::parse(mode_str);
     let probe = prober::MasqueProbe {
-        sni: consts::CONNECT_SNI.to_string(),
+        sni: quic::masque_sni()?,
         authority: quic::default_authority().to_string(),
         path: quic::default_path().to_string(),
         cert_pem: std::sync::Arc::from(identity.cert_pem.clone()),
@@ -1316,7 +1470,7 @@ async fn hunt_masque_peer(
         local_ipv4: parse_local_v4(&identity.ipv4),
     };
 
-    let best = prober::hunt_best_gateway(&probe, mode).await?;
+    let best = prober::hunt_best_gateway_avoiding(&probe, mode, avoid).await?;
     log::info!(
         "[+] selected MASQUE gateway {}:{} (rtt {:?})",
         best.ip,
@@ -1418,9 +1572,18 @@ async fn quick_verify_masque_peer(
     peer: SocketAddr,
     ech: Option<Vec<u8>>,
 ) -> bool {
+    // The core checks the name as it starts; a job of the library given no domain name fails
+    // every check here.
+    let sni = match quic::masque_sni() {
+        Ok(sni) => sni,
+        Err(e) => {
+            log::warn!("[-] {e}");
+            return false;
+        }
+    };
     let vp = quic::VerifyParams {
         peer,
-        sni: consts::CONNECT_SNI.to_string(),
+        sni: sni.clone(),
         authority: quic::default_authority().to_string(),
         path: quic::default_path().to_string(),
         cert_pem: identity.cert_pem.clone(),
@@ -1434,7 +1597,7 @@ async fn quick_verify_masque_peer(
     if masque_h2::enabled() {
         let cfg = masque_h2::H2TunnelConfig {
             peer: masque_h2::h2_peer(peer),
-            sni: consts::CONNECT_SNI.to_string(),
+            sni,
             authority: quic::default_authority().to_string(),
             path: quic::default_path().to_string(),
             cert_pem: identity.cert_pem.clone(),
@@ -1471,7 +1634,7 @@ async fn want_quick_reconnect(cached: &lastconn::LastConnection) -> bool {
 
 async fn run_masque(
     identity: account::Identity,
-    listen: SocketAddr,
+    listeners: Listeners,
     lastconn_path: String,
     gool_inner: Option<String>,
 ) -> Result<()> {
@@ -1533,8 +1696,20 @@ async fn run_masque(
     };
 
     let mut last_good_peer: Option<SocketAddr> = None;
+    let mut strikes = GatewayStrikes::default();
 
     loop {
+        // A gateway named by hand stays, whatever happens to it: it was asked for on purpose.
+        if forced.is_none() {
+            if let Some(peer) = strikes.give_up(Instant::now(), MASQUE_GATEWAY_REST) {
+                log::warn!(
+                    "[-] gateway {peer} failed {MASQUE_GATEWAY_STRIKES} times in a row; leaving it out of the scans for {:?}",
+                    MASQUE_GATEWAY_REST
+                );
+                last_good_peer = None;
+            }
+        }
+
         let peer = if let Some(p) = quick_peer.take() {
             p
         } else {
@@ -1563,7 +1738,14 @@ async fn run_masque(
                         }
                         Err(_) => return Err(AetherError::Other(format!("bad peer address {p}"))),
                     },
-                    None => match hunt_masque_peer(&identity, &mode_str, ip).await {
+                    None => match hunt_masque_peer(
+                        &identity,
+                        &mode_str,
+                        ip,
+                        &strikes.left_out(Instant::now()),
+                    )
+                    .await
+                    {
                         Ok(peer) => peer,
                         Err(e) => {
                             log::warn!(
@@ -1590,17 +1772,93 @@ async fn run_masque(
         }
 
         last_good_peer = Some(peer);
+        strikes.using(peer);
 
+        let started = Instant::now();
         let ended = match &gool_inner {
-            Some(path) => run_gool_tunnel(&identity, peer, tls::session_ech(), listen, path).await,
-            None => run_masque_tunnel(&identity, peer, tls::session_ech(), listen).await,
+            Some(path) => {
+                run_gool_tunnel(&identity, peer, tls::session_ech(), &listeners, path).await
+            }
+            None => run_masque_tunnel(&identity, peer, tls::session_ech(), &listeners).await,
         };
+        strikes.ended(started.elapsed());
         match ended {
             Ok(()) => log::warn!("[-] MASQUE tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] MASQUE tunnel ended: {e}; reconnecting"),
         }
 
         tokio::time::sleep(masque_reconnect_delay()).await;
+    }
+}
+
+/// How long a tunnel has to stay up for its end not to count against the MASQUE gateways or
+/// WireGuard endpoints it went through: one that carried the traffic this long proves them good,
+/// so its end, a network change say, clears the ends counted before it. Only tunnels that end
+/// sooner, one after another, make a run leave a gateway or an endpoint: the MASQUE run (gool over
+/// masque too), the WireGuard run, the classic gool run and the masque-in-masque run alike.
+const TUNNEL_STAYED_UP: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The ends in a row of the tunnels through one gateway or endpoint, `in_a_row` before, after one
+/// more that `lasted` this long: one more, or none once that tunnel stayed up [`TUNNEL_STAYED_UP`].
+fn count_tunnel_end(in_a_row: u32, lasted: std::time::Duration) -> u32 {
+    if lasted >= TUNNEL_STAYED_UP {
+        0
+    } else {
+        in_a_row.saturating_add(1)
+    }
+}
+
+/// How many times in a row the tunnel through a MASQUE gateway may end, each time sooner than
+/// [`TUNNEL_STAYED_UP`], before the run leaves the gateway, as the WireGuard run leaves an endpoint.
+const MASQUE_GATEWAY_STRIKES: u32 = 2;
+
+/// How long a MASQUE gateway the run left stays out of its scans: as long as a WireGuard endpoint
+/// by default (`wg_endpoint_cooldown`).
+const MASQUE_GATEWAY_REST: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// The gateways that failed a MASQUE run: the one in use, how many times in a row its tunnel
+/// ended soon after it started, and those left out of the scans until a while has passed. The
+/// check before a reconnect only proves that a gateway answers, so a tunnel that ends every time,
+/// as it does on an exit the exit rule refuses, would otherwise hold the run on one gateway for
+/// good.
+#[derive(Debug, Default)]
+struct GatewayStrikes {
+    current: Option<SocketAddr>,
+    in_a_row: u32,
+    resting: HashMap<IpAddr, Instant>,
+}
+
+impl GatewayStrikes {
+    /// The tunnel goes through `peer` now; another gateway than the last starts with none.
+    fn using(&mut self, peer: SocketAddr) {
+        if self.current != Some(peer) {
+            self.current = Some(peer);
+            self.in_a_row = 0;
+        }
+    }
+
+    /// The tunnel through the gateway in use ended, for whatever reason, after it `lasted` this
+    /// long, see [`count_tunnel_end`].
+    fn ended(&mut self, lasted: std::time::Duration) {
+        self.in_a_row = count_tunnel_end(self.in_a_row, lasted);
+    }
+
+    /// The gateway in use, once its tunnel ended `MASQUE_GATEWAY_STRIKES` times in a row: its
+    /// address rests until `rest` after `now`, out of the scans, and the count starts over.
+    fn give_up(&mut self, now: Instant, rest: std::time::Duration) -> Option<SocketAddr> {
+        if self.in_a_row < MASQUE_GATEWAY_STRIKES {
+            return None;
+        }
+        self.in_a_row = 0;
+        let peer = self.current.take()?;
+        self.resting.insert(peer.ip(), now + rest);
+        Some(peer)
+    }
+
+    /// The addresses the scans leave out at `now`.
+    fn left_out(&mut self, now: Instant) -> HashSet<IpAddr> {
+        self.resting.retain(|_, until| *until > now);
+        self.resting.keys().copied().collect()
     }
 }
 
@@ -1623,6 +1881,7 @@ async fn establish_masque(
     startup: std::time::Duration,
     label: &str,
 ) -> Result<MasqueHop> {
+    let sni = quic::masque_sni()?;
     let (chans, internals) = quic::channels();
     let quic::Channels {
         outbound_tx,
@@ -1654,7 +1913,7 @@ async fn establish_masque(
     let tunnel_task = if h2 {
         let h2cfg = masque_h2::H2TunnelConfig {
             peer,
-            sni: consts::CONNECT_SNI.to_string(),
+            sni,
             authority: quic::default_authority().to_string(),
             path: quic::default_path().to_string(),
             cert_pem: identity.cert_pem.clone(),
@@ -1675,7 +1934,7 @@ async fn establish_masque(
     } else {
         let cfg = quic::TunnelConfig {
             peer,
-            sni: consts::CONNECT_SNI.to_string(),
+            sni,
             authority: quic::default_authority().to_string(),
             path: quic::default_path().to_string(),
             cert_pem: identity.cert_pem.clone(),
@@ -1738,7 +1997,7 @@ async fn run_masque_tunnel(
     identity: &account::Identity,
     peer: SocketAddr,
     ech: Option<Vec<u8>>,
-    listen: SocketAddr,
+    listeners: &Listeners,
 ) -> Result<()> {
     let h2 = masque_h2::enabled();
     let dial = if h2 { masque_h2::h2_peer(peer) } else { peer };
@@ -1759,29 +2018,11 @@ async fn run_masque_tunnel(
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&hop.stack, &policy, "masque").await?;
 
-    let socks_listener = socks::bind_listener("socks5", listen).await?;
-    let http_listener = bind_http_proxy().await?;
-
-    let mut tasks = TaskGuard::new();
-
-    let socks_stack = hop.stack.clone();
-    let socks_task = tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
-
-    let http_task = spawn_http_proxy(http_listener, &hop.stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-
     let tunnel_result = tokio::select! {
         result = &mut hop.exit => result,
         reason = exit_policy_guard(&hop.stack, &policy) => return Err(reason),
+        never = listeners.serve(&hop.stack) => match never {},
     };
-
-    if let Some(task) = &http_task {
-        task.abort();
-    }
-    socks_task.abort();
 
     match tunnel_result {
         Ok(Ok(())) => Ok(()),
@@ -2022,7 +2263,7 @@ async fn run_masque_in_masque(
     peer: SocketAddr,
     inner_peers: &[SocketAddr],
     ech: Option<Vec<u8>>,
-    listen: SocketAddr,
+    listeners: &Listeners,
 ) -> Result<()> {
     let h2 = masque_h2::enabled();
     let outer_mtu = masque_tunnel_mtu();
@@ -2141,34 +2382,19 @@ async fn run_masque_in_masque(
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&inner.stack, &policy, "masque-in-masque").await?;
 
-    let socks_listener = socks::bind_listener("socks5", listen).await?;
-    let http_listener = bind_http_proxy().await?;
-
-    let mut tasks = TaskGuard::new();
-    let http_task = spawn_http_proxy(http_listener, &inner.stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-
-    let socks_stack = inner.stack.clone();
-    let mut socks_task =
-        tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
-
     log::info!("[+] masque-in-masque ready: {peer} (outer) and {inner_peer} (inner)");
 
     #[derive(PartialEq)]
     enum Winner {
         Outer,
         Inner,
-        Socks,
         Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer.exit => (join_outcome("outer masque tunnel", result), Winner::Outer),
         result = &mut inner.exit => (join_outcome("inner masque tunnel", result), Winner::Inner),
-        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
+        never = listeners.serve(&inner.stack) => match never {},
         reason = exit_policy_guard(&inner.stack, &policy) => (Err(reason), Winner::Policy),
     };
 
@@ -2180,10 +2406,6 @@ async fn run_masque_in_masque(
         inner.exit.abort();
         let _ = (&mut inner.exit).await;
     }
-    if winner != Winner::Socks {
-        socks_task.abort();
-        let _ = (&mut socks_task).await;
-    }
 
     outcome
 }
@@ -2191,7 +2413,7 @@ async fn run_masque_in_masque(
 async fn run_mim(
     primary: account::Identity,
     secondary: account::Identity,
-    listen: SocketAddr,
+    listeners: Listeners,
 ) -> Result<()> {
     let pinned = mim_endpoints_from_env()?;
 
@@ -2245,7 +2467,7 @@ async fn run_mim(
                     }
                 };
 
-                match hunt_masque_peer(&primary, &mode_str, ip).await {
+                match hunt_masque_peer(&primary, &mode_str, ip, &HashSet::new()).await {
                     Ok(peer) => peer,
                     Err(e) => {
                         log::warn!("[-] no usable MASQUE gateway found: {e}; rescanning shortly");
@@ -2273,20 +2495,21 @@ async fn run_mim(
 
         outer_peer = Some(outer);
 
+        let started = Instant::now();
         match run_masque_in_masque(
             &primary,
             &secondary,
             outer,
             &candidates,
             tls::session_ech(),
-            listen,
+            &listeners,
         )
         .await
         {
             Ok(()) => log::warn!("[-] masque-in-masque tunnel closed; reconnecting"),
             Err(e) => log::warn!("[-] masque-in-masque tunnel ended: {e}; reconnecting"),
         }
-        consecutive_fails += 1;
+        consecutive_fails = count_tunnel_end(consecutive_fails, started.elapsed());
 
         tokio::time::sleep(masque_reconnect_delay()).await;
     }
@@ -2404,7 +2627,7 @@ async fn hunt_wg_peer(
 
 async fn run_wireguard(
     identity: account::Identity,
-    listen: SocketAddr,
+    listeners: Listeners,
     lastconn_path: String,
 ) -> Result<()> {
     let candidates = wg_profile_candidates();
@@ -2660,16 +2883,12 @@ async fn run_wireguard(
         }
         last_good = Some((peer, profile.clone(), profile_name));
 
-        match run_wireguard_tunnel(identity.clone(), peer, profile, listen).await {
-            Ok(()) => {
-                log::warn!("[-] WireGuard tunnel closed; reconnecting");
-                consecutive_fails_on_peer += 1;
-            }
-            Err(e) => {
-                log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting");
-                consecutive_fails_on_peer += 1;
-            }
+        let started = Instant::now();
+        match run_wireguard_tunnel(identity.clone(), peer, profile, &listeners).await {
+            Ok(()) => log::warn!("[-] WireGuard tunnel closed; reconnecting"),
+            Err(e) => log::warn!("[-] WireGuard tunnel ended: {e}; reconnecting"),
         }
+        consecutive_fails_on_peer = count_tunnel_end(consecutive_fails_on_peer, started.elapsed());
 
         tokio::time::sleep(wg_reconnect_delay()).await;
     }
@@ -2689,7 +2908,7 @@ async fn run_wireguard_tunnel(
     identity: account::Identity,
     peer: SocketAddr,
     aethernoize: aethernoize::AetherNoizeConfig,
-    listen: SocketAddr,
+    listeners: &Listeners,
 ) -> Result<()> {
     let private_key = identity.private_key_bytes()?;
     let peer_public = identity.peer_public_key_bytes()?;
@@ -2698,7 +2917,7 @@ async fn run_wireguard_tunnel(
         .parse()
         .map_err(|_| AetherError::Other("invalid ipv4".into()))?;
 
-    log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before exposing socks5...");
+    log::info!("[*] validating WireGuard tunnel with {peer} (handshake + data-plane) before serving socks5...");
     let (_, session) = wireguard::verify_endpoint_keep_session(
         peer,
         private_key,
@@ -2711,7 +2930,7 @@ async fn run_wireguard_tunnel(
     )
     .await
     .map_err(|e| AetherError::Other(format!("tunnel failed validation: {e}")))?;
-    log::info!("[+] wireguard tunnel validated (end-to-end data confirmed); exposing socks5");
+    log::info!("[+] wireguard tunnel validated (end-to-end data confirmed); serving socks5");
     // >>> AETHER-APP-PATCH scan-rtt-floor (1.2.8-r5)
     // The bet is settled; a later reconnect must be judged on its own numbers.
     wg_prober::clear_rtt_floor();
@@ -2735,34 +2954,14 @@ async fn run_wireguard_tunnel(
         outbound_tx,
     )?;
 
-    let mut tasks = TaskGuard::new();
-
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&stack, &policy, "wireguard").await?;
-
-    let socks_listener = socks::bind_listener("socks5", listen).await?;
-    let http_listener = bind_http_proxy().await?;
-
-    let socks_stack = stack.clone();
-    let socks_task = tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
-
-    let http_task = spawn_http_proxy(http_listener, &stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
 
     let tunnel_result = tokio::select! {
         result = tunnel.run(outbound_rx) => result,
         reason = exit_policy_guard(&stack, &policy) => return Err(reason),
+        never = listeners.serve(&stack) => match never {},
     };
-
-    if let Some(task) = &http_task {
-        task.abort();
-    }
-
-    socks_task.abort();
-    let _ = socks_task.await;
 
     drop(stack);
 
@@ -2773,6 +2972,21 @@ async fn run_wireguard_tunnel(
 }
 
 type TunnelExit = tokio::task::JoinHandle<Result<()>>;
+
+/// The upstream setting that has the tunnel dialled through `name`, Tor or Psiphon around it, at
+/// `socks`. Checked as the setting is read: one set aside as unusable would have the tunnel, and
+/// a registration, dial out around the carrier, straight out, so it ends aether instead.
+fn carrier_upstream(name: &str, socks: SocketAddr) -> Result<String> {
+    let setting = format!("socks5://{socks}");
+    upstream::Upstream::parse(&setting).map_err(|e| {
+        AetherError::Other(format!(
+            "{name} listens on {socks}, which the tunnel cannot be dialled through ({}); \
+             aether ends rather than dial around {name}",
+            e.detail()
+        ))
+    })?;
+    Ok(setting)
+}
 
 fn http_proxy_listen() -> Option<SocketAddr> {
     let raw = std::env::var("AETHER_HTTP_PROXY").ok()?;
@@ -2791,20 +3005,11 @@ fn http_proxy_listen() -> Option<SocketAddr> {
 
 async fn bind_http_proxy() -> Result<Option<tokio::net::TcpListener>> {
     match http_proxy_listen() {
-        Some(listen) => Ok(Some(socks::bind_listener("http proxy", listen).await?)),
+        Some(listen) => Ok(Some(
+            socks::bind_listener("http proxy", listen, "--http-proxy").await?,
+        )),
         None => Ok(None),
     }
-}
-
-fn spawn_http_proxy(
-    listener: Option<tokio::net::TcpListener>,
-    stack: &netstack::StackHandle,
-) -> Option<TunnelExit> {
-    let listener = listener?;
-    let stack = stack.clone();
-    Some(tokio::spawn(async move {
-        socks::serve_http(listener, stack).await
-    }))
 }
 
 async fn establish_wg(
@@ -2987,7 +3192,7 @@ async fn run_warp_in_warp(
     secondary: account::Identity,
     peer: SocketAddr,
     inner_peer: SocketAddr,
-    listen: SocketAddr,
+    listeners: &Listeners,
 ) -> Result<()> {
     if inner_peer.ip() == peer.ip() {
         return Err(AetherError::Other(format!(
@@ -3013,37 +3218,20 @@ async fn run_warp_in_warp(
 
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&inner_stack, &policy, "warp-in-warp").await?;
-    let policy_stack = inner_stack.clone();
-
-    let socks_listener = socks::bind_listener("socks5", listen).await?;
-    let http_listener = bind_http_proxy().await?;
-
-    let http_task = spawn_http_proxy(http_listener, &inner_stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-    let mut socks_task =
-        tokio::spawn(async move { socks::serve(socks_listener, inner_stack).await });
-    tasks.push(socks_task.abort_handle());
 
     #[derive(PartialEq)]
     enum Winner {
         Outer,
         Inner,
-        Socks,
         Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer_exit => (join_outcome("outer wireguard tunnel", result), Winner::Outer),
         result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
-        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
-        reason = exit_policy_guard(&policy_stack, &policy) => (Err(reason), Winner::Policy),
+        never = listeners.serve(&inner_stack) => match never {},
+        reason = exit_policy_guard(&inner_stack, &policy) => (Err(reason), Winner::Policy),
     };
-
-    if let Some(task) = &http_task {
-        task.abort();
-    }
 
     if winner != Winner::Outer {
         outer_exit.abort();
@@ -3053,14 +3241,22 @@ async fn run_warp_in_warp(
         inner_exit.abort();
         let _ = inner_exit.await;
     }
-    if winner != Winner::Socks {
-        socks_task.abort();
-        let _ = socks_task.await;
-    }
 
+    drop(inner_stack);
     drop(outer_stack);
 
     outcome
+}
+
+/// Whether a tunnel of `protocol` needs UDP to reach WARP, which Tor and Psiphon around the tunnel
+/// do not carry: WireGuard does, and so does the classic gool, WireGuard in WireGuard. Gool over
+/// masque dials MASQUE alone, which runs over HTTP/2.
+fn needs_udp_to_warp(protocol: Protocol, classic_gool: bool) -> bool {
+    match protocol {
+        Protocol::WireGuard => true,
+        Protocol::WarpInWarp => classic_gool,
+        Protocol::Masque | Protocol::MasqueInMasque => false,
+    }
 }
 
 fn gool_classic() -> bool {
@@ -3099,27 +3295,17 @@ async fn gool_inner_identity(
         return Ok(identity);
     }
 
-    let listener = socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap()).await?;
+    let listener = socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap(), "--bind").await?;
     let through = listener.local_addr()?;
     let stack = outer.clone();
     let socks_task = tokio::spawn(async move { socks::serve(listener, stack).await });
     let _socks_guard = TaskGuard(vec![socks_task.abort_handle()]);
 
     log::info!("[*] registering the gool wireguard identity through the masque tunnel");
-    let previous = std::env::var("AETHER_UPSTREAM").ok();
-    std::env::set_var("AETHER_UPSTREAM", format!("socks5h://{through}"));
-    let registered = account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await;
-    if let Ok(id) = &registered {
-        if let Err(e) = account::enable_warp(&id.device_id, &id.access_token).await {
-            log::warn!("[-] could not enable warp on the gool identity: {e}");
-        }
-    }
-    match previous {
-        Some(value) => std::env::set_var("AETHER_UPSTREAM", value),
-        None => std::env::remove_var("AETHER_UPSTREAM"),
-    }
-    let identity = registered?;
-    config::save(inner_path, &identity)?;
+    // Through the tunnel for this registration alone: AETHER_UPSTREAM, which the rest of the
+    // process dials out through, stays as it is.
+    let tunnel = upstream::Upstream::parse(&format!("socks5h://{through}"))?;
+    let identity = upstream::through(tunnel, provision_gool(inner_path)).await?;
     log::info!(
         "[+] gool wireguard identity registered from inside warp and saved to {inner_path}: device={} ipv4={}",
         identity.device_id,
@@ -3128,13 +3314,62 @@ async fn gool_inner_identity(
     Ok(identity)
 }
 
+/// `--register gool`: the wireguard identity gool carries inside its masque tunnel, saved at `path`,
+/// or a new one registered now, from where the other identities are registered. The tunnel
+/// registers one from inside warp only when there is none, see [`gool_inner_identity`].
+async fn load_or_provision_gool(path: &str) -> Result<account::Identity> {
+    if let Some(identity) = config::load(path)? {
+        log::info!("[+] loaded the gool wireguard identity from {path}");
+        return Ok(identity);
+    }
+    let identity = provision_gool(path).await?;
+    log::info!(
+        "[+] gool wireguard identity registered and saved to {path}: device={} ipv4={}",
+        identity.device_id,
+        identity.ipv4
+    );
+    Ok(identity)
+}
+
+/// Registers the wireguard identity gool carries inside its masque tunnel, enables WARP on it and
+/// saves it at `path` once both are done, see [`enable_warp_on`]. The tunnel tries again at each
+/// reconnect, so a device registered here whose enabling failed is kept for the next try of this
+/// run, which enables it rather than registering yet another, unless the API refused it.
+async fn provision_gool(path: &str) -> Result<account::Identity> {
+    let kept = GOOL_NOT_ENABLED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let registered = match kept {
+        Some(identity) => identity,
+        None => account::provision_wg(consts::DEFAULT_MODEL, consts::DEFAULT_LOCALE, None).await?,
+    };
+    if let Err(error) = enable_warp_on(&registered).await {
+        if worth_enabling_again(&error) {
+            *GOOL_NOT_ENABLED.lock().unwrap_or_else(|e| e.into_inner()) = Some(registered);
+        }
+        return Err(error);
+    }
+    config::save(path, &registered)?;
+    Ok(registered)
+}
+
+/// The gool device of this run that is registered but not enabled yet, see [`provision_gool`].
+static GOOL_NOT_ENABLED: std::sync::Mutex<Option<account::Identity>> = std::sync::Mutex::new(None);
+
+/// Whether a device whose WARP enabling ended in `error` is worth enabling again rather than
+/// registering anew: not when the API refused the device itself.
+fn worth_enabling_again(error: &AetherError) -> bool {
+    !matches!(error, AetherError::IdentityRefused(_))
+}
+
 const GOOL_INNER_ATTEMPTS: u32 = 2;
 
 async fn run_gool_tunnel(
     identity: &account::Identity,
     peer: SocketAddr,
     ech: Option<Vec<u8>>,
-    listen: SocketAddr,
+    listeners: &Listeners,
     inner_path: &str,
 ) -> Result<()> {
     let h2 = masque_h2::enabled();
@@ -3191,20 +3426,6 @@ async fn run_gool_tunnel(
 
     let policy = exitloc::Policy::from_env();
     exitloc::settle(&inner_stack, &policy, "gool").await?;
-    let policy_stack = inner_stack.clone();
-
-    let socks_listener = socks::bind_listener("socks5", listen).await?;
-    let http_listener = bind_http_proxy().await?;
-
-    let mut tasks = TaskGuard::new();
-    let http_task = spawn_http_proxy(http_listener, &inner_stack);
-    if let Some(task) = &http_task {
-        tasks.push(task.abort_handle());
-    }
-    let socks_stack = inner_stack.clone();
-    let mut socks_task =
-        tokio::spawn(async move { socks::serve(socks_listener, socks_stack).await });
-    tasks.push(socks_task.abort_handle());
 
     log::info!("[+] gool ready: masque {peer} carries wireguard {inner_peer}");
 
@@ -3212,15 +3433,14 @@ async fn run_gool_tunnel(
     enum Winner {
         Outer,
         Inner,
-        Socks,
         Policy,
     }
 
     let (outcome, winner) = tokio::select! {
         result = &mut outer.exit => (join_outcome("outer masque tunnel", result), Winner::Outer),
         result = &mut inner_exit => (join_outcome("inner wireguard tunnel", result), Winner::Inner),
-        result = &mut socks_task => (join_outcome("socks5 server", result), Winner::Socks),
-        reason = exit_policy_guard(&policy_stack, &policy) => (Err(reason), Winner::Policy),
+        never = listeners.serve(&inner_stack) => match never {},
+        reason = exit_policy_guard(&inner_stack, &policy) => (Err(reason), Winner::Policy),
     };
 
     if winner != Winner::Outer {
@@ -3230,10 +3450,6 @@ async fn run_gool_tunnel(
     if winner != Winner::Inner {
         inner_exit.abort();
         let _ = (&mut inner_exit).await;
-    }
-    if winner != Winner::Socks {
-        socks_task.abort();
-        let _ = (&mut socks_task).await;
     }
 
     outcome
@@ -3565,6 +3781,287 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn the_tunnel_is_dialled_through_a_carrier_it_can_be_dialled_through() {
+        let tor: SocketAddr = "127.0.0.1:9050".parse().unwrap();
+        assert_eq!(
+            carrier_upstream("tor", tor).unwrap(),
+            "socks5://127.0.0.1:9050"
+        );
+        let psiphon: SocketAddr = "[::1]:1080".parse().unwrap();
+        assert_eq!(
+            carrier_upstream("psiphon", psiphon).unwrap(),
+            "socks5://[::1]:1080"
+        );
+    }
+
+    #[test]
+    fn a_carrier_the_tunnel_cannot_be_dialled_through_ends_aether() {
+        // Port 0, which an upstream setting cannot name: set aside, it would have the tunnel go
+        // around the carrier.
+        let unbound: SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let error = carrier_upstream("tor", unbound).unwrap_err().to_string();
+        assert!(
+            error.contains("aether ends rather than dial around tor")
+                && !error.contains("(other: "),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_ends_when_tor_or_psiphon_inside_the_tunnel_ends() {
+        // Nothing reports an end: the session alone decides, also when no sender is left.
+        let (end, ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        drop(end);
+        assert!(until_core_end(async { Ok(()) }, ended).await.is_ok());
+        let (_end, ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let failed = until_core_end(async { Err(AetherError::Cancelled) }, ended).await;
+        assert!(matches!(failed, Err(AetherError::Cancelled)));
+
+        // One inside ends while the tunnel runs on: the session ends with its error.
+        let (end, ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let report = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            let _ = end.send(AetherError::Other(
+                "psiphon stopped before it was ready".into(),
+            ));
+        });
+        let session = std::future::pending::<Result<()>>();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            until_core_end(session, ended),
+        )
+        .await
+        .expect("the end of Tor or Psiphon inside ends the session");
+        match result {
+            Err(AetherError::Other(why)) => assert_eq!(why, "psiphon stopped before it was ready"),
+            other => panic!("expected the chain's error, got {other:?}"),
+        }
+        report.await.unwrap();
+    }
+
+    /// The error records logged while the tests run, as (target, message): the lines the apps
+    /// that run the core read.
+    static LOGGED_ERRORS: std::sync::Mutex<Vec<(String, String)>> =
+        std::sync::Mutex::new(Vec::new());
+
+    struct ErrorCapture;
+
+    impl log::Log for ErrorCapture {
+        fn enabled(&self, metadata: &log::Metadata) -> bool {
+            metadata.level() == log::Level::Error
+        }
+
+        fn log(&self, record: &log::Record) {
+            if self.enabled(record.metadata()) {
+                LOGGED_ERRORS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((record.target().to_string(), record.args().to_string()));
+            }
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// Keeps the error records from here on, in [`LOGGED_ERRORS`]; no other test sets a logger.
+    fn capture_errors() {
+        static CAPTURE: ErrorCapture = ErrorCapture;
+        static INSTALL: std::sync::Once = std::sync::Once::new();
+        INSTALL.call_once(|| {
+            log::set_logger(&CAPTURE).expect("no other logger is set in the tests");
+            log::set_max_level(log::LevelFilter::Error);
+        });
+    }
+
+    fn logged_errors() -> Vec<(String, String)> {
+        LOGGED_ERRORS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn the_end_of_tor_or_psiphon_inside_is_reported_however_it_ends() {
+        capture_errors();
+        let next = |name: &'static str, chain: tokio::task::JoinHandle<Result<()>>| async move {
+            let (end, mut ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+            let mut chains = TaskGuard::new();
+            watch_chain(name, chain, end, &mut chains);
+            let reported = tokio::time::timeout(std::time::Duration::from_secs(2), ended.recv())
+                .await
+                .expect("the end is reported")
+                .expect("with its reason");
+            drop(chains);
+            reported
+        };
+
+        let failed = tokio::spawn(async {
+            Err(AetherError::Other(
+                "the tor socks5 listener cannot use 127.0.0.1:1".into(),
+            ))
+        });
+        let reported = next("tor", failed).await;
+        assert!(
+            matches!(&reported, AetherError::Other(why) if why.starts_with("the tor socks5 listener")),
+            "{reported:?}"
+        );
+        // The line the apps read: an error, under the target "aether", "[-] tor: " and the words.
+        let line = format!("[-] tor: {reported}");
+        assert!(
+            logged_errors()
+                .iter()
+                .any(|(target, message)| target == "aether" && *message == line),
+            "{line} is not among {:?}",
+            logged_errors()
+        );
+
+        // One that returns without an error has ended all the same.
+        let returned = tokio::spawn(async { Ok(()) });
+        let reported = next("psiphon", returned).await;
+        assert!(
+            matches!(&reported, AetherError::Other(why) if why == "psiphon inside the tunnel stopped"),
+            "{reported:?}"
+        );
+
+        // A panic, which tokio keeps in the task's handle.
+        let panicked = tokio::spawn(async {
+            if std::hint::black_box(true) {
+                panic!("a bug in the chain");
+            }
+            Ok(())
+        });
+        let reported = next("tor", panicked).await;
+        assert!(
+            matches!(&reported, AetherError::Other(why) if why.starts_with("tor inside the tunnel failed")),
+            "{reported:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_ends_with_the_core_and_is_not_reported_as_ended_by_itself() {
+        capture_errors();
+        let (alive, gone) = tokio::sync::oneshot::channel::<()>();
+        let chain = tokio::spawn(async move {
+            let _alive = alive;
+            std::future::pending::<Result<()>>().await
+        });
+        let (end, mut ended) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let mut chains = TaskGuard::new();
+        watch_chain("ended-with-the-core", chain, end, &mut chains);
+
+        // The core ends.
+        drop(chains);
+        tokio::time::timeout(std::time::Duration::from_secs(2), gone)
+            .await
+            .expect("the chain is ended, letting go of what it held")
+            .expect_err("dropped, not finished");
+        let report = tokio::time::timeout(std::time::Duration::from_secs(2), ended.recv())
+            .await
+            .expect("the watch is ended as well");
+        assert!(report.is_none(), "{report:?}");
+        assert!(
+            !logged_errors()
+                .iter()
+                .any(|(_, message)| message.contains("ended-with-the-core")),
+            "{:?}",
+            logged_errors()
+        );
+    }
+
+    /// Whether the http proxy on `address` answers, here a request it cannot carry.
+    async fn http_answers(address: SocketAddr) -> bool {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let Ok(mut sock) = tokio::net::TcpStream::connect(address).await else {
+            return false;
+        };
+        if sock.write_all(b"NOT A REQUEST\r\n\r\n").await.is_err() {
+            return false;
+        }
+        let mut head = [0u8; 12];
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sock.read_exact(&mut head),
+        )
+        .await;
+        matches!(read, Ok(Ok(_))) && head.starts_with(b"HTTP/1.1 400")
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_listeners_answer_while_a_tunnel_serves_them_and_stay_held_between_tunnels() {
+        let (_to_stack, stack_in) = tokio::sync::mpsc::channel(8);
+        let (stack_out, _from_stack) = tokio::sync::mpsc::channel(8);
+        let stack = netstack::spawn(
+            "172.16.0.2",
+            "2606:4700:110:8a36::1",
+            1280,
+            stack_in,
+            stack_out,
+        )
+        .expect("a stack");
+        let (broken, mut breaks) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let listeners = Listeners {
+            socks: socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap(), "--bind")
+                .await
+                .unwrap(),
+            http: Some(
+                socks::bind_listener("http proxy", "127.0.0.1:0".parse().unwrap(), "--http-proxy")
+                    .await
+                    .unwrap(),
+            ),
+            broken,
+        };
+        let socks_at = listeners.socks.local_addr().unwrap();
+        let http_at = listeners.http.as_ref().unwrap().local_addr().unwrap();
+
+        for tunnel in 1..=2 {
+            // A tunnel serves them: both answer.
+            tokio::select! {
+                never = listeners.serve(&stack) => match never {},
+                () = async {
+                    assert!(
+                        socks::answers(socks_at, std::time::Duration::from_secs(2)).await,
+                        "tunnel {tunnel}: the socks5 server"
+                    );
+                    assert!(http_answers(http_at).await, "tunnel {tunnel}: the http proxy");
+                } => {}
+            }
+            // That tunnel has ended: both stay held, so no other program binds them, and the
+            // socks5 one says nothing until the next tunnel serves it.
+            assert!(std::net::TcpListener::bind(socks_at).is_err());
+            assert!(std::net::TcpListener::bind(http_at).is_err());
+            assert!(!socks::answers(socks_at, std::time::Duration::from_millis(300)).await);
+        }
+        // Neither listener broke, so nothing would end the core.
+        assert!(breaks.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn tor_or_psiphon_alone_keeps_the_socks5_listener_and_frees_the_http_proxy() {
+        let (broken, _breaks) = tokio::sync::mpsc::unbounded_channel::<AetherError>();
+        let listeners = Listeners {
+            socks: socks::bind_listener("socks5", "127.0.0.1:0".parse().unwrap(), "--bind")
+                .await
+                .unwrap(),
+            http: Some(
+                socks::bind_listener("http proxy", "127.0.0.1:0".parse().unwrap(), "--http-proxy")
+                    .await
+                    .unwrap(),
+            ),
+            broken,
+        };
+        let socks_at = listeners.socks.local_addr().unwrap();
+        let http_at = listeners.http.as_ref().unwrap().local_addr().unwrap();
+
+        let socks = listeners.into_socks();
+        assert_eq!(socks.local_addr().unwrap(), socks_at);
+        // Still held, as Tor or Psiphon alone serves it.
+        assert!(std::net::TcpListener::bind(socks_at).is_err());
+        // No alone mode serves the core's own http proxy: its port is free again at once.
+        assert!(std::net::TcpListener::bind(http_at).is_ok());
+    }
+
     fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let values: BTreeMap<String, String> = pairs
             .iter()
@@ -3574,27 +4071,156 @@ mod tests {
     }
 
     #[test]
-    fn register_names_the_identities_of_one_protocol_or_all_four() {
+    fn tor_and_psiphon_around_the_tunnel_refuse_only_what_needs_udp() {
+        assert!(needs_udp_to_warp(Protocol::WireGuard, false));
+        assert!(needs_udp_to_warp(Protocol::WarpInWarp, true));
+        // Gool over masque reaches WARP by MASQUE alone; its WireGuard rides inside that tunnel.
+        assert!(!needs_udp_to_warp(Protocol::WarpInWarp, false));
+        assert!(!needs_udp_to_warp(Protocol::Masque, true));
+        assert!(!needs_udp_to_warp(Protocol::MasqueInMasque, false));
+    }
+
+    #[test]
+    fn a_gool_device_is_enabled_again_unless_the_api_refused_it() {
+        assert!(worth_enabling_again(&AetherError::Api(
+            "enabling warp: timed out".into()
+        )));
+        assert!(!worth_enabling_again(&AetherError::IdentityRefused(
+            "enabling warp: 401".into()
+        )));
+    }
+
+    /// How long a tunnel lasted that ended soon after it started.
+    const SOON: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[test]
+    fn a_masque_gateway_is_left_once_its_tunnel_ended_twice_in_a_row() {
+        let gateway: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let now = Instant::now();
+        let rest = std::time::Duration::from_secs(300);
+        let mut strikes = GatewayStrikes::default();
+
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), None);
+        // The reconnect goes back to it, and it ends again.
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), Some(gateway));
+        // Out of the scans on any port until it has rested; the count starts over.
+        assert!(strikes.left_out(now).contains(&gateway.ip()));
+        assert_eq!(strikes.give_up(now, rest), None);
+        assert!(strikes.left_out(now + rest).is_empty());
+    }
+
+    #[test]
+    fn another_masque_gateway_starts_with_no_strikes() {
+        let first: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let second: SocketAddr = "162.159.198.2:443".parse().unwrap();
+        let now = Instant::now();
+        let rest = std::time::Duration::from_secs(300);
+        let mut strikes = GatewayStrikes::default();
+
+        strikes.using(first);
+        strikes.ended(SOON);
+        strikes.using(second);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), None);
+        assert!(strikes.left_out(now).is_empty());
+        // A tunnel that has not ended yet counts for nothing either.
+        strikes.using(second);
+        assert_eq!(strikes.give_up(now, rest), None);
+    }
+
+    #[test]
+    fn a_tunnel_that_stayed_up_clears_the_ends_before_it() {
+        let gateway: SocketAddr = "162.159.198.1:443".parse().unwrap();
+        let now = Instant::now();
+        let rest = std::time::Duration::from_secs(300);
+        let mut strikes = GatewayStrikes::default();
+
+        // Hours on the gateway, a network change, hours again, another one: it is not left.
+        strikes.using(gateway);
+        strikes.ended(TUNNEL_STAYED_UP * 36);
+        strikes.using(gateway);
+        strikes.ended(TUNNEL_STAYED_UP * 24);
+        assert_eq!(strikes.give_up(now, rest), None);
+        // One that ends soon, then one that stays up: still not.
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        strikes.using(gateway);
+        strikes.ended(TUNNEL_STAYED_UP);
+        assert_eq!(strikes.give_up(now, rest), None);
+        // Two that end soon, one after the other, are what leaves it.
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), None);
+        strikes.using(gateway);
+        strikes.ended(SOON);
+        assert_eq!(strikes.give_up(now, rest), Some(gateway));
+    }
+
+    #[test]
+    fn only_a_tunnel_that_ended_soon_counts_against_its_gateway_or_endpoint() {
+        // The WireGuard, classic gool and masque-in-masque runs count their ends with it too.
+        let almost = TUNNEL_STAYED_UP - std::time::Duration::from_secs(1);
+        assert_eq!(count_tunnel_end(0, std::time::Duration::ZERO), 1);
+        assert_eq!(count_tunnel_end(1, almost), 2);
+        assert_eq!(count_tunnel_end(1, TUNNEL_STAYED_UP), 0);
+        assert_eq!(count_tunnel_end(7, TUNNEL_STAYED_UP * 2), 0);
+        assert_eq!(count_tunnel_end(u32::MAX, SOON), u32::MAX);
+    }
+
+    #[test]
+    fn register_names_the_identities_of_one_protocol_or_all_five() {
         let all = RegisterSet::parse("all").expect("all");
-        assert!(all.wireguard && all.wireguard_inner && all.masque && all.masque_inner);
+        assert!(all.wireguard && all.wireguard_inner && all.masque && all.masque_inner && all.gool);
 
         let masque = RegisterSet::parse(" MASQUE ").expect("masque");
-        assert!(masque.masque && !masque.masque_inner);
+        assert!(masque.masque && !masque.masque_inner && !masque.gool);
         assert!(!masque.wireguard && !masque.wireguard_inner);
 
         let wireguard = RegisterSet::parse("wg").expect("wg");
         assert!(wireguard.wireguard && !wireguard.wireguard_inner);
-        assert!(!wireguard.masque && !wireguard.masque_inner);
+        assert!(!wireguard.masque && !wireguard.masque_inner && !wireguard.gool);
 
-        let gool = RegisterSet::parse("gool").expect("gool");
-        assert!(gool.wireguard && gool.wireguard_inner);
-        assert!(!gool.masque && !gool.masque_inner);
+        // What --gool runs: masque, and the wireguard identity it carries inside.
+        for word in ["gool", "GOOL", "wg-over-masque"] {
+            let gool = RegisterSet::parse(word).expect(word);
+            assert!(gool.masque && gool.gool, "{word}");
+            assert!(
+                !gool.masque_inner && !gool.wireguard && !gool.wireguard_inner,
+                "{word}"
+            );
+        }
+
+        // What --gool-classic runs: both wireguard hops.
+        for word in ["gool-classic", "wiw", "warp-in-warp"] {
+            let classic = RegisterSet::parse(word).expect(word);
+            assert!(classic.wireguard && classic.wireguard_inner, "{word}");
+            assert!(
+                !classic.masque && !classic.masque_inner && !classic.gool,
+                "{word}"
+            );
+        }
 
         let mim = RegisterSet::parse("mim").expect("mim");
-        assert!(mim.masque && mim.masque_inner);
+        assert!(mim.masque && mim.masque_inner && !mim.gool);
         assert!(!mim.wireguard && !mim.wireguard_inner);
 
         assert!(RegisterSet::parse("everything").is_err());
+    }
+
+    #[test]
+    fn gool_keeps_its_wireguard_identity_beside_the_masque_one() {
+        assert_eq!(
+            gool_identity_path("/data/files/aether/aether-masque.toml"),
+            "/data/files/aether/aether-masque-gool.toml"
+        );
+        assert_eq!(
+            gool_identity_path(r"C:\keys\aether-masque.toml"),
+            r"C:\keys\aether-masque-gool.toml"
+        );
     }
 
     #[test]
@@ -3977,5 +4603,390 @@ mod tests {
         .expect("the inner hop stays where it was put");
         assert_eq!(chosen.outer, Some("162.159.192.1:2408".parse().unwrap()));
         assert_eq!(chosen.inner, Some("162.159.195.1:2408".parse().unwrap()));
+    }
+
+    /// What reached a MASQUE server on this machine first: the server name of the ClientHello,
+    /// and the :authority of the request.
+    type Reached = tokio::task::JoinHandle<(Option<String>, String)>;
+
+    /// A MASQUE server over HTTP/2 on this machine, see `Reached`.
+    async fn h2_masque_server() -> (SocketAddr, Reached) {
+        let (address, listener, acceptor) = crate::https::test_server(b"\x02h2").await;
+        let reached = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await.expect("a connection");
+            let tls = tokio_boring::accept(&acceptor, tcp)
+                .await
+                .expect("a handshake");
+            let name = tls
+                .ssl()
+                .servername(boring::ssl::NameType::HOST_NAME)
+                .map(str::to_string);
+            let mut connection = h2::server::handshake(tls).await.expect("h2");
+            let (request, _answer) = connection
+                .accept()
+                .await
+                .expect("a request")
+                .expect("a whole request");
+            let authority = request.uri().authority().expect("an authority").to_string();
+            (name, authority)
+        });
+        (address, reached)
+    }
+
+    /// A MASQUE server over HTTP/3 on this machine, see `Reached`. It passes over what comes
+    /// before the first QUIC v1 Initial: the version bait and the junk of the obfuscation.
+    async fn h3_masque_server() -> (SocketAddr, Reached) {
+        use quiche::h3::NameValue;
+
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = socket.local_addr().expect("its address");
+        let reached = tokio::spawn(async move {
+            let pair = account::generate_masque_keypair().expect("a key and a certificate");
+            let mut tls =
+                boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).expect("tls");
+            tls.set_certificate(
+                &boring::x509::X509::from_pem(&pair.cert_pem).expect("a certificate"),
+            )
+            .expect("the certificate");
+            tls.set_private_key(
+                &boring::pkey::PKey::private_key_from_pem(&pair.key_pem).expect("a key"),
+            )
+            .expect("the key");
+            let mut config =
+                quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls)
+                    .expect("a configuration");
+            config
+                .set_application_protos(&[consts::ALPN_H3])
+                .expect("h3");
+            config.set_initial_max_data(1 << 20);
+            config.set_initial_max_stream_data_bidi_remote(1 << 20);
+            config.set_initial_max_stream_data_uni(1 << 20);
+            config.set_initial_max_streams_bidi(8);
+            config.set_initial_max_streams_uni(8);
+            config.enable_dgram(true, 64, 64);
+            let mut h3_config = quiche::h3::Config::new().expect("h3");
+            h3_config.enable_extended_connect(true);
+
+            let mut conn: Option<quiche::Connection> = None;
+            let mut h3: Option<quiche::h3::Connection> = None;
+            let mut packet = vec![0u8; 65535];
+            let mut out = vec![0u8; 1500];
+            loop {
+                let (read, from) = socket.recv_from(&mut packet).await.expect("a packet");
+                if conn.is_none() {
+                    // A long header of the Initial type, and version 1.
+                    if read <= 5 || packet[0] & 0xf0 != 0xc0 || packet[1..5] != [0, 0, 0, 1] {
+                        continue;
+                    }
+                    let scid = [7u8; 16];
+                    let scid = quiche::ConnectionId::from_ref(&scid);
+                    conn = Some(
+                        quiche::accept(&scid, None, address, from, &mut config)
+                            .expect("a connection"),
+                    );
+                }
+                let conn = conn.as_mut().expect("the connection");
+                let _ = conn.recv(&mut packet[..read], quiche::RecvInfo { from, to: address });
+                if conn.is_established() && h3.is_none() {
+                    h3 =
+                        Some(quiche::h3::Connection::with_transport(conn, &h3_config).expect("h3"));
+                }
+                if let Some(h3) = h3.as_mut() {
+                    while let Ok((_, event)) = h3.poll(conn) {
+                        if let quiche::h3::Event::Headers { list, .. } = event {
+                            let authority = list
+                                .iter()
+                                .find(|header| header.name() == b":authority")
+                                .map(|header| String::from_utf8_lossy(header.value()).into_owned())
+                                .expect("an authority");
+                            return (conn.server_name().map(str::to_string), authority);
+                        }
+                    }
+                }
+                while let Ok((written, sent)) = conn.send(&mut out) {
+                    socket
+                        .send_to(&out[..written], sent.to)
+                        .await
+                        .expect("a packet sent");
+                }
+            }
+        });
+        (address, reached)
+    }
+
+    #[tokio::test]
+    async fn the_masque_handshakes_send_the_masque_sni_and_keep_the_authority() {
+        let _setting = upstream::hold_setting().await;
+        // The handshakes take --masque-sni, the carrier and the fingerprint from the options.
+        let _options = tls::hold_options().await;
+        let identity = account::handshake_identity();
+        let startup = std::time::Duration::from_secs(10);
+
+        // Without --masque-sni, www.cloudflare.com; with it, the name it gives.
+        for (option, sni) in [
+            (None, "www.cloudflare.com"),
+            (Some(consts::CONNECT_SNI), consts::CONNECT_SNI),
+        ] {
+            match option {
+                Some(name) => std::env::set_var("AETHER_MASQUE_SNI", name),
+                None => std::env::remove_var("AETHER_MASQUE_SNI"),
+            }
+            for h2 in [false, true] {
+                if h2 {
+                    std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+                } else {
+                    std::env::remove_var("AETHER_MASQUE_HTTP2");
+                }
+                // The check of a gateway, and the tunnel.
+                for tunnel in [false, true] {
+                    let case = format!("--masque-sni {option:?}, h2 {h2}, tunnel {tunnel}");
+                    let (address, reached) = if h2 {
+                        h2_masque_server().await
+                    } else {
+                        h3_masque_server().await
+                    };
+                    let client = async {
+                        if tunnel {
+                            let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
+                            let datagram = quic::MAX_DATAGRAM_SIZE;
+                            let hop = establish_masque(
+                                &identity, address, None, h2, mtu, datagram, false, startup, "test",
+                            );
+                            let _ = hop.await;
+                        } else {
+                            quick_verify_masque_peer(&identity, address, None).await;
+                        }
+                    };
+                    let (name, authority) = tokio::select! {
+                        biased;
+                        reached = reached => reached.expect("the server"),
+                        () = client => panic!("{case}: the request did not reach the server"),
+                    };
+                    assert_eq!(name.as_deref(), Some(sni), "{case}");
+                    let host = if h2 {
+                        "cloudflareaccess.com:443"
+                    } else {
+                        "cloudflareaccess.com"
+                    };
+                    assert_eq!(authority, host, "{case}");
+                }
+            }
+        }
+    }
+
+    /// The ClientHello a QUIC server on this machine reads first, as it reads it. It passes
+    /// over what comes before the first QUIC v1 Initial, as `h3_masque_server` does.
+    async fn h3_hello_server() -> (
+        SocketAddr,
+        tokio::task::JoinHandle<tls::client_hello::ClientHello>,
+    ) {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = socket.local_addr().expect("its address");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(
+            None::<tls::client_hello::ClientHello>,
+        ));
+        let caught = seen.clone();
+        let hello = tokio::spawn(async move {
+            let pair = account::generate_masque_keypair().expect("a key and a certificate");
+            let mut tls =
+                boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).expect("tls");
+            tls.set_certificate(
+                &boring::x509::X509::from_pem(&pair.cert_pem).expect("a certificate"),
+            )
+            .expect("the certificate");
+            tls.set_private_key(
+                &boring::pkey::PKey::private_key_from_pem(&pair.key_pem).expect("a key"),
+            )
+            .expect("the key");
+            tls.set_select_certificate_callback(move |hello| {
+                *caught.lock().expect("the ClientHello") =
+                    Some(tls::client_hello::parse_body(hello.as_bytes()));
+                Ok(())
+            });
+            let mut config =
+                quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls)
+                    .expect("a configuration");
+            config
+                .set_application_protos(&[consts::ALPN_H3])
+                .expect("h3");
+
+            let mut conn: Option<quiche::Connection> = None;
+            let mut packet = vec![0u8; 65535];
+            let mut out = vec![0u8; 1500];
+            loop {
+                let (read, from) = socket.recv_from(&mut packet).await.expect("a packet");
+                if conn.is_none() {
+                    // A long header of the Initial type, and version 1.
+                    if read <= 5 || packet[0] & 0xf0 != 0xc0 || packet[1..5] != [0, 0, 0, 1] {
+                        continue;
+                    }
+                    let scid = [7u8; 16];
+                    let scid = quiche::ConnectionId::from_ref(&scid);
+                    conn = Some(
+                        quiche::accept(&scid, None, address, from, &mut config)
+                            .expect("a connection"),
+                    );
+                }
+                let conn = conn.as_mut().expect("the connection");
+                let _ = conn.recv(&mut packet[..read], quiche::RecvInfo { from, to: address });
+                // A ClientHello with a post-quantum key share takes more than one packet.
+                if let Some(seen) = seen.lock().expect("the ClientHello").take() {
+                    return seen;
+                }
+                while let Ok((written, sent)) = conn.send(&mut out) {
+                    socket
+                        .send_to(&out[..written], sent.to)
+                        .await
+                        .expect("a packet sent");
+                }
+            }
+        });
+        (address, hello)
+    }
+
+    /// The check of the MASQUE gateway at `address`, or the tunnel through it, over HTTP/2 or
+    /// HTTP/3 as AETHER_MASQUE_HTTP2 has it: what the test runs as the client.
+    async fn masque_client(
+        identity: &account::Identity,
+        address: SocketAddr,
+        h2: bool,
+        tunnel: bool,
+    ) {
+        if tunnel {
+            let mtu = if h2 { H2_TUNNEL_MTU } else { TUNNEL_MTU };
+            let datagram = quic::MAX_DATAGRAM_SIZE;
+            let startup = std::time::Duration::from_secs(10);
+            let hop = establish_masque(
+                identity, address, None, h2, mtu, datagram, false, startup, "test",
+            );
+            let _ = hop.await;
+        } else {
+            quick_verify_masque_peer(identity, address, None).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_handshakes_take_the_tls13_order_and_the_key_shares_of_the_options() {
+        let _setting = upstream::hold_setting().await;
+        let _options = tls::hold_options().await;
+        // Firefox's: its TLS 1.3 order, and key shares for three of its groups.
+        std::env::set_var(
+            "AETHER_TLS13_CIPHERS",
+            "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        );
+        std::env::set_var(
+            "AETHER_TLS_GROUPS",
+            "X25519MLKEM768:X25519:P-256:P-384:P-521",
+        );
+        std::env::set_var("AETHER_TLS_KEY_SHARES", "X25519MLKEM768:X25519:P-256");
+        let identity = account::handshake_identity();
+        for h2 in [false, true] {
+            // The check of a gateway, and the tunnel.
+            for tunnel in [false, true] {
+                let case = format!("h2 {h2}, tunnel {tunnel}");
+                let hello = masque_hello(&identity, h2, tunnel, &case).await;
+                assert_eq!(hello.key_shares(), [0x11ec, 0x001d, 0x0017], "{case}");
+                // QUIC carries TLS 1.3 alone; over HTTP/2 the TLS 1.2 suites follow.
+                assert_eq!(hello.tls13_suites(), [0x1301, 0x1303, 0x1302], "{case}");
+            }
+        }
+    }
+
+    /// The ClientHello of a MASQUE handshake, over HTTP/2 or HTTP/3, of the check of a gateway
+    /// or of the tunnel, as a server on this machine reads it.
+    async fn masque_hello(
+        identity: &account::Identity,
+        h2: bool,
+        tunnel: bool,
+        case: &str,
+    ) -> tls::client_hello::ClientHello {
+        if h2 {
+            std::env::set_var("AETHER_MASQUE_HTTP2", "1");
+        } else {
+            std::env::remove_var("AETHER_MASQUE_HTTP2");
+        }
+        let (address, hello) = if h2 {
+            tls::client_hello::catch().await
+        } else {
+            h3_hello_server().await
+        };
+        tokio::select! {
+            biased;
+            hello = hello => hello.expect("the ClientHello"),
+            () = masque_client(identity, address, h2, tunnel) => {
+                panic!("{case}: no ClientHello reached the server")
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_handshakes_carry_the_extensions_of_the_options() {
+        let _setting = upstream::hold_setting().await;
+        let _options = tls::hold_options().await;
+        // Chrome's, as its ClientHello of October 2026 has them, with fewer trust anchors.
+        std::env::set_var("AETHER_ENABLE_GREASE_SIGALGS", "1");
+        std::env::set_var(
+            "AETHER_TLS_SIGALGS",
+            "mldsa44:mldsa65:mldsa87:ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256",
+        );
+        std::env::set_var("AETHER_TLS_CERT_COMPRESSION", "brotli");
+        std::env::set_var("AETHER_TLS_ALPS", "new");
+        std::env::set_var("AETHER_TLS_TRUST_ANCHORS", "11129.9.1");
+        std::env::set_var("AETHER_TLS_SERVER_PADDING", "6000");
+        std::env::set_var("AETHER_ENABLE_ECH_GREASE", "1");
+        let identity = account::handshake_identity();
+        for h2 in [false, true] {
+            for tunnel in [false, true] {
+                let case = format!("h2 {h2}, tunnel {tunnel}");
+                let hello = masque_hello(&identity, h2, tunnel, &case).await;
+                assert!(hello.has_grease_signature_algorithm(), "{case}");
+                assert_eq!(
+                    hello.signature_algorithms()[1..],
+                    [0x0904, 0x0905, 0x0906, 0x0403, 0x0804],
+                    "{case}"
+                );
+                assert_eq!(hello.cert_compression(), [2], "{case}");
+                // ALPS for the protocol the carrier offers: HTTP/2, which comes with HTTP/1.1,
+                // or HTTP/3.
+                let protocol = if h2 { b"h2".to_vec() } else { b"h3".to_vec() };
+                assert_eq!(hello.alps(0x44cd), Some(vec![protocol]), "{case}");
+                assert!(hello.offers_ech(), "{case}");
+                assert_eq!(
+                    hello.extension(0xca34),
+                    Some(&[0, 5, 4, 0xd6, 0x79, 0x09, 0x01][..]),
+                    "{case}"
+                );
+                assert_eq!(hello.server_padding(), Some(6000), "{case}");
+            }
+        }
+
+        // Python's: neither OCSP nor signed certificate timestamps, over either carrier.
+        for variable in [
+            "AETHER_ENABLE_GREASE_SIGALGS",
+            "AETHER_TLS_SIGALGS",
+            "AETHER_TLS_CERT_COMPRESSION",
+            "AETHER_TLS_ALPS",
+            "AETHER_TLS_TRUST_ANCHORS",
+            "AETHER_TLS_SERVER_PADDING",
+            "AETHER_ENABLE_ECH_GREASE",
+        ] {
+            std::env::remove_var(variable);
+        }
+        std::env::set_var("AETHER_DISABLE_OCSP_STAPLING", "1");
+        std::env::set_var("AETHER_DISABLE_SCT", "1");
+        for h2 in [false, true] {
+            let case = format!("h2 {h2}");
+            let hello = masque_hello(&identity, h2, false, &case).await;
+            assert!(
+                !hello.has_extension(5) && !hello.has_extension(18),
+                "{case}"
+            );
+            assert!(!hello.offers_ech(), "{case}");
+            assert_eq!(hello.alps(0x44cd), None, "{case}");
+        }
     }
 }

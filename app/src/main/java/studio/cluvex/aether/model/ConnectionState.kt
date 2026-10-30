@@ -1,18 +1,22 @@
 package studio.cluvex.aether.model
 
+private val connectionEpoch = java.util.concurrent.atomic.AtomicLong()
+
 /** The single source of truth for what the UI shows. */
 sealed interface ConnectionState {
     data object Idle : ConnectionState
     data object Launching : ConnectionState
     data object Connecting : ConnectionState
+    data object Selecting : ConnectionState
 
     /**
      * Tunnel/proxy is up but the 5-step end-to-end self-test is still
      * running. The UI must NOT present this as ready — Connected is only
-     * reported once all four checks pass.
+     * reported once checks pass, or the user explicitly disables the optional initial gate.
      */
     data object Verifying : ConnectionState
-    data class Connected(val socksAddr: String) : ConnectionState
+    /** Epoch prevents same-port reconnects from being conflated with the previous session. */
+    data class Connected(val socksAddr: String, val epoch: Long = connectionEpoch.incrementAndGet()) : ConnectionState
     data class Reconnecting(val attempt: Int, val maxAttempts: Int) : ConnectionState
     /* REMOVED in 1.3.1-r4: a `Repairing` state.
      *
@@ -71,6 +75,7 @@ val ConnectionState.isConnected: Boolean
 
 val ConnectionState.isBusy: Boolean
     get() = this is ConnectionState.Launching ||
+        this is ConnectionState.Selecting ||
         this is ConnectionState.Connecting ||
         this is ConnectionState.Verifying ||
         this is ConnectionState.Reconnecting ||

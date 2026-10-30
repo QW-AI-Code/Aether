@@ -1,10 +1,71 @@
+## 1.6.0 — engine core 2.4.0 (same app version)
+
+- Vendored engine upgraded from 2.3.0 to 2.4.0 (manual three-way merge).
+- New settings: *Verify gateway certificate* (`--tls-verify`) and *WARP API address* (`--api-address`, replaces `--enroll-address`). Fragmentation is off by default in the core; the app never used `--api-fragment`/`--no-fragment`.
+- Connect button: the glow animation is now independent of the spinner, so the glow can be off while the spinner keeps turning.
+- Automatic core update from GitHub removed (workflow, commit, rollback). `scripts/sync-core.sh` is an inert stub.
+
+## Automatic cleanup + full audit (1.6.0, same version)
+- `scripts/purge-stale-sources.sh` now `git rm`s `BUILD_VALIDATION.md`, `PROJECT_STATUS.md`, `_META/TODO/bhs.md` and `native/aether/Docs/Aether.png` (listed in `.github/removed-sources.txt`); idempotent, never fails the build.
+- Full 0-100 static security audit: 76 / 100 (see `.github/release-notes.md`).
+
+## Same-version signing repair (1.6.0)
+- Restore the original public CI test key for automatic GitHub builds without manual signing Secrets.
+- Preserve certificate fingerprint guards and optional private-key priority; no key rotation.
+- Five offline signing-workflow regressions passed. See docs/AUTO_SIGNING_1.6.0.md.
+
+## 1.6.0 — same-version tab / assistant / chain repair
+
+Stable keyed tab strip; semantic ping palette; shared outlined menu cards;
+contextual Gemini topics and final-endpoint routing; immediate IP race publication;
+custom TCP scan/SNI/Ironclad fixes. See `TAB_AI_CHAIN_VALIDATION.md` for actual
+results, remaining remote-server failures and build scope. App version unchanged.
+
+## Same-version 1.6.0 chain/UI follow-up
+
+- TCP-aware custom-first carrier policy, chain-sized budget and actual exit-port lifecycle.
+- Pinned name/ping/actions, visible scrollbars, stable automatic-tab aliases and unified import.
+- Remove onboarding pager and obsolete announcement; retain troubleshooting.
+- rustls 0.23.46 security floor for newly published advisories; strict audit remains active.
+- Current executed checks and limits: CHAIN_UI_BUILD_VALIDATION.md.
+
 # Changelog
+
+## 1.6.0 — same-version functional repair
+
+- Rebuilt catalog/group/subscription projection and responsive ping-sorted table.
+- Preserve old encrypted data with store-schema v3 migration.
+- Service-owned exit IP from actual SOCKS endpoint; immediate auto-select feedback.
+- Persistent default-on built-in verification preference, independent of custom gate.
+- Actual fresh validation: `FUNCTIONAL_BUILD_VALIDATION.md`.
+
+## 1.6.0 — same-version security/CI correction
+
+- Quinn 0.11.18 / rustls 0.23.45 security lock update, applied before native builds.
+- Audit actual built lock; report maintenance warnings; fail unresolved vulnerabilities
+  and scanner failures without the old misleading nonblocking exit-1 footer.
+- Fresh validation and limitations: `docs/SECURITY_CI_FIX_1.6.0.md`.
+
+## 1.6.0 — custom config management and authenticated binary import
+
+- NPVS v5 import alongside NPVT1, preserving author restrictions and TLS leaf pins.
+- Custom tabs and encrypted subscription sources with atomic refresh.
+- Background health checks in the active VPN service and best-delay selection.
+- Bounded custom verification and an optional default-on verification switch.
+- Android file associations and an isolated password-aware file-import entry point.
+- Certificate-validated HTTPS 204 real delay; reject false-success HTTP errors.
+- Reproducible leaf-pinning Xray backport, original cores unchanged.
+- Gradle Wrapper, migration/crypto/selection regressions, and expanded CI test tasks.
+
+**Version:** 1.6.0, versionCode 19, PATCHLEVEL 1.6.0, Aether engine 2.4.0.
+Details and limitations: `docs/RELEASE_1.6.0.md`, `docs/RELEASE_1.6.0.fa.md`, `BUILD_VALIDATION.md`.
+
 
 ## 1.5.0 — engine core 2.3.0
 
 #### What's new dialog and Messages & announcements
 
-- **A "What's new" dialog opens on its own** on the first launch after a fresh install or an upgrade (after onboarding). It is fully RTL in Vazirmatn on a dark-navy panel with a slim themed scrollbar; every Latin term and chain arrow (`Config → Psiphon`, `VLESS`, `BPB`, …) is isolated LTR so the Persian text and brackets never reorder.
+- **A "What's new" dialog opens on its own** on the first launch after a fresh install or an upgrade (after onboarding). It is fully RTL in Vazirmatn on a dark-navy panel with a slim themed scrollbar; every Latin term and chain arrow (`Config → Psiphon`, `VLESS`, …) is isolated LTR so the Persian text and brackets never reorder.
 - **«دیگر این پیام را نمایش نده»:** ticking it and closing the dialog (button, close icon or back) silences it for this version only; without the tick it opens again on the next launch. The next upgrade shows its own news again.
 - **Settings → Messages & announcements** keeps every announcement; tap one to read it again in the same dialog.
 

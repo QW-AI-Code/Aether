@@ -54,6 +54,7 @@ internal object WidgetStateCache {
         val token = when (state) {
             is ConnectionState.Connected -> CONNECTED
             is ConnectionState.Error -> ERROR
+            is ConnectionState.Selecting,
             is ConnectionState.Launching,
             is ConnectionState.Connecting,
             is ConnectionState.Verifying,

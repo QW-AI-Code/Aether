@@ -1,5 +1,29 @@
 package studio.cluvex.aether
 
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import studio.cluvex.aether.custom.CustomConfigStore
+import studio.cluvex.aether.custom.ChainMode
+import studio.cluvex.aether.data.PresetProfileCodec
+import studio.cluvex.aether.data.PresetStore
+import studio.cluvex.aether.data.PresetTransferCodec
+import studio.cluvex.aether.model.ConnectionPreset
+import android.net.Uri
+import android.widget.Toast
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import android.content.ActivityNotFoundException
+import android.os.SystemClock
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CancellationException
+import studio.cluvex.aether.core.DiagnosticsLog
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -17,7 +41,6 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.conflate
@@ -29,10 +52,8 @@ import studio.cluvex.aether.ai.AiSession
 import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
-import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.data.LanguagePrefs
-import studio.cluvex.aether.data.OnboardingStore
 import studio.cluvex.aether.data.ProfileStore
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
@@ -40,11 +61,11 @@ import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.HomeScreen
 import studio.cluvex.aether.ui.LoginCodeDialog
-import studio.cluvex.aether.ui.OnboardingScreen
 import studio.cluvex.aether.ui.announcements.WhatsNewGate
 import studio.cluvex.aether.ui.theme.AetherTheme
 import java.io.File
 
+@OptIn(kotlinx.coroutines.FlowPreview::class)
 class MainActivity : ComponentActivity() {
 
     /**
@@ -81,12 +102,22 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var profileStore: ProfileStore
+    private lateinit var presetStore: PresetStore
+    private val presetMutex = Mutex()
+    private val presetBusy = MutableStateFlow(false)
+    private var importPreview by mutableStateOf<List<ConnectionPreset>?>(null)
+    private val presetImportLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) readPresetImport(uri)
+    }
+    private val presetExportLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        if (uri != null) exportPresets(uri)
+    }
 
-    /** Feature merge: first-run onboarding gate. */
-    private lateinit var onboardingStore: OnboardingStore
 
     // Holds the profile to connect with once VPN consent is granted.
     private var pendingProfile: ConnectionProfile? = null
+    private val toggleInFlight = AtomicBoolean(false)
+    private var lastToggleAt = -400L
 
     // ------------------------------------------------------------------
     // SCRAMBLED-INPUT FIX (root cause): the UI used to render the settings —
@@ -109,10 +140,14 @@ class MainActivity : ComponentActivity() {
 
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            if (result.resultCode == RESULT_OK) {
-                pendingProfile?.let { AetherController.connect(this, it) }
-            }
+            val profile = pendingProfile
             pendingProfile = null
+            try {
+                if (result.resultCode == RESULT_OK && profile != null) AetherController.connect(this, profile)
+            } catch (e: Exception) {
+                DiagnosticsLog.e(UI_TAG, "VPN consent callback failed: ${e.javaClass.simpleName}")
+                AetherController.setState(ConnectionState.Error(getString(R.string.state_error)))
+            } finally { toggleInFlight.set(false) }
         }
 
     private val notificationPermissionLauncher =
@@ -125,7 +160,7 @@ class MainActivity : ComponentActivity() {
         pinLayoutDirection()
         enableEdgeToEdge()
         profileStore = ProfileStore(applicationContext)
-        onboardingStore = OnboardingStore(applicationContext)
+        presetStore = PresetStore(applicationContext)
 
         // Load the persisted profile ONCE as the initial UI state; from then
         // on the in-memory state is the single source of truth for the UI.
@@ -133,6 +168,15 @@ class MainActivity : ComponentActivity() {
         // initial load finished, never overwrite their edit.
         lifecycleScope.launch {
             uiProfile.compareAndSet(null, profileStore.profile.first())
+            try {
+                withContext(Dispatchers.IO) { CustomConfigStore.load(applicationContext) }
+                presetMutex.withLock {
+                    presetStore.ensureMigrated(uiProfile.value ?: profileStore.profile.first(),
+                        CustomConfigStore.state.value, getString(R.string.preset_default_name),
+                        preservedName = getString(R.string.preset_preserved_name))
+                }
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { presetFailure(e) }
         }
         // Single background writer persisting the latest profile snapshot.
         //
@@ -148,9 +192,25 @@ class MainActivity : ComponentActivity() {
             profileSaves
                 .conflate()
                 .debounce(PROFILE_SAVE_DEBOUNCE_MS)
-                .collect { snapshot -> profileStore.save(snapshot) }
+                .collect { snapshot ->
+                    try { presetMutex.withLock {
+                        if (uiProfile.value != snapshot) return@withLock
+                        profileStore.save(snapshot)
+                        presetStore.syncActive(snapshot, CustomConfigStore.state.value)
+                    } } catch (e: CancellationException) { throw e
+                    } catch (e: Exception) { presetFailure(e) }
+                }
         }
 
+        lifecycleScope.launch {
+            CustomConfigStore.state.map { Triple(it.activeId, it.enabled, it.mode) }
+                .distinctUntilChanged().drop(1).debounce(PROFILE_SAVE_DEBOUNCE_MS).collect {
+                    try { presetMutex.withLock {
+                        uiProfile.value?.let { presetStore.syncActive(it, CustomConfigStore.state.value) }
+                    } } catch (e: CancellationException) { throw e
+                    } catch (e: Exception) { presetFailure(e) }
+                }
+        }
         maybeRequestNotificationPermission()
 
         // Feature merge: a previous run died with an uncaught JVM
@@ -168,19 +228,22 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
                 val current = AetherController.state.value
                 if (!current.isConnected && !current.isBusy) {
-                    toggleConnection(current)
+                    toggleConnection()
                 }
             }
         }
 
         setContent {
             AetherTheme {
-                // Feature merge: first-run onboarding gate. initial =
-                // true so upgrading users never see a flash of the pager; a
-                // fresh install flips to the pager as soon as the (fast)
-                // DataStore read lands.
-                val onboardingDone by onboardingStore.completed.collectAsState(initial = true)
                 val state by AetherController.state.collectAsState()
+                val presetsFlow = androidx.compose.runtime.remember(presetStore) {
+                    presetStore.state.catch { e ->
+                        DiagnosticsLog.w(UI_TAG, "Preset read failed: ${e.javaClass.simpleName}")
+                        emit(PresetStore.State())
+                    }
+                }
+                val presets by presetsFlow.collectAsState(initial = PresetStore.State())
+                val presetsBusy by presetBusy.collectAsState()
                 // Synchronous UI profile state (see uiProfile above); null
                 // only until the one-time initial load completes.
                 val profile by uiProfile.collectAsState()
@@ -202,54 +265,11 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(phase) {
                     when (phase) {
                         "connected" -> {
-                            // FLAG-FLICKER FIX: the automatic self-test
-                            // (Diagnostics) is the single owner of the exit-IP
-                            // lookup. This block used to fire its OWN parallel
-                            // lookup; whichever finished last overwrote the
-                            // badge, and because geo providers can disagree
-                            // about the exit country, the flag flickered or
-                            // suddenly changed. Now we only WAIT for the
-                            // self-test's result and fetch ourselves purely as
-                            // a last-resort fallback (guarded by
-                            // offerTunnelIpInfo, so it can never overwrite).
-                            AetherController.setIpLoading(true)
-                            // 1.2.2 CPU FIX: this used to busy-poll a StateFlow
-                            // every 250 ms for up to 100 s — as many as 400
-                            // pointless wake-ups on the UI dispatcher right
-                            // after connecting, exactly when the device is
-                            // already busy. StateFlow is observable, so we now
-                            // SUSPEND until the value we are waiting for
-                            // actually arrives (zero wake-ups in between) and
-                            // simply bound that wait with a timeout.
-                            withTimeoutOrNull(100_000L) {
-                                AetherController.ipInfo.first { it?.viaTunnel == true }
-                            }
-                            if (AetherController.ipInfo.value?.viaTunnel != true) {
-                                val info = withContext(Dispatchers.IO) {
-                                    NetProbe.fetchIpInfoViaSocksWithRetry(
-                                        TunnelConfig.SOCKS_HOST,
-                                        PortLease.socks,
-                                    )
-                                }
-                                if (info != null) {
-                                    AetherController.offerTunnelIpInfo(
-                                        IpEndpoint(info.ip, info.countryCode, true),
-                                    )
-                                }
-                            }
-                            AetherController.setIpLoading(false)
-
-                            // 1.2.9 AI: analyse THIS session's log and propose
-                            // tuning, if the user asked for that.
-                            //
-                            // Here, at the end of the connected branch, and
-                            // deliberately not inside the VpnService: by this point
-                            // the tunnel is verified, the self-test has written its
-                            // results into the log, and the exit IP is known - so the
-                            // log the model reads is the complete story of the
-                            // connect rather than its first two seconds. AiSession
-                            // does the rest of the gating itself (feature off, no
-                            // key, wrong mode, too soon after the last run).
+                            // The service owns exit-IP lookup for the actual Connected.socksAddr.
+                            // No 100-second UI wait or fallback to the unrelated engine port.
+                            // Optional AI analysis belongs to the established session.
+                            // Exit-IP metadata is now independently fetched by the service;
+                            // it is not a prerequisite for UI state or analysis of startup logs.
                             uiProfile.value?.let { current ->
                                 AiSession.analyze(
                                     profile = current,
@@ -288,13 +308,6 @@ class MainActivity : ComponentActivity() {
                     // a prompt that only exists on one screen is one they miss.
                     // Renders nothing unless a request is outstanding.
                     LoginCodeDialog()
-                    if (!onboardingDone) {
-                        OnboardingScreen(
-                            onFinished = {
-                                lifecycleScope.launch { onboardingStore.markCompleted() }
-                            },
-                        )
-                    } else {
                         HomeScreen(
                             state = state,
                             profile = profile ?: ConnectionProfile(),
@@ -308,32 +321,87 @@ class MainActivity : ComponentActivity() {
                                 uiProfile.value = updated
                                 profileSaves.tryEmit(updated)
                             },
-                            onToggleConnection = { toggleConnection(state) },
+                            onToggleConnection = { toggleConnection() },
+                            presets = presets.presets, activePresetId = presets.activeId,
+                            onSelectPreset = ::applyPreset, onSavePresetAs = ::savePresetAs,
+                            onDeletePreset = ::deletePreset, onRenamePreset = ::renamePreset,
+                            onImportPresets = { presetImportLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                            onExportPresets = { presetExportLauncher.launch("Aether-1.6.0-presets.json") },
+                            presetBusy = presetsBusy || toggleInFlight.get(),
                         )
-                        // 1.5.0: "What's new" dialog on the first launch after a
-                        // fresh install or an upgrade (until the user ticks
-                        // "don't show again" for this version). Only after
-                        // onboarding, so it never stacks on top of the pager.
+                        // Current-version notice; no introductory pager gate.
                         WhatsNewGate()
-                    }
+                        importPreview?.let { preview ->
+                            AlertDialog(onDismissRequest = { importPreview = null },
+                                title = { Text(getString(R.string.preset_import)) },
+                                text = { Text(getString(R.string.preset_import_preview, preview.size)) },
+                                confirmButton = { TextButton(onClick = {
+                                    importPreview = null
+                                    presetAction {
+                                        // Save pending edits of the current profile first, then
+                                        // import, select and APPLY the imported profile.
+                                        presetStore.syncActive(uiProfile.value ?: profileStore.profile.first(), CustomConfigStore.state.value)
+                                        presetStore.importPresets(preview, activateFirst = true, custom = CustomConfigStore.state.value)
+                                        applyActivePresetLocked()
+                                    }
+                                }) { Text(getString(R.string.preset_import)) } },
+                                dismissButton = { TextButton(onClick = { importPreview = null }) {
+                                    Text(getString(R.string.preset_cancel))
+                                } })
+                        }
                 }
             }
         }
     }
 
-    private fun toggleConnection(state: ConnectionState) {
-        if (state.isConnected || state.isBusy) {
-            AetherController.disconnect(this)
+    private fun toggleConnection() {
+        if (presetBusy.value) return
+        // Guard 1: ignore double-taps (no guard existed in 1.6.0).
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastToggleAt < TOGGLE_DEBOUNCE_MS) return
+        lastToggleAt = now
+
+        val liveState = AetherController.state.value
+        if (liveState.isConnected || liveState.isBusy) {
+            try {
+                AetherController.disconnect(this)
+            } catch (e: Exception) {
+                DiagnosticsLog.e(UI_TAG, "disconnect failed: ${e.javaClass.simpleName}")
+            }
             return
         }
+
+        // Guard 2: only one connect coroutine at a time.
+        if (!toggleInFlight.compareAndSet(false, true)) return
         lifecycleScope.launch {
-            val profile = uiProfile.value ?: profileStore.profile.first()
-            val consent = AetherController.prepare(this@MainActivity)
-            if (consent != null) {
-                pendingProfile = profile
-                vpnPermissionLauncher.launch(consent)
-            } else {
-                AetherController.connect(this@MainActivity, profile)
+            try {
+                val profile = uiProfile.value ?: profileStore.profile.first()
+                val consent = AetherController.prepare(this@MainActivity)
+                if (consent != null) {
+                    pendingProfile = profile
+                    try {
+                        vpnPermissionLauncher.launch(consent)
+                    } catch (e: ActivityNotFoundException) {
+                        pendingProfile = null
+                        DiagnosticsLog.e(UI_TAG, "VPN consent activity missing")
+                        AetherController.setState(
+                            ConnectionState.Error(getString(R.string.err_vpn_permission_unavailable)),
+                        )
+                    }
+                } else {
+                    AetherController.connect(this@MainActivity, profile)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                pendingProfile = null
+                // Guard 3: never let the click path force-close the app; surface it as Error state.
+                DiagnosticsLog.e(UI_TAG, "toggleConnection failed: ${e.javaClass.simpleName}")
+                AetherController.setState(
+                    ConnectionState.Error(getString(R.string.state_error)),
+                )
+            } finally {
+                if (pendingProfile == null) toggleInFlight.set(false)
             }
         }
     }
@@ -353,8 +421,118 @@ class MainActivity : ComponentActivity() {
         super.onStop()
         val pending = uiProfile.value ?: return
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
-            runCatching { profileStore.save(pending) }
+            runCatching { presetMutex.withLock {
+                if (pending != uiProfile.value) return@withLock
+                profileStore.save(pending)
+                presetStore.syncActive(pending, CustomConfigStore.state.value)
+            } }.onFailure { DiagnosticsLog.w(UI_TAG, "Profile flush failed: ${it.javaClass.simpleName}") }
         }
+    }
+
+    private fun connectionLocked(): Boolean {
+        val state = AetherController.state.value
+        return state.isConnected || state.isBusy || toggleInFlight.get() || presetBusy.value
+    }
+
+    private fun presetFailure(e: Exception) {
+        DiagnosticsLog.w(UI_TAG, "Preset operation failed: ${e.javaClass.simpleName}")
+        Toast.makeText(this, getString(R.string.preset_operation_failed), Toast.LENGTH_LONG).show()
+    }
+
+    private fun presetAction(action: suspend () -> Unit) {
+        if (connectionLocked()) return
+        presetBusy.value = true
+        lifecycleScope.launch {
+            try { presetMutex.withLock {
+                val state = AetherController.state.value
+                if (state.isConnected || state.isBusy || toggleInFlight.get()) return@withLock
+                action()
+            } } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { presetFailure(e)
+            } finally { presetBusy.value = false }
+        }
+    }
+
+    private fun applyPreset(id: String) = presetAction {
+        presetStore.syncActive(uiProfile.value ?: profileStore.profile.first(), CustomConfigStore.state.value)
+        if (presetStore.setActive(id) != null) applyActivePresetLocked()
+    }
+
+    private fun savePresetAs(name: String) = presetAction {
+        val current = uiProfile.value ?: profileStore.profile.first()
+        presetStore.syncActive(current, CustomConfigStore.state.value)
+        check(presetStore.saveAsNew(name, current, CustomConfigStore.state.value) != null)
+    }
+
+    private fun renamePreset(id: String, name: String) = presetAction {
+        presetStore.rename(id, name)
+    }
+
+    private fun deletePreset(id: String) = presetAction {
+        val result = presetStore.delete(id) ?: return@presetAction
+        if (result.deletedWasActive) applyActivePresetLocked()
+    }
+
+    private suspend fun applyActivePresetLocked() {
+        val preset = presetStore.snapshot().active ?: return
+        val current = uiProfile.value ?: profileStore.profile.first()
+        val merged = PresetProfileCodec.decode(preset.profile).copy(
+            accessClientSecret = current.accessClientSecret, accessToken = current.accessToken,
+            accessSignInToken = current.accessSignInToken,
+            chainedStage = false, bindOverride = 0, enginePsiphonOnly = false)
+        uiProfile.value = merged
+        profileStore.save(merged)
+        applyCustomSelection(preset)
+        profileSaves.tryEmit(merged)
+    }
+
+    private fun applyCustomSelection(preset: ConnectionPreset) {
+        val st = CustomConfigStore.state.value
+        val target = preset.customConfigId?.takeIf { id -> st.configs.any { it.id == id } }
+        if (target != null && target != st.activeId) CustomConfigStore.select(this, target)
+        CustomConfigStore.setMode(this, ChainMode.fromStoredName(preset.chainMode))
+        CustomConfigStore.setEnabled(this, preset.customEnabled && target != null)
+        if (preset.customConfigId != null && target == null)
+            DiagnosticsLog.w(UI_TAG, "Preset custom config missing; custom routing disabled")
+    }
+
+    private fun readPresetImport(uri: Uri) {
+        if (connectionLocked()) return
+        lifecycleScope.launch {
+            try {
+                val preview = withContext(Dispatchers.IO) {
+                    val bytes = contentResolver.openInputStream(uri)?.use { stream ->
+                        val out = java.io.ByteArrayOutputStream()
+                        val buffer = ByteArray(8192)
+                        while (true) {
+                            val count = stream.read(buffer)
+                            if (count < 0) break
+                            require(out.size() + count <= PresetTransferCodec.MAX_BYTES) { "Import is too large" }
+                            out.write(buffer, 0, count)
+                        }
+                        out.toByteArray()
+                    } ?: error("Cannot open settings")
+                    PresetTransferCodec.decode(Charsets.UTF_8.newDecoder()
+                        .decode(java.nio.ByteBuffer.wrap(bytes)).toString())
+                }
+                if (!connectionLocked()) importPreview = preview
+            } catch (e: CancellationException) { throw e
+            } catch (e: Exception) { presetFailure(e) }
+        }
+    }
+
+    private fun exportPresets(uri: Uri) = presetAction {
+        presetStore.syncActive(uiProfile.value ?: profileStore.profile.first(), CustomConfigStore.state.value)
+        // Export the selected named preset, not an implicit backup of every preset.
+        // Import remains compatible with older multi-preset files.
+        val selected = checkNotNull(presetStore.captureActiveForExport(
+            uiProfile.value ?: profileStore.profile.first(), CustomConfigStore.state.value))
+        val text = PresetTransferCodec.encodeSelected(listOf(selected), selected.id)
+        withContext(Dispatchers.IO) {
+            val stream = contentResolver.openOutputStream(uri, "wt") ?: error("Cannot write settings")
+            stream.use { it.write(text.toByteArray(Charsets.UTF_8)) }
+        }
+        Toast.makeText(this, getString(R.string.preset_export_done), Toast.LENGTH_LONG).show()
     }
 
     private fun maybeRequestNotificationPermission() {
@@ -378,3 +556,6 @@ class MainActivity : ComponentActivity() {
         private const val PROFILE_SAVE_DEBOUNCE_MS = 300L
     }
 }
+
+private const val TOGGLE_DEBOUNCE_MS = 400L
+private const val UI_TAG = "MainActivity"
