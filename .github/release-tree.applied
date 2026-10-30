@@ -1,6 +1,6 @@
 # Written by scripts/enforce-release-tree.sh - do not edit.
 # The repository was reduced to exactly the files of this release.
-version=1.5.0
-manifest=96f1022c677cb442a8ab5c01bfdb5be66b53b4d0c334018d2606c0b1cb8d1f7a
-removed=1
+version=1.6.0
+manifest=b3a99897af9c0f4e0ddfc5d4e6a337268801abdc1fbd79d5bcb33af32c5765b4
+removed=8
 differing=0
