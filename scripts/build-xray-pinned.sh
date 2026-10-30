@@ -21,9 +21,24 @@ fi
 cp "$ROOT/scripts/xray-leaf-pin_test.go" "$SRC/transport/internet/tls/aether_leaf_pin_test.go"
 cp "$ROOT/scripts/xray-leaf-conf_test.go" "$SRC/infra/conf/aether_leaf_pin_test.go"
 export GOTOOLCHAIN=auto
+# 1.6.0 CI fix: a transient proxy.golang.org failure ("stream error ...
+# INTERNAL_ERROR") failed the whole build. The pipe in GOPROXY makes Go fall
+# back to the next source on ANY error, and go.sum still verifies every module,
+# so a mirror cannot substitute different code.
+export GOPROXY="${GOPROXY:-https://proxy.golang.org|https://goproxy.io|direct}"
+retry() {
+  local n=1 max=5
+  until "$@"; do
+    if [ "$n" -ge "$max" ]; then echo "ERROR: failed after $max attempts: $*" >&2; return 1; fi
+    echo "    attempt $n/$max failed (network?) - retrying in $((n * 10))s: $*" >&2
+    sleep $((n * 10)); n=$((n + 1))
+  done
+}
+# Download all modules first (retried) so the tests/builds below never touch the network.
+(cd "$SRC" && retry go mod download)
 # Includes a negative pin test: a CA-valid/name-valid but unpinned certificate
 # must NEVER be accepted. This test is mandatory in CI.
-(cd "$SRC" && go test ./transport/internet/tls ./infra/conf -run '^TestAetherLeafPin' -count=1)
+(cd "$SRC" && retry go test ./transport/internet/tls ./infra/conf -run '^TestAetherLeafPin' -count=1)
 if [ "${1:-android}" = host ]; then
   (cd "$SRC" && CGO_ENABLED=0 go build -trimpath -ldflags '-s -w' -o "$ROOT/.native/xray-pinned-host" ./main)
   exit 0

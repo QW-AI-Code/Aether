@@ -4427,7 +4427,7 @@ f9cfb7ca561baba55c86f9c4717dd6fdd505035863875f32765cd462bb28e545  ./patches/0001
 c2d92ce145fd2ec351ec6cf022da81fa374d137f901c347789b7b3d89e7f1e86  ./scripts/aethertun-jni.c
 eb3bb1811f6a8843879def2cbda05740732c9380ed71305f65f123045f538376  ./scripts/audit-rust.py
 1de1b1770e336587d69efd73b187ac9a00c69c399324a0ffd16030e82e04e73f  ./scripts/build-natives.sh
-39a764c4a680d1841e61f4d111ce8fb3f6d4d201a9a766bb1125b06a1c6e69e4  ./scripts/build-xray-pinned.sh
+2d85b05397c888ea7dd98d65b68be07e2f71c691130af55460165f4a453f3601  ./scripts/build-xray-pinned.sh
 10986a8debd5bacdf3ff907055f1503cfd82e4aa3c6984f3d81026573452db83  ./scripts/enforce-release-tree.sh
 5d19faaf0b2287af81f19165f80025de9437eb7dbfdfde450a2a59b4f15986fa  ./scripts/fetch-natives.sh
 f3e0b93ac95df9564b581d12d6b7ebd1fd9ae89a9d42d923979c7666694c3eb1  ./scripts/fix-fa-bidi.py
