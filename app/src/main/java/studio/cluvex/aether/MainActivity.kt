@@ -26,9 +26,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import studio.cluvex.aether.ai.AiSession
+import studio.cluvex.aether.auth.AuthGate
+import studio.cluvex.aether.auth.AuthRepository
+import studio.cluvex.aether.auth.DemoAuthRepository
 import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.core.NetProbe
+import studio.cluvex.aether.core.PortLease
 import studio.cluvex.aether.core.TunnelConfig
 import studio.cluvex.aether.data.LanguagePrefs
 import studio.cluvex.aether.data.OnboardingStore
@@ -38,7 +42,9 @@ import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.isBusy
 import studio.cluvex.aether.model.isConnected
 import studio.cluvex.aether.ui.HomeScreen
+import studio.cluvex.aether.ui.LoginCodeDialog
 import studio.cluvex.aether.ui.OnboardingScreen
+import studio.cluvex.aether.ui.announcements.WhatsNewGate
 import studio.cluvex.aether.ui.theme.AetherTheme
 import java.io.File
 
@@ -82,6 +88,9 @@ class MainActivity : ComponentActivity() {
     /** Feature merge: first-run onboarding gate. */
     private lateinit var onboardingStore: OnboardingStore
 
+    /** Sign-in gate. Swap DemoAuthRepository for a real backend implementation. */
+    private lateinit var authRepo: AuthRepository
+
     // Holds the profile to connect with once VPN consent is granted.
     private var pendingProfile: ConnectionProfile? = null
 
@@ -123,6 +132,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         profileStore = ProfileStore(applicationContext)
         onboardingStore = OnboardingStore(applicationContext)
+        authRepo = DemoAuthRepository(applicationContext)
 
         // Load the persisted profile ONCE as the initial UI state; from then
         // on the in-memory state is the single source of truth for the UI.
@@ -225,7 +235,7 @@ class MainActivity : ComponentActivity() {
                                 val info = withContext(Dispatchers.IO) {
                                     NetProbe.fetchIpInfoViaSocksWithRetry(
                                         TunnelConfig.SOCKS_HOST,
-                                        TunnelConfig.SOCKS_PORT,
+                                        PortLease.socks,
                                     )
                                 }
                                 if (info != null) {
@@ -278,28 +288,51 @@ class MainActivity : ComponentActivity() {
                 }
 
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    if (!onboardingDone) {
-                        OnboardingScreen(
-                            onFinished = {
-                                lifecycleScope.launch { onboardingStore.markCompleted() }
-                            },
-                        )
-                    } else {
-                        HomeScreen(
-                            state = state,
-                            profile = profile ?: ConnectionProfile(),
-                            connectedSince = connectedSince,
-                            ipInfo = ipInfo,
-                            ipLoading = ipLoading,
-                            onProfileChange = { updated ->
-                                // Update the UI synchronously — keystrokes must
-                                // never wait for disk I/O — then persist in the
-                                // background.
-                                uiProfile.value = updated
-                                profileSaves.tryEmit(updated)
-                            },
-                            onToggleConnection = { toggleConnection(state) },
-                        )
+                    // ZERO TRUST (1.3.1, issue #12): the engine may stop mid-connect
+                    // and wait on stdin for the one-time code the organization just
+                    // e-mailed. Placed here rather than inside a screen because the
+                    // request can arrive while the user is anywhere in the app, and
+                    // a prompt that only exists on one screen is one they miss.
+                    // Renders nothing unless a request is outstanding.
+                    LoginCodeDialog()
+                    AuthGate(repo = authRepo) { account, signOut ->
+                        if (!onboardingDone) {
+                            OnboardingScreen(
+                                onFinished = {
+                                    lifecycleScope.launch { onboardingStore.markCompleted() }
+                                },
+                            )
+                        } else {
+                            HomeScreen(
+                                state = state,
+                                profile = profile ?: ConnectionProfile(),
+                                connectedSince = connectedSince,
+                                ipInfo = ipInfo,
+                                ipLoading = ipLoading,
+                                onProfileChange = { updated ->
+                                    // Update the UI synchronously - keystrokes must
+                                    // never wait for disk I/O - then persist in the
+                                    // background.
+                                    uiProfile.value = updated
+                                    profileSaves.tryEmit(updated)
+                                },
+                                onToggleConnection = { toggleConnection(state) },
+                                account = account,
+                                onSignOut = {
+                                    // Never leave a tunnel running for somebody who
+                                    // is no longer signed in.
+                                    if (state.isConnected || state.isBusy) {
+                                        AetherController.disconnect(this@MainActivity)
+                                    }
+                                    signOut()
+                                },
+                            )
+                            // 1.5.0: "What's new" dialog on the first launch after a
+                            // fresh install or an upgrade (until the user ticks
+                            // "don't show again" for this version). Only after
+                            // onboarding, so it never stacks on top of the pager.
+                            WhatsNewGate()
+                        }
                     }
                 }
             }
