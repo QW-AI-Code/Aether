@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.Chat
@@ -43,6 +44,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import studio.cluvex.aether.R
+import studio.cluvex.aether.auth.Account
+import studio.cluvex.aether.auth.AccountHeader
 import studio.cluvex.aether.core.IpEndpoint
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
@@ -61,6 +64,12 @@ import studio.cluvex.aether.ui.settings.SettingsRoute
 import studio.cluvex.aether.ui.theme.AetherMint
 import studio.cluvex.aether.ui.theme.AetherViolet
 
+/** Top-bar icon row height (48dp button + 4dp padding). The header starts below it. */
+private val ACCOUNT_HEADER_TOP = 52.dp
+
+/** Icon row + header (44dp) + a small gap: how far the home content moves down. */
+private val ACCOUNT_HEADER_RESERVE = 100.dp
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -72,6 +81,9 @@ fun HomeScreen(
     onProfileChange: (ConnectionProfile) -> Unit,
     onToggleConnection: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Signed-in account shown in the header; null hides the header and the sign-out row. */
+    account: Account? = null,
+    onSignOut: () -> Unit = {},
 ) {
     // UI-SPEED, and the single biggest win in this release: settings used to be a
     // ModalBottomSheet holding a ~900-line, ~50-control card, AND the same card
@@ -200,6 +212,21 @@ fun HomeScreen(
                             onClick = { go(SettingsRoute.ABOUT) },
                         )
                     }
+
+                    if (account != null) {
+                        Spacer(Modifier.height(14.dp))
+                        SettingsGroup {
+                            SettingsNavRow(
+                                title = stringResource(R.string.account_sign_out),
+                                summary = stringResource(R.string.account_sign_out_summary),
+                                icon = Icons.AutoMirrored.Rounded.Logout,
+                                onClick = {
+                                    drawerScope.launch { drawerState.close() }
+                                    onSignOut()
+                                },
+                            )
+                        }
+                    }
                 }
             }
         },
@@ -216,12 +243,18 @@ fun HomeScreen(
             // every device, at full rendering sharpness, and there is nothing
             // left to scroll. See FitToHeight.
             FitToHeight(
+                // r2: every connection-state change re-opens the fit, so a size
+                // forced down by a transient is restored as soon as it passes.
+                epochKey = state::class,
                 modifier = Modifier
                     .fillMaxSize()
                     // Insets are applied OUTSIDE the scaled subtree: system bars
                     // are a physical size and must not shrink with the content.
                     .statusBarsPadding()
                     .navigationBarsPadding()
+                    // Room for the account header, which sits OUTSIDE this
+                    // subtree (below) so it is never scaled by FitToHeight.
+                    .padding(top = if (account != null) ACCOUNT_HEADER_RESERVE else 0.dp)
                     .padding(horizontal = 20.dp, vertical = 8.dp),
             ) {
                 Column(
@@ -243,7 +276,11 @@ fun HomeScreen(
 
                     Spacer(Modifier.height(8.dp))
 
-                    ConnectButton(mode = mode, onClick = onToggleConnection)
+                    ConnectButton(
+                        mode = mode,
+                        onClick = onToggleConnection,
+                        stateText = stateTitle(state),
+                    )
 
                     // The button's box carries its own halo padding, so the gap
                     // under it is only there to separate two surfaces.
@@ -257,8 +294,19 @@ fun HomeScreen(
                         ipInfo = ipInfo,
                         ipLoading = ipLoading,
                         error = state is ConnectionState.Error,
+                        backend = profile.backend,
                     )
                 }
+            }
+
+            if (account != null) {
+                AccountHeader(
+                    account = account,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .statusBarsPadding()
+                        .padding(top = ACCOUNT_HEADER_TOP, start = 20.dp, end = 20.dp),
+                )
             }
 
             IconButton(
