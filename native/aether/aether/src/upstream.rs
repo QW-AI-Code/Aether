@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
 use base64::Engine;
@@ -36,7 +36,7 @@ impl Kind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Upstream {
     pub kind: Kind,
     pub host: String,
@@ -45,14 +45,114 @@ pub struct Upstream {
     pub password: Option<String>,
 }
 
-pub fn configured() -> Option<&'static Upstream> {
-    static UPSTREAM: std::sync::OnceLock<Option<Upstream>> = std::sync::OnceLock::new();
-    UPSTREAM.get_or_init(Upstream::from_env).as_ref()
+impl std::fmt::Debug for Upstream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Upstream")
+            .field("kind", &self.kind)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("user", &self.user)
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+tokio::task_local! {
+    /// The proxy one task goes through instead of AETHER_UPSTREAM, see [`through`].
+    static TASK_UPSTREAM: Upstream;
+}
+
+/// Runs `future` with the connections it makes going through `proxy` instead of AETHER_UPSTREAM.
+/// The setting stays as it is, and every other task of the process keeps going through it, so one
+/// call can be sent elsewhere, as gool sends the registration of its wireguard identity through
+/// its tunnel, without the rest of the process following it. A task `future` spawns goes through
+/// the setting as well.
+pub async fn through<F: std::future::Future>(proxy: Upstream, future: F) -> F::Output {
+    TASK_UPSTREAM.scope(proxy, future).await
+}
+
+/// The proxy AETHER_UPSTREAM names, as it names it now, or the one a task runs [`through`]. It is
+/// looked up on every call rather than once: --tor-reverse and --psiphon-reverse name their
+/// carrier only when it is up, and tor looks the setting up while it bootstraps, to fetch bridges,
+/// so an answer kept from then sent the registration and the tunnel past the carrier instead of
+/// through it. A setting is parsed, and announced, only when it changes.
+pub fn configured() -> Option<Upstream> {
+    if let Ok(proxy) = TASK_UPSTREAM.try_with(Upstream::clone) {
+        return Some(proxy);
+    }
+    static SEEN: std::sync::Mutex<Option<(String, Option<Upstream>)>> = std::sync::Mutex::new(None);
+    let raw = std::env::var("AETHER_UPSTREAM").unwrap_or_default();
+    let mut seen = SEEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    remembered(&mut seen, raw)
+}
+
+/// Stops aether when AETHER_UPSTREAM, which --upstream sets, names a proxy it cannot dial through:
+/// [`configured`] sets such a setting aside, and every connection would then go straight out,
+/// around the proxy the user named. A blank setting names none.
+pub fn check_setting() -> Result<()> {
+    usable(&std::env::var("AETHER_UPSTREAM").unwrap_or_default())
+}
+
+/// Whether `raw`, a setting of AETHER_UPSTREAM, is blank or names a proxy aether can dial through.
+fn usable(raw: &str) -> Result<()> {
+    if raw.trim().is_empty() {
+        return Ok(());
+    }
+    Upstream::parse(raw).map(|_| ()).map_err(|e| {
+        AetherError::Other(format!(
+            "--upstream cannot be used: {}; aether ends rather than connect around it",
+            e.detail()
+        ))
+    })
+}
+
+/// The hold on AETHER_UPSTREAM of a test: the variable is the whole process's, and the tests run
+/// side by side, so each test that sets it, or that dials through the setting, holds it first.
+/// Let go, the hold clears the variable, which a test that failed half way may have left set.
+#[cfg(test)]
+pub(crate) struct SettingHeld(tokio::sync::MutexGuard<'static, ()>);
+
+#[cfg(test)]
+impl Drop for SettingHeld {
+    fn drop(&mut self) {
+        std::env::remove_var("AETHER_UPSTREAM");
+    }
+}
+
+/// Waits for the hold on AETHER_UPSTREAM, see `SettingHeld`; the variable starts out clear.
+#[cfg(test)]
+pub(crate) async fn hold_setting() -> SettingHeld {
+    static SETTING: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let held = SETTING
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    std::env::remove_var("AETHER_UPSTREAM");
+    SettingHeld(held)
+}
+
+/// The proxy `raw` names, parsed once per setting: while the setting stays the same, the proxy
+/// `seen` holds for it is used again.
+fn remembered(seen: &mut Option<(String, Option<Upstream>)>, raw: String) -> Option<Upstream> {
+    if let Some((last, upstream)) = seen.as_ref() {
+        if *last == raw {
+            return upstream.clone();
+        }
+    }
+    let upstream = Upstream::from_value(&raw);
+    *seen = Some((raw, upstream.clone()));
+    upstream
 }
 
 impl Upstream {
     pub fn from_env() -> Option<Self> {
-        let raw = std::env::var("AETHER_UPSTREAM").ok()?;
+        Self::from_value(&std::env::var("AETHER_UPSTREAM").ok()?)
+    }
+
+    /// The proxy `raw` names, announced in the log; none when it is blank or cannot be read.
+    fn from_value(raw: &str) -> Option<Self> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return None;
@@ -97,15 +197,29 @@ impl Upstream {
             None => (None, rest),
         };
 
+        if scheme == "https" {
+            if credentials.is_some() {
+                return Err(AetherError::Other(
+                    "an https:// upstream with a password is refused: aether talks to its upstream \
+                     over plain http, which would send the password in the clear; use http:// \
+                     only if that is acceptable, or socks5://"
+                        .into(),
+                ));
+            }
+            log::warn!(
+                "[-] the upstream is written as https:// but aether talks to it over plain http; \
+                 the tunnel inside stays encrypted"
+            );
+        }
+
         let endpoint = endpoint.trim_end_matches('/');
         let (host, port) = split_endpoint(endpoint)?;
 
         let (user, password) = match credentials {
             Some(pair) => match pair.split_once(':') {
-                Some((user, password)) => (
-                    Some(percent_decode(user)),
-                    Some(percent_decode(password)),
-                ),
+                Some((user, password)) => {
+                    (Some(percent_decode(user)), Some(percent_decode(password)))
+                }
                 None => (Some(percent_decode(pair)), None),
             },
             None => (None, None),
@@ -137,6 +251,38 @@ impl Upstream {
         format!("{scheme}://{host}:{}", self.port)
     }
 
+    /// The proxy as psiphon's UpstreamProxyURL takes it: socks5 or http, with any credentials
+    /// written into the address.
+    pub fn psiphon_url(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
+        let scheme = match self.kind {
+            Kind::Socks5 => "socks5",
+            Kind::Http => "http",
+        };
+        let credentials = match (&self.user, &self.password) {
+            (Some(user), Some(password)) => {
+                format!("{}:{}@", percent_encode(user), percent_encode(password))
+            }
+            (Some(user), None) => format!("{}@", percent_encode(user)),
+            _ => String::new(),
+        };
+        format!("{scheme}://{credentials}{host}:{}", self.port)
+    }
+
+    /// The address tor can dial its relays and bridges through: a socks5 proxy at an address, with
+    /// no name to resolve and no password, which is what tor's outbound proxy takes.
+    pub fn socks_address(&self) -> Option<SocketAddr> {
+        if self.kind != Kind::Socks5 || self.user.is_some() {
+            return None;
+        }
+        let ip: IpAddr = self.host.parse().ok()?;
+        Some(SocketAddr::new(ip, self.port))
+    }
+
     pub fn as_reqwest_proxy(&self) -> Result<reqwest::Proxy> {
         let proxy = reqwest::Proxy::all(self.url())
             .map_err(|error| AetherError::Other(format!("{} is unusable: {error}", self.url())))?;
@@ -148,18 +294,37 @@ impl Upstream {
     }
 
     pub async fn connect(&self, target: SocketAddr) -> Result<TcpStream> {
+        self.open(encode_request(CMD_CONNECT, target), &target.to_string())
+            .await
+    }
+
+    /// A TCP connection to `host`:`port` through the proxy. A name goes to the proxy as it is,
+    /// for the proxy to look up, so that no DNS query for it leaves this machine.
+    pub async fn connect_host(&self, host: &str, port: u16) -> Result<TcpStream> {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            return self.connect(SocketAddr::new(ip, port)).await;
+        }
+        self.open(
+            encode_name_request(CMD_CONNECT, host, port)?,
+            &format!("{host}:{port}"),
+        )
+        .await
+    }
+
+    /// A TCP connection through the proxy: `socks_request` asked of a socks5 proxy, a CONNECT
+    /// to `authority` of an http one.
+    async fn open(&self, socks_request: Vec<u8>, authority: &str) -> Result<TcpStream> {
         let attempt = async {
-            let mut stream = TcpStream::connect(self.endpoint()).await?;
+            let mut stream = crate::egress::tcp_connect_host(&self.host, self.port).await?;
             let _ = stream.set_nodelay(true);
 
             match self.kind {
                 Kind::Socks5 => {
                     self.socks_greet(&mut stream).await?;
-                    let request = encode_request(CMD_CONNECT, target);
-                    stream.write_all(&request).await?;
+                    stream.write_all(&socks_request).await?;
                     read_reply(&mut stream).await?;
                 }
-                Kind::Http => self.http_connect(&mut stream, target).await?,
+                Kind::Http => self.http_connect(&mut stream, authority).await?,
             }
 
             Ok(stream)
@@ -182,7 +347,7 @@ impl Upstream {
         }
 
         let attempt = async {
-            let mut control = TcpStream::connect(self.endpoint()).await?;
+            let mut control = crate::egress::tcp_connect_host(&self.host, self.port).await?;
             let _ = control.set_nodelay(true);
             self.socks_greet(&mut control).await?;
 
@@ -192,8 +357,12 @@ impl Upstream {
             let bound = read_reply(&mut control).await?;
 
             let relay = relay_address(bound, &self.host, self.port).await?;
-            let local = if relay.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
-            let socket = UdpSocket::bind(local).await?;
+            let local = if relay.is_ipv4() {
+                "0.0.0.0:0"
+            } else {
+                "[::]:0"
+            };
+            let socket = crate::egress::udp_bind(local.parse().expect("a wildcard address"))?;
             socket.connect(relay).await?;
 
             Ok(UdpRelay {
@@ -267,7 +436,8 @@ impl Upstream {
         stream.read_exact(&mut answer).await?;
         if answer[0] != 0x01 {
             return Err(AetherError::Other(
-                "the upstream proxy answered the password negotiation with the wrong version".into(),
+                "the upstream proxy answered the password negotiation with the wrong version"
+                    .into(),
             ));
         }
         if answer[1] != 0x00 {
@@ -278,16 +448,15 @@ impl Upstream {
         Ok(())
     }
 
-    async fn http_connect(&self, stream: &mut TcpStream, target: SocketAddr) -> Result<()> {
-        let authority = format!("{target}");
+    async fn http_connect(&self, stream: &mut TcpStream, authority: &str) -> Result<()> {
         let mut request = format!(
             "CONNECT {authority} HTTP/1.1\r\nHost: {authority}\r\nProxy-Connection: Keep-Alive\r\n"
         );
 
         if let Some(user) = &self.user {
             let password = self.password.clone().unwrap_or_default();
-            let token = base64::engine::general_purpose::STANDARD
-                .encode(format!("{user}:{password}"));
+            let token =
+                base64::engine::general_purpose::STANDARD.encode(format!("{user}:{password}"));
             request.push_str(&format!("Proxy-Authorization: Basic {token}\r\n"));
         }
         request.push_str("\r\n");
@@ -313,9 +482,8 @@ impl Upstream {
             }
         }
 
-        let status = http_status(&head).ok_or_else(|| {
-            AetherError::Other("the upstream proxy answer was not http".into())
-        })?;
+        let status = http_status(&head)
+            .ok_or_else(|| AetherError::Other("the upstream proxy answer was not http".into()))?;
 
         if !(200..300).contains(&status) {
             return Err(AetherError::Other(format!(
@@ -367,8 +535,35 @@ impl UdpRelay {
 }
 
 struct Detour {
+    id: u64,
     shim: SocketAddr,
     peer: SocketAddr,
+}
+
+#[derive(Default)]
+#[must_use = "the detour is closed as soon as its guard is dropped"]
+pub struct DetourGuard(Option<(SocketAddr, u64, tokio::task::AbortHandle)>);
+
+impl Drop for DetourGuard {
+    fn drop(&mut self) {
+        if let Some((client, id, pump)) = self.0.take() {
+            pump.abort();
+            forget_detour(client, id);
+        }
+    }
+}
+
+fn forget_detour(client: SocketAddr, id: u64) {
+    if let Ok(mut map) = detours().lock() {
+        if map.get(&client).is_some_and(|detour| detour.id == id) {
+            map.remove(&client);
+        }
+    }
+}
+
+fn next_detour_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
 fn detours() -> &'static std::sync::Mutex<std::collections::HashMap<SocketAddr, Detour>> {
@@ -395,26 +590,39 @@ pub fn real_source(local: SocketAddr, observed: SocketAddr) -> SocketAddr {
     }
 }
 
-pub async fn attach_detour(socket: &UdpSocket, peer: SocketAddr) -> Result<()> {
-    let proxy = match configured() {
-        Some(proxy) => proxy,
-        None => return Ok(()),
-    };
+pub async fn attach_detour(socket: &UdpSocket, peer: SocketAddr) -> Result<DetourGuard> {
+    match configured() {
+        Some(proxy) => attach_detour_via(&proxy, socket, peer).await,
+        None => Ok(DetourGuard::default()),
+    }
+}
 
+async fn attach_detour_via(
+    proxy: &Upstream,
+    socket: &UdpSocket,
+    peer: SocketAddr,
+) -> Result<DetourGuard> {
     if crate::routing::is_private(peer.ip()) {
         log::debug!("[*] {peer} is local, reaching it without the upstream proxy");
-        return Ok(());
+        return Ok(DetourGuard::default());
     }
 
     let relay = proxy.associate().await?;
-    let shim = UdpSocket::bind("127.0.0.1:0").await?;
-    let shim_address = shim.local_addr()?;
     let client = socket.local_addr()?;
+    let loopback = if client.is_ipv4() {
+        IpAddr::V4(Ipv4Addr::LOCALHOST)
+    } else {
+        IpAddr::V6(Ipv6Addr::LOCALHOST)
+    };
+    let shim = UdpSocket::bind(SocketAddr::new(loopback, 0)).await?;
+    let shim_address = shim.local_addr()?;
+    let id = next_detour_id();
 
     if let Ok(mut map) = detours().lock() {
         map.insert(
             client,
             Detour {
+                id,
                 shim: shim_address,
                 peer,
             },
@@ -426,16 +634,14 @@ pub async fn attach_detour(socket: &UdpSocket, peer: SocketAddr) -> Result<()> {
         relay.relay()
     );
 
-    tokio::spawn(async move {
+    let task = tokio::spawn(async move {
         if let Err(error) = pump(shim, client, peer, relay).await {
             log::warn!("[-] the upstream udp relay for {peer} stopped: {error}");
         }
-        if let Ok(mut map) = detours().lock() {
-            map.remove(&client);
-        }
+        forget_detour(client, id);
     });
 
-    Ok(())
+    Ok(DetourGuard(Some((client, id, task.abort_handle()))))
 }
 
 // >>> AETHER-APP-PATCH udp-socket-buffer-asymmetry
@@ -537,18 +743,32 @@ pub fn send_buffer_kb(socket: &UdpSocket) -> usize {
 }
 // <<< AETHER-APP-PATCH udp-socket-buffer-asymmetry
 
-pub async fn bind_via_upstream(peer: SocketAddr) -> Result<(UdpSocket, SocketAddr)> {
-    let bind = if peer.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+pub async fn bind_via_upstream(peer: SocketAddr) -> Result<(UdpSocket, SocketAddr, DetourGuard)> {
+    let bind = if peer.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
 
-    let socket = UdpSocket::bind(bind).await?;
+    let socket = crate::egress::udp_bind(bind.parse().expect("a wildcard address"))?;
+    // AETHER-APP-PATCH udp-socket-buffer-asymmetry: the split rcv/snd sizing
+    // applies to the egress-bound socket too - core 2.0.0 changed HOW this
+    // socket is created (it can carry a firewall mark now), not how big its
+    // buffers have to be.
     tune_udp_buffers(&socket);
-    attach_detour(&socket, peer).await?;
+    let detour = attach_detour(&socket, peer).await?;
 
     let local = socket.local_addr()?;
     let target = relay_target(local, peer);
     socket.connect(target).await?;
 
-    Ok((socket, target))
+    Ok((socket, target, detour))
+}
+
+fn from_detoured_socket(client: SocketAddr, origin: SocketAddr) -> bool {
+    origin.port() == client.port()
+        && (origin.ip() == client.ip()
+            || (client.ip().is_unspecified() && origin.ip().is_loopback()))
 }
 
 async fn pump(
@@ -559,19 +779,27 @@ async fn pump(
 ) -> std::io::Result<()> {
     let mut from_client = vec![0u8; 65535];
     let mut from_relay = vec![0u8; 65535];
+    let mut reply_to: Option<SocketAddr> = None;
 
     loop {
         tokio::select! {
             read = shim.recv_from(&mut from_client) => {
                 let (len, origin) = read?;
-                if origin != client {
+                if !from_detoured_socket(client, origin) {
                     continue;
                 }
+                reply_to = Some(origin);
                 relay.send_to(&from_client[..len], peer).await?;
             }
             read = relay.recv_from(&mut from_relay) => {
-                let (len, _origin) = read?;
-                shim.send_to(&from_relay[..len], client).await?;
+                let len = match read {
+                    Ok((len, _origin)) => len,
+                    Err(error) if error.kind() == std::io::ErrorKind::InvalidData => continue,
+                    Err(error) => return Err(error),
+                };
+                if let Some(to) = reply_to {
+                    shim.send_to(&from_relay[..len], to).await?;
+                }
             }
         }
     }
@@ -600,6 +828,18 @@ fn split_endpoint(endpoint: &str) -> Result<(String, u16)> {
         return Err(malformed());
     }
     Ok((host.to_string(), port))
+}
+
+fn percent_encode(value: &str) -> String {
+    value
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
 }
 
 fn percent_decode(value: &str) -> String {
@@ -657,6 +897,23 @@ pub fn encode_request(command: u8, target: SocketAddr) -> Vec<u8> {
     out
 }
 
+/// A socks5 request for `name`:`port`, the name for the proxy to look up (RFC 1928, 4-5).
+pub fn encode_name_request(command: u8, name: &str, port: u16) -> Result<Vec<u8>> {
+    let length = u8::try_from(name.len())
+        .ok()
+        .filter(|length| *length > 0)
+        .ok_or_else(|| {
+            AetherError::Other(format!(
+                "{name:?} is no name a socks5 proxy can be asked for"
+            ))
+        })?;
+    let mut out = Vec::with_capacity(7 + name.len());
+    out.extend_from_slice(&[VER, command, 0x00, ATYP_NAME, length]);
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(&port.to_be_bytes());
+    Ok(out)
+}
+
 pub fn encode_udp_header(target: SocketAddr) -> Vec<u8> {
     let mut out = Vec::with_capacity(22);
     out.push(0x00);
@@ -687,10 +944,7 @@ pub fn decode_udp_header(buf: &[u8]) -> Option<(SocketAddr, usize)> {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&buf[4..20]);
             let port = u16::from_be_bytes([buf[20], buf[21]]);
-            Some((
-                SocketAddr::new(IpAddr::V6(octets.into()), port),
-                22,
-            ))
+            Some((SocketAddr::new(IpAddr::V6(octets.into()), port), 22))
         }
         ATYP_NAME => {
             let length = *buf.get(4)? as usize;
@@ -760,7 +1014,11 @@ async fn relay_address(bound: SocketAddr, host: &str, port: u16) -> Result<Socke
         return Ok(bound);
     }
 
-    let relay_port = if bound.port() == 0 { port } else { bound.port() };
+    let relay_port = if bound.port() == 0 {
+        port
+    } else {
+        bound.port()
+    };
 
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(SocketAddr::new(ip, relay_port));
@@ -777,6 +1035,157 @@ async fn relay_address(bound: SocketAddr, host: &str, port: u16) -> Result<Socke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_setting_aether_can_dial_through_or_none_lets_it_start() {
+        for raw in [
+            "",
+            "   ",
+            "socks5://127.0.0.1:1080",
+            "socks5h://user:secret@[::1]:1080",
+            "http://proxy.example:8080",
+        ] {
+            assert!(usable(raw).is_ok(), "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_setting_aether_would_set_aside_stops_it_instead_of_going_around_it() {
+        for raw in [
+            "socks5://127.0.0.1:0",
+            "socks5://127.0.0.1",
+            "ftp://127.0.0.1:21",
+            "https://user:secret@proxy.example:443",
+        ] {
+            let error = usable(raw).unwrap_err().to_string();
+            assert!(
+                error.starts_with("other: --upstream cannot be used: ")
+                    && error.ends_with("aether ends rather than connect around it")
+                    && !error.contains("used: other: "),
+                "{raw}: {error}"
+            );
+            // The password a setting carries stays out of what aether prints.
+            assert!(!error.contains("secret"), "{error}");
+        }
+        assert_eq!(
+            usable("socks5://127.0.0.1:0").unwrap_err().to_string(),
+            "other: --upstream cannot be used: 127.0.0.1:0 is not a host and port an upstream \
+             proxy can live at; aether ends rather than connect around it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_task_through_a_proxy_of_its_own_leaves_the_rest_on_the_setting() {
+        let _setting = hold_setting().await;
+        std::env::set_var("AETHER_UPSTREAM", "socks5://127.0.0.1:1080");
+        let tunnel = Upstream::parse("socks5h://127.0.0.1:2080").expect("proxy");
+
+        // Another task looks while the one inside is still there.
+        let (look, looking) = tokio::sync::oneshot::channel::<()>();
+        let (seen, saw) = tokio::sync::oneshot::channel::<Option<Upstream>>();
+        tokio::spawn(async move {
+            looking.await.ok();
+            seen.send(configured()).ok();
+        });
+        let (inside, beside, spawned) = through(tunnel, async move {
+            look.send(()).ok();
+            let beside = saw.await.expect("the other task");
+            let spawned = tokio::spawn(async { configured() })
+                .await
+                .expect("a task of its own");
+            (configured(), beside, spawned)
+        })
+        .await;
+
+        assert_eq!(inside.map(|proxy| proxy.port), Some(2080));
+        assert_eq!(beside.map(|proxy| proxy.port), Some(1080));
+        assert_eq!(spawned.map(|proxy| proxy.port), Some(1080));
+        // The setting itself was never touched, and the task is back on it once out.
+        assert_eq!(
+            std::env::var("AETHER_UPSTREAM").as_deref(),
+            Ok("socks5://127.0.0.1:1080")
+        );
+        assert_eq!(configured().map(|proxy| proxy.port), Some(1080));
+    }
+
+    #[tokio::test]
+    async fn a_call_to_the_api_through_a_proxy_of_its_own_goes_to_that_proxy_alone() {
+        let _setting = hold_setting().await;
+        // The setting names a proxy that only counts the connections it gets.
+        let setting = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        std::env::set_var(
+            "AETHER_UPSTREAM",
+            format!("socks5://{}", setting.local_addr().unwrap()),
+        );
+        let (tunnel, server) = fake_socks_http_server().await;
+        let tunnel = Upstream::parse(&format!("socks5h://{tunnel}")).unwrap();
+
+        let headers = Vec::new();
+        let request = crate::https::Request {
+            method: "POST",
+            host: "api.cloudflareclient.com",
+            port: 443,
+            address: None,
+            sni: None,
+            path: "/v0a4005/reg",
+            headers: &headers,
+            body: None,
+        };
+        let fingerprint = crate::tls::Fingerprint::default();
+        let call = crate::https::send(&request, &fingerprint, None, Duration::from_secs(5));
+        // The fake answers in plain HTTP, so the handshake fails: where the call went is what
+        // counts.
+        let _ = through(tunnel, call).await;
+
+        let target = tokio::time::timeout(Duration::from_secs(5), server)
+            .await
+            .expect("the call went to the proxy of its own")
+            .unwrap();
+        assert_eq!(target.as_deref(), Some("api.cloudflareclient.com"));
+        let dialled = tokio::time::timeout(Duration::from_millis(100), setting.accept()).await;
+        assert!(dialled.is_err(), "the call went to the setting's proxy too");
+    }
+
+    #[test]
+    fn a_proxy_named_after_the_first_look_is_still_used() {
+        // --tor-reverse names its carrier once tor is up, after tor looked for a proxy to fetch bridges through.
+        let mut seen = None;
+        assert!(remembered(&mut seen, String::new()).is_none());
+        let carrier =
+            remembered(&mut seen, "socks5://127.0.0.1:1820".to_string()).expect("the carrier");
+        assert_eq!(carrier.port, 1820);
+        assert_eq!(
+            remembered(&mut seen, "socks5://127.0.0.1:1820".to_string()),
+            Some(carrier)
+        );
+        assert!(remembered(&mut seen, "  ".to_string()).is_none());
+    }
+
+    #[test]
+    fn psiphon_reads_the_proxy_with_its_credentials_in_the_address() {
+        let plain = Upstream::parse("socks5://127.0.0.1:10821").unwrap();
+        assert_eq!(plain.psiphon_url(), "socks5://127.0.0.1:10821");
+        let named = Upstream::parse("http://al%40ice:p%3Ass@proxy.example:8080").unwrap();
+        assert_eq!(
+            named.psiphon_url(),
+            "http://al%40ice:p%3Ass@proxy.example:8080"
+        );
+        let six = Upstream::parse("socks5://[::1]:1080").unwrap();
+        assert_eq!(six.psiphon_url(), "socks5://[::1]:1080");
+    }
+
+    #[test]
+    fn tor_takes_a_socks5_proxy_at_an_address_without_a_password_only() {
+        let at = |raw: &str| Upstream::parse(raw).unwrap().socks_address();
+        assert_eq!(
+            at("socks5://127.0.0.1:10821"),
+            "127.0.0.1:10821".parse().ok()
+        );
+        assert_eq!(at("socks5://[::1]:1080"), "[::1]:1080".parse().ok());
+        assert!(at("http://127.0.0.1:8080").is_none());
+        assert!(at("socks5://proxy.example:1080").is_none());
+        assert!(at("socks5://alice:secret@127.0.0.1:1080").is_none());
+    }
 
     #[test]
     fn a_bare_host_and_port_is_taken_as_socks5() {
@@ -932,6 +1341,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_datagram_makes_the_round_trip_through_a_socks5_relay() {
+        let _setting = hold_setting().await;
         let (proxy_address, server) = fake_socks_udp_server().await;
         std::env::set_var("AETHER_UPSTREAM", format!("socks5://{proxy_address}"));
 
@@ -942,17 +1352,231 @@ mod tests {
         relay.send_to(b"ping", peer).await.unwrap();
 
         let mut out = vec![0u8; 1024];
-        let (len, origin) =
-            tokio::time::timeout(Duration::from_secs(3), relay.recv_from(&mut out))
-                .await
-                .unwrap()
-                .unwrap();
+        let (len, origin) = tokio::time::timeout(Duration::from_secs(3), relay.recv_from(&mut out))
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(&out[..len], b"pong:ping");
         assert_eq!(origin, peer);
 
         std::env::remove_var("AETHER_UPSTREAM");
         server.abort();
+    }
+
+    async fn round_trip_through_a_detour(bind: &str, peer: SocketAddr) {
+        let (proxy_address, server) = fake_socks_udp_server().await;
+        let proxy = Upstream::parse(&format!("socks5://{proxy_address}")).unwrap();
+
+        let socket = UdpSocket::bind(bind).await.unwrap();
+        let detour = attach_detour_via(&proxy, &socket, peer).await.unwrap();
+
+        let local = socket.local_addr().unwrap();
+        let target = relay_target(local, peer);
+        assert_ne!(
+            target, peer,
+            "the datagram has to go to the shim, not straight to the peer"
+        );
+        socket.send_to(b"ping", target).await.unwrap();
+
+        let mut buf = [0u8; 64];
+        let (len, observed) =
+            tokio::time::timeout(Duration::from_secs(3), socket.recv_from(&mut buf))
+                .await
+                .expect("the answer must come back through the relay")
+                .unwrap();
+        assert_eq!(&buf[..len], b"pong:ping");
+        assert_eq!(real_source(local, observed), peer);
+
+        drop(detour);
+        assert_eq!(
+            relay_target(local, peer),
+            peer,
+            "dropping the guard retires the detour"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_wildcard_bound_socket_reaches_its_peer_through_the_relay() {
+        round_trip_through_a_detour("0.0.0.0:0", "162.159.192.1:2408".parse().unwrap()).await;
+    }
+
+    #[tokio::test]
+    async fn an_ipv6_socket_reaches_its_peer_through_the_relay() {
+        if UdpSocket::bind("[::1]:0").await.is_err() {
+            eprintln!("skipped: this machine has no IPv6 loopback");
+            return;
+        }
+        round_trip_through_a_detour("[::]:0", "[2606:4700:d0::a29f:c001]:2408".parse().unwrap())
+            .await;
+    }
+
+    #[test]
+    fn only_the_detoured_socket_is_served_by_its_shim() {
+        let wildcard: SocketAddr = "0.0.0.0:5000".parse().unwrap();
+        assert!(from_detoured_socket(
+            wildcard,
+            "127.0.0.1:5000".parse().unwrap()
+        ));
+        assert!(!from_detoured_socket(
+            wildcard,
+            "127.0.0.1:5001".parse().unwrap()
+        ));
+        assert!(!from_detoured_socket(
+            wildcard,
+            "192.168.1.2:5000".parse().unwrap()
+        ));
+
+        let wildcard_v6: SocketAddr = "[::]:5000".parse().unwrap();
+        assert!(from_detoured_socket(
+            wildcard_v6,
+            "[::1]:5000".parse().unwrap()
+        ));
+        assert!(!from_detoured_socket(
+            wildcard_v6,
+            "[::1]:5001".parse().unwrap()
+        ));
+
+        let bound: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        assert!(from_detoured_socket(
+            bound,
+            "127.0.0.1:5000".parse().unwrap()
+        ));
+    }
+
+    async fn fake_socks_http_server() -> (SocketAddr, tokio::task::JoinHandle<Option<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let handle = tokio::spawn(async move {
+            let (mut control, _) = listener.accept().await.ok()?;
+
+            let mut greeting = [0u8; 2];
+            control.read_exact(&mut greeting).await.ok()?;
+            let mut methods = vec![0u8; greeting[1] as usize];
+            control.read_exact(&mut methods).await.ok()?;
+            control.write_all(&[VER, AUTH_NONE]).await.ok()?;
+
+            let mut head = [0u8; 4];
+            control.read_exact(&mut head).await.ok()?;
+            if head[1] != CMD_CONNECT {
+                return None;
+            }
+            let target = match head[3] {
+                ATYP_NAME => {
+                    let mut len = [0u8; 1];
+                    control.read_exact(&mut len).await.ok()?;
+                    let mut name = vec![0u8; len[0] as usize];
+                    control.read_exact(&mut name).await.ok()?;
+                    String::from_utf8(name).ok()?
+                }
+                ATYP_V4 => {
+                    let mut octets = [0u8; 4];
+                    control.read_exact(&mut octets).await.ok()?;
+                    Ipv4Addr::from(octets).to_string()
+                }
+                _ => return None,
+            };
+            let mut port = [0u8; 2];
+            control.read_exact(&mut port).await.ok()?;
+
+            let mut answer = vec![VER, REP_OK, 0x00];
+            answer.extend_from_slice(&encode_address("127.0.0.1:1".parse().unwrap()));
+            control.write_all(&answer).await.ok()?;
+
+            let mut request = vec![0u8; 2048];
+            let _ = control.read(&mut request).await.ok()?;
+            control
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await
+                .ok()?;
+            Some(target)
+        });
+
+        (address, handle)
+    }
+
+    #[tokio::test]
+    async fn the_api_client_reaches_its_host_through_a_socks5_upstream() {
+        let (proxy_address, server) = fake_socks_http_server().await;
+        let upstream = Upstream::parse(&format!("socks5://{proxy_address}")).unwrap();
+        let client = reqwest::Client::builder()
+            .proxy(upstream.as_reqwest_proxy().unwrap())
+            .build()
+            .unwrap();
+
+        let body = tokio::time::timeout(Duration::from_secs(5), async {
+            client
+                .get("http://api.example.test/ping")
+                .send()
+                .await?
+                .text()
+                .await
+        })
+        .await
+        .expect("the request finishes")
+        .expect("the request goes through the socks5 proxy");
+
+        assert_eq!(body, "ok");
+        assert_eq!(
+            server.await.unwrap().as_deref(),
+            Some("api.example.test"),
+            "the name has to be resolved by the proxy, not looked up locally"
+        );
+    }
+
+    #[test]
+    fn a_name_goes_to_a_socks5_proxy_as_it_is() {
+        let request = encode_name_request(CMD_CONNECT, "api.cloudflareclient.com", 443).unwrap();
+        assert_eq!(request[..5], [VER, CMD_CONNECT, 0x00, ATYP_NAME, 24]);
+        assert_eq!(&request[5..29], b"api.cloudflareclient.com");
+        assert_eq!(request[29..], 443u16.to_be_bytes());
+        assert!(encode_name_request(CMD_CONNECT, "", 443).is_err());
+        assert!(encode_name_request(CMD_CONNECT, &"a".repeat(256), 443).is_err());
+    }
+
+    /// What `host` reaches through a socks5 proxy by connect_host: the target the proxy is
+    /// asked for, after the answer the proxy relays comes back.
+    async fn target_of(host: &str) -> Option<String> {
+        let (proxy_address, server) = fake_socks_http_server().await;
+        let upstream = Upstream::parse(&format!("socks5://{proxy_address}")).unwrap();
+        let mut stream = upstream
+            .connect_host(host, 80)
+            .await
+            .expect("a connection through the proxy");
+        stream
+            .write_all(b"GET /ping HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut answer = Vec::new();
+        stream.read_to_end(&mut answer).await.unwrap();
+        assert!(answer.ends_with(b"ok"));
+        server.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_name_is_dialled_through_the_proxy_unresolved_and_an_address_as_it_is() {
+        assert_eq!(
+            target_of("api.example.test").await.as_deref(),
+            Some("api.example.test")
+        );
+        assert_eq!(target_of("127.0.0.1").await.as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
+    fn a_password_is_never_sent_in_the_clear_to_an_https_upstream() {
+        assert!(Upstream::parse("https://alice:s3cret@proxy.example:8443").is_err());
+        let plain = Upstream::parse("https://proxy.example:8443").unwrap();
+        assert_eq!(plain.kind, Kind::Http);
+    }
+
+    #[test]
+    fn the_upstream_password_stays_out_of_debug_output() {
+        let upstream = Upstream::parse("socks5://alice:s3cret@127.0.0.1:1080").unwrap();
+        let shown = format!("{upstream:?}");
+        assert!(!shown.contains("s3cret"), "{shown}");
+        assert!(shown.contains("alice"));
     }
 
     #[tokio::test]
@@ -963,6 +1587,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_local_peer_is_reached_without_the_proxy() {
+        let _setting = hold_setting().await;
         std::env::set_var("AETHER_UPSTREAM", "socks5://127.0.0.1:9");
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
@@ -1018,8 +1643,14 @@ mod tests {
 
     #[test]
     fn an_http_status_line_is_read() {
-        assert_eq!(http_status(b"HTTP/1.1 200 Connection established\r\n\r\n"), Some(200));
-        assert_eq!(http_status(b"HTTP/1.0 407 Proxy Authentication Required\r\n\r\n"), Some(407));
+        assert_eq!(
+            http_status(b"HTTP/1.1 200 Connection established\r\n\r\n"),
+            Some(200)
+        );
+        assert_eq!(
+            http_status(b"HTTP/1.0 407 Proxy Authentication Required\r\n\r\n"),
+            Some(407)
+        );
         assert_eq!(http_status(b"NOTHTTP 200 OK\r\n\r\n"), None);
         assert_eq!(http_status(b""), None);
     }

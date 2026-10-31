@@ -145,13 +145,21 @@ class LanGuardTest {
 
     @Test
     fun `generated passwords are long, unambiguous and unique`() {
-        val first = LanGuard.randomPassword()
-        val second = LanGuard.randomPassword()
-        assertEquals(16, first.length)
-        assertTrue(first != second)
+        // 200 draws, not two. With one draw per run this test only failed when the
+        // random generator happened to pick the offending character, which is how
+        // an 'o' survived in the alphabet through several releases: a 16-character
+        // password missed it three runs out of four. A confusable character in a
+        // password the user reads off one screen and types on another device is a
+        // real defect, so the test now makes it deterministic.
         val forbidden = setOf('0', 'O', 'o', '1', 'l', 'I')
-        assertTrue(first, first.none { it in forbidden })
-        assertTrue(first, first.all { it.isLetterOrDigit() })
+        val seen = mutableSetOf<String>()
+        repeat(200) {
+            val password = LanGuard.randomPassword()
+            assertEquals(16, password.length)
+            assertTrue(password, password.none { it in forbidden })
+            assertTrue(password, password.all { it.isLetterOrDigit() })
+            assertTrue("repeated password: $password", seen.add(password))
+        }
     }
 
     @Test

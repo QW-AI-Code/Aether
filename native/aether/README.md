@@ -1,6 +1,6 @@
 # Aether
 
-![Aether](Docs/Aether.png)
+![Aether](Docs/Aether_ar.png)
 
 ### اینترنت آزاد برای همه:))
 **[راهنمای فارسی](README.fa.md)** · **[English Guide](Docs/DOCS.en.md)** · **[راهنمای کامل فارسی](Docs/DOCS.fa.md)**
@@ -16,10 +16,13 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 - Automatic endpoint discovery, with end-to-end data-plane validation so a gateway is only trusted once it actually passes traffic, not just once it answers the handshake
 - MASQUE (HTTP/3 & HTTP/2), with optional TLS ClientHello fragmentation on HTTP/2
 - WireGuard support
-- Nested WireGuard mode (`gool`), with both hops discovered by the scan or given by hand
+- WireGuard over MASQUE (`--gool`), a WireGuard tunnel inside a MASQUE one for a different exit address
+- Nested WireGuard mode (`--gool-classic`), with both hops discovered by the scan or given by hand
+- Nested MASQUE mode (`--mim`), a masque tunnel inside another one for a different exit address
 - Traffic obfuscation
 - Routing rules by domain, address, or port, matched from the TLS server name so they keep working behind a tun front end
 - Upstream proxy support, so Aether can dial out through another VPN or proxy already running on the machine
+- Optional Tor exit (`--tor`), with Tor carried inside the tunnel, so the exit address is a Tor exit
 - Automatic reconnection, and quick-reconnect to your last known-good gateway to skip rescanning
 - Local SOCKS5 proxy
 - Command-line flags, environment variables, or interactive prompts — your choice
@@ -27,12 +30,25 @@ Unlike traditional VPN clients, Aether is built for environments where Deep Pack
 
 ## Download
 
-Prebuilt binaries are available on the Releases page for:
+Prebuilt binaries are on the [Releases](https://github.com/CluvexStudio/Aether/releases/latest) page. Pick the archive that matches your system:
 
-- Linux
-- Windows
-- macOS
-- Android (Termux)
+| System | Archive |
+| --- | --- |
+| Windows x86_64 | `aether-windows-x86_64.zip` |
+| macOS on Apple Silicon (M1 and later) | `aether-macos-arm64.tar.gz` |
+| macOS on Intel | `aether-macos-x86_64.tar.gz` |
+| Linux x86_64 / arm64 / armv7 (glibc 2.34 or newer) | `aether-linux-x86_64.tar.gz`, `aether-linux-arm64.tar.gz`, `aether-linux-armv7.tar.gz` |
+| Linux with musl or an older glibc, fully static | `aether-linux-x86_64-musl.tar.gz`, `aether-linux-aarch64-musl.tar.gz`, `aether-linux-armv7-musl.tar.gz` |
+| OpenWrt routers | the `-musl` archive for the router's CPU, see [OpenWrt](#openwrt) |
+| Android (Termux) | the installer below |
+
+Every archive has a matching `.sha256` file, and `SHA256SUMS.txt` lists them all. On a Mac, `uname -m` prints `arm64` or `x86_64`. The macOS binaries are not notarized, so clear the download quarantine once after extracting:
+
+```bash
+tar -xzf aether-macos-x86_64.tar.gz
+xattr -d com.apple.quarantine aether
+./aether
+```
 
 ### Termux (Android) — one-line install
 
@@ -48,11 +64,39 @@ aether
 
 To update later, run `./aether.sh update`. To remove it, run `./aether.sh uninstall`.
 
+### OpenWrt
+
+Aether runs on OpenWrt as a single static binary of 7 to 10 MB. Choose the archive by the output of `uname -m`:
+
+| `uname -m` | Typical routers | Archive |
+| --- | --- | --- |
+| `aarch64` | MediaTek MT7981/MT7986 (e.g. Xiaomi AX3000T), Qualcomm IPQ807x, Raspberry Pi 4/5 | `aether-linux-aarch64-musl.tar.gz` |
+| `armv7l` | Qualcomm IPQ40xx (e.g. Google Wifi), MediaTek MT7623, other Cortex-A7/A9/A15 boards | `aether-linux-armv7-musl.tar.gz` |
+| `x86_64` | x86 mini PCs and VMs | `aether-linux-x86_64-musl.tar.gz` |
+
+MIPS routers (`mips`/`mipsel`, e.g. MT7621) are not supported.
+
+```sh
+cd /tmp
+A=aether-linux-aarch64-musl.tar.gz
+wget https://github.com/CluvexStudio/Aether/releases/latest/download/$A
+wget https://github.com/CluvexStudio/Aether/releases/latest/download/$A.sha256
+sha256sum -c $A.sha256 && tar -xzf $A && mv aether /usr/bin/aether
+mkdir -p /etc/aether
+aether --config /etc/aether/aether.toml
+```
+
+Keep `--config` on persistent storage such as `/etc/aether`: `/tmp` is wiped at every reboot, and a lost identity means a new device registration on each boot, which Cloudflare rate limits. To share the proxy with your LAN, bind it to the router's LAN address, for example `--bind 192.168.1.1:1819`; it has no authentication, so never expose it on the WAN. If `wget` reports an SSL error, run `opkg update && opkg install ca-bundle`, or copy the file over with `scp`.
+
+If the router also sends its own traffic into a tun front end (hev-socks5-tunnel, tun2socks), start Aether with `--mark 0xff` so every socket it opens to the internet carries that firewall mark, and let marked packets bypass the tun, for example with `ip rule add fwmark 0xff lookup main priority 100`. Setting a mark needs root.
+
+To run the same HTTP/2 setup PattNG uses on Android, and to start it on boot, see [OpenWrt as a service](Docs/OPENWRT.en.md). A release whose `aether help` does not list `--masque-sni`, including v2.3.0, still uses the older server name. That guide builds a current binary and installs the service.
+
 ## Build
 
 ### Requirements
 
-- Rust 1.91 or newer
+- Rust, the latest stable release
 - C/C++ compiler
 - CMake
 
@@ -64,16 +108,17 @@ The `quiche` repository must be placed alongside `aether`:
   quiche/
 ```
 
-Build:
+Build from the repository root; the Cargo manifest is `aether/Cargo.toml`, so enter that directory first:
 
 ```bash
+cd aether
 cargo build --release
 ```
 
-Binary:
+Binary, relative to the repository root:
 
 ```text
-target/release/aether
+aether/target/release/aether
 ```
 
 ## Docker
@@ -107,6 +152,8 @@ docker run -it -p 127.0.0.1:1819:1819 -v aether-data:/data aether
 ```
 
 ## Usage
+
+The examples below use the binary you built, run from inside `aether/`. With a release download, run `./aether` (or `aether.exe` on Windows) from the folder you extracted it to instead.
 
 Run with no arguments and answer the prompts:
 
@@ -146,11 +193,45 @@ Encapsulates traffic over HTTP/3 (QUIC) or HTTP/2 (TLS), making it resemble ordi
 
 Fast and lightweight transport for networks with less aggressive inspection.
 
-### Nested WireGuard (`gool`)
+### Nested MASQUE (`--mim`)
 
-A WireGuard tunnel running inside another WireGuard tunnel, providing an additional encryption layer.
+A MASQUE tunnel carried inside another MASQUE tunnel. The inner hop is dialled from inside the outer one, so Cloudflare sees the outer edge instead of your address and hands the inner tunnel a different exit IP — the same idea as `gool`, with a MASQUE tunnel inside instead of a WireGuard one. Both hops use HTTP/3, or both use HTTP/2 with `--h2`.
+
+```bash
+./target/release/aether --mim
+```
+
+### WireGuard over MASQUE (`--gool`)
+
+A WireGuard tunnel carried inside a MASQUE tunnel. Your network sees only the MASQUE hop; the WireGuard hop is dialled from inside it, so Cloudflare sees the MASQUE edge instead of your address and hands the WireGuard tunnel a different exit IP. The MASQUE hop is found by the scan or named with `--peer`; the WireGuard hop is the endpoint its key names, on port 2408, unless `--gool-peer` names another.
+
+```bash
+./target/release/aether --gool
+```
+
+### Nested WireGuard (`--gool-classic`)
+
+The older gool: a WireGuard tunnel running inside another WireGuard tunnel, providing an additional encryption layer.
 
 Its two hops are found by the scan by default. If you already know addresses that work on your network, name them instead with `--wiw-outer 162.159.192.1:2408 --wiw-inner 188.114.96.1:2408`, or both at once with `--wiw-peers 162.159.192.1:2408,188.114.96.1:2408`. The port is required — which port gets through is what differs between networks, so none is assumed. Give only one and the scan finds the other.
+
+## Tor
+
+Built with the `tor` feature, Aether carries a Tor implementation (arti) and can combine it with the tunnel three ways:
+
+| Mode | Flag | Path | Exit address |
+| --- | --- | --- | --- |
+| Tor through the tunnel | `--tor` | you → WARP → Tor → internet | a Tor exit |
+| The tunnel through Tor | `--tor-reverse` | you → Tor → WARP → internet | a WARP exit |
+| Tor alone | `--tor-only` | you → Tor → internet | a Tor exit |
+
+```bash
+cd aether
+cargo build --release --features tor
+./target/release/aether --masque --tor
+```
+
+With `--tor` the usual proxy on `127.0.0.1:1819` keeps the WARP exit and a second one on `127.0.0.1:1820` comes out of Tor. Because Tor rides inside the tunnel, a network that blocks Tor never sees it. Any transport can carry it — `--masque` over HTTP/3 or HTTP/2, `--wg`, `--gool`, `--mim` — with nothing in between: `--wg --tor` has the WireGuard tunnel carry Tor directly. The other direction cannot do that, because Tor carries TCP only and WARP's WireGuard endpoints answer on UDP alone, so `--tor-reverse` runs MASQUE over HTTP/2 (for `--gool`, its MASQUE hop) and refuses `--wg` and `--gool-classic`. `--tor-reverse` and `--tor-only` reach Tor directly, and where Tor is blocked they fetch their own bridges from bridgedb and run them through the pluggable transports shipped in the `pt/` folder beside the binary, so there is nothing to install and nothing to paste in. See [Docs/DOCS.en.md](Docs/DOCS.en.md#tor).
 
 ## Documentation
 
@@ -183,15 +264,3 @@ If Aether has been useful to you, consider supporting its development:
 ## License
 
 See the LICENSE file for licensing information.
-
-
-## Note on the 1.2.9 AI features (Android app only)
-
-The Gemini AI features added in AetherMobile 1.2.9 - the user's own API key, model
-discovery, the per-setting explanations, the DPI/log settings advisor and the
-in-app chat - live entirely in the **Android app layer**
-(`app/src/main/java/studio/cluvex/aether/ai/`). This engine is unchanged by them:
-no new option, no new environment variable, no new network path. The AI talks to
-Google through the tunnel the engine builds, using the app's own local SOCKS5
-proxy, and the only thing it may write is a subset of the app's own tuning
-options - never an engine credential, a peer address or a routing rule.

@@ -138,5 +138,9 @@ object LanGuard {
             .joinToString("") { "%02x".format(it) }
 
     private const val PASSWORD_ALPHABET =
-        "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        // No 0/O/o, no 1/l/I: this password gets read off one screen and typed on
+        // another device, and 'o' next to '0' is exactly the pair that makes a
+        // shared-LAN password look broken when it is merely mistyped. 'o' was
+        // still in this alphabet until the unit test drew it (1.3.0).
+        "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 }

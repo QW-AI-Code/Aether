@@ -9,7 +9,13 @@ plugins {
 }
 
 // Human-friendly ABI -> versionCode offset so each split APK gets a unique code.
-val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3)
+//
+// 1.3.1, issue #8: x86_64 added. Chromebooks and Android emulators are x86_64,
+// and with no such split the APK either refused to install or ran the engine
+// through ARM translation. Offset 4, appended rather than inserted, so the codes
+// already published for the three existing ABIs do not move - a versionCode that
+// goes BACKWARDS for an installed user is an update that can never be offered.
+val abiCodes = mapOf("armeabi-v7a" to 1, "arm64-v8a" to 2, "universal" to 3, "x86_64" to 4)
 
 // ---------------------------------------------------------------------------
 // Release signing (see docs/SIGNING.md).
@@ -119,17 +125,20 @@ if (useCiKeystore) {
 android {
     namespace = "studio.cluvex.aether"
     compileSdk = 35
+    testOptions.unitTests.isIncludeAndroidResources = true
 
     defaultConfig {
         applicationId = "studio.cluvex.aether"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.2.9"
+        versionCode = 19
+        versionName = "1.6.0"
 
         ndk {
-            // We ship arm64 (primary) and arm builds.
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+            // arm64 (primary), arm, and x86_64 for Chromebooks and emulators
+            // (1.3.1, issue #8). The Rust engine is cross-compiled for the
+            // matching triplet by scripts/build-natives.sh.
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
         }
 
         // 1.2.2: the in-app updater (APK download + system installer handoff)
@@ -143,8 +152,8 @@ android {
             if (githubRepo.isNotBlank()) "https://github.com/$githubRepo/releases/latest" else ""
         buildConfigField("String", "RELEASES_URL", "\"$releasesUrl\"")
 
-        // Aether engine (core) version compiled into this build. CI keeps this
-        // in sync with native/aether/CORE_VERSION via scripts/sync-core.sh.
+        // Aether engine (core) version compiled into this build. Fixed at the vendored core;
+        // read from native/aether/CORE_VERSION (auto-sync disabled).
         val coreVersion = rootProject.file("native/aether/CORE_VERSION")
             .takeIf { it.exists() }?.readText()?.trim().orEmpty().ifBlank { "unknown" }
         buildConfigField("String", "CORE_VERSION", "\"$coreVersion\"")
@@ -152,8 +161,8 @@ android {
         // ------------------------------------------------------------------
         // 1.2.8-r5 BUILD IDENTITY.
         //
-        // 1.2.9 ships as versionName "1.2.9" / versionCode 13, and PATCHLEVEL is
-        // "1.2.9" with it. The field stays, because it is what identifies a build
+        // 1.6.0 ships as versionName "1.6.0" / versionCode 19, and PATCHLEVEL is
+        // "1.6.0" with it. The field stays, because it is what identifies a build
         // beyond its version name: r2,
         // r3 and r4 were all "1.2.8 (12)", the engine banner printed only the
         // upstream core version (1.8.0) which is identical in all of them, and
@@ -288,7 +297,7 @@ android {
         abi {
             isEnable = true
             reset()
-            include("arm64-v8a", "armeabi-v7a")
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
             isUniversalApk = true
         }
     }
@@ -361,10 +370,10 @@ androidComponents {
 }
 
 dependencies {
-    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar"))))
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
     implementation(composeBom)
 
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
@@ -380,12 +389,33 @@ dependencies {
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 
+    // 1.5.0 custom configs: JSON for the Xray config writer and the config parser
+    // (the JsonElement API only, so no serialization compiler plugin is needed),
+    // and ZXing for QR codes - the camera scanner and decoding a QR from an image.
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    // Portable authenticated NPVS v5 decryption, including Android 26/27.
+    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
+    implementation("com.google.zxing:core:3.5.3")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 
-    // Local JVM tests only. Deliberately the smallest possible addition: JUnit 4
-    // and nothing else, no Robolectric and no instrumentation, because the two
-    // things under test - AiRedaction and AiModelPolicy - are pure Kotlin by
-    // design. Test dependencies do not enter the APK and do not affect
-    // assembleRelease. Run with: gradle :app:testReleaseUnitTest
+    // JVM model tests plus actual Compose recomposition regressions on Robolectric.
+    // These test dependencies never enter the release APK.
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    // Activity used by Compose JVM regressions also exists in release unit tests.
+    testImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+// AGP assigns report paths in afterEvaluate; configure after that so CI evidence stays external.
+gradle.projectsEvaluated {
+    tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+        System.getenv("AETHER_TEST_REPORTS")?.takeIf { it.isNotBlank() }?.let { destination ->
+            reports.junitXml.outputLocation.set(file("$destination/${project.name}/$name/xml"))
+            reports.html.outputLocation.set(file("$destination/${project.name}/$name/html"))
+            binaryResultsDirectory.set(file("$destination/${project.name}/$name/binary"))
+        }
+    }
 }

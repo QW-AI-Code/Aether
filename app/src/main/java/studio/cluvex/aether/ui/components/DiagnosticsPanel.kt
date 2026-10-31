@@ -1,8 +1,11 @@
 package studio.cluvex.aether.ui.components
 
+import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.ui.ai.AiTopicIcon
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -96,6 +99,8 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier, startExpanded: Boolean = fal
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                AiTopicIcon(AiTopic.DIAGNOSTICS)
+                Spacer(Modifier.width(8.dp))
                 Icon(
                     imageVector = Icons.Rounded.ExpandMore,
                     contentDescription = null,
@@ -121,7 +126,13 @@ fun DiagnosticsPanel(modifier: Modifier = Modifier, startExpanded: Boolean = fal
                         }
                         TextButton(
                             onClick = {
-                                clipboard.setText(AnnotatedString(DiagnosticsLog.exportText()))
+                                // AUDIT F-4: the verbatim log carries exit IP,
+                                // endpoints and the WARP enrolment handle. Flagged
+                                // sensitive so it does not surface in the clipboard
+                                // preview or history; the redacted export below
+                                // stays an ordinary copy, since sharing it is the
+                                // whole point of that button.
+                                copySensitive(context, DiagnosticsLog.exportText(), "aether-log")
                                 Toast.makeText(
                                     context,
                                     context.getString(R.string.diag_copied),
@@ -231,6 +242,11 @@ private fun LogConsole() {
     // diagnostics card — and the whole drawer around it — even while the log
     // console was collapsed and invisible. The console is only composed when
     // it is open, and it is the only thing subscribed to the log now.
+    // AUDIT F-3: the open console is the most revealing surface in the app (exit
+    // IP, bridge, endpoints, enrolment handle), so the window is blocked from
+    // screenshots, screen recording and the recents thumbnail while it is open.
+    // The console is only composed while open, so the flag lifts on collapse.
+    SecureSurface()
     val lines: List<LogLine> = DiagnosticsLog.lines.collectAsState().value
     val scroll = rememberScrollState()
     Box(

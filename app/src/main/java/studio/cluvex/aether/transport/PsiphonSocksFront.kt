@@ -12,6 +12,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -22,6 +23,9 @@ import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLPeerUnverifiedException
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import kotlin.math.min
+import studio.cluvex.aether.core.NameMemory
+import studio.cluvex.aether.core.RouteRules
 
 /**
  * The SOCKS5 server that tun2socks talks to in `Aether -> Psiphon` mode.
@@ -145,6 +149,9 @@ object PsiphonSocksFront {
     private const val REP_SUCCESS = 0
     private const val REP_GENERAL_FAILURE = 1
 
+    /** SOCKS5 `connection not allowed by ruleset`: what a BLOCK rule answers (as the engine does). */
+    private const val REP_NOT_ALLOWED = 2
+
     /**
      * SOCKS5 `host unreachable`. Used to fail an IPv6 flow INSTANTLY once this
      * exit has proven it has no IPv6 (see [ipv6Usable]): lwIP turns it into an
@@ -162,6 +169,21 @@ object PsiphonSocksFront {
     private const val QUIC_PORT = 443
 
     private const val RELAY_BUFFER = 32 * 1024
+
+    /**
+     * 1.4.0 smart routing (#66). How long a flow to a bare address may take to
+     * send its first bytes (TLS ClientHello / HTTP request) before it is routed
+     * by its address alone. Same default as the engine's `AETHER_ROUTE_SNIFF_MS`:
+     * a client-speaks-first protocol answers in microseconds, and a
+     * server-speaks-first one (SMTP, SSH banners) only pays this once.
+     */
+    private const val ROUTE_SNIFF_MS = 400
+
+    /** Bytes read for the sniff; the engine's `sniff::PEEK_BUDGET`. */
+    private const val ROUTE_SNIFF_BUDGET = 4096
+
+    /** Connect budget for a flow a DIRECT rule sends out of the real uplink. */
+    private const val DIRECT_CONNECT_TIMEOUT_MS = 15_000
 
     /**
      * `SO_SNDBUF` / `SO_RCVBUF` for the two loopback legs this front sits on.
@@ -371,7 +393,7 @@ object PsiphonSocksFront {
      * `ssh: rejected: administratively prohibited`. Ordinary browsing barely
      * notices. Opening a video does: the player fans out dozens of segment
      * connections at once, and the field log shows 26 refusals in 4.2 s the
-     * moment playback started - which [PsiphonHealth] then read as "this server
+     * moment playback started - which the Psiphon health watchdog (removed in 1.4.0) then read as "this server
      * censors" and answered by tearing the tunnel down.
      *
      * Two flows are spent proving it (one is not evidence, a single destination
@@ -407,6 +429,32 @@ object PsiphonSocksFront {
     private const val DNS_TYPE_AAAA = 28
 
     private val running = AtomicBoolean(false)
+
+    /**
+     * 1.4.0 smart routing (#66): the block/direct rules for THIS session - the
+     * user's own rules plus the built-in lists, built by
+     * [studio.cluvex.aether.core.SmartLists.frontRules] and handed over with
+     * [setRoutes] before [start].
+     *
+     * ## Why the rules are applied here and not in the engine
+     *
+     * In `Aether -> Psiphon` the engine only ever carries Psiphon's own
+     * connections to its servers; the user's destination is visible in exactly
+     * one place, this front. So this is where block and direct are decided, with
+     * the same grammar, precedence and sniffing as the engine's `socks.rs`.
+     *
+     * [RouteRules.EMPTY] (the default) leaves every code path below exactly as it
+     * was before 1.4.0: the rule checks are skipped outright.
+     */
+    @Volatile private var routes: RouteRules = RouteRules.EMPTY
+
+    /** Session counters for the routing summary in the log. */
+    private val routedDirect = AtomicLong(0)
+    private val routedBlocked = AtomicLong(0)
+    private val dnsSinkholed = AtomicLong(0)
+
+    /** Per-association socket for UDP a DIRECT rule sends out of the real uplink. */
+    private val directUdp = ConcurrentHashMap<DatagramSocket, DirectUdp>()
 
     /**
      * Session byte counters, kept for the same reason the Tor front kept
@@ -497,6 +545,24 @@ object PsiphonSocksFront {
     private val udpgwRefused = AtomicBoolean(false)
 
     /**
+     * How many servers in THIS session have refused the udpgw port forward.
+     *
+     * Survives a rotation, which is the whole point: [udpgwRefused] describes one
+     * server and is cleared when the next one arrives, and that is right for DNS.
+     * It is wrong for QUIC, because a transport that appears and disappears is
+     * worse than one that is never offered. Reset only in [stop].
+     */
+    private val quicRefusedThisSession = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /**
+     * Non-DNS UDP associations ended because this server carries no UDP.
+     *
+     * For the session summary, and to log the reason exactly once: a device with the
+     * microphone open opens such a flow many times a minute.
+     */
+    private val udpAssociationsEnded = AtomicLong(0)
+
+    /**
      * Where udpgw streams are dialled and where the IPv6 probe runs.
      *
      * ## ROOT CAUSE this fixes (device-wide UDP stalls, "browsers open nothing")
@@ -535,14 +601,13 @@ object PsiphonSocksFront {
      * `AllowTCPPorts` traffic rule), so the DNS-over-TCP fallback turns every
      * single lookup into one refused port forward. In the field log that is the
      * 110-refusals-in-73-seconds storm on the second server, and it fed straight
-     * back into [PsiphonHealth] as fake evidence of censorship. Once this is set,
+     * back into the Psiphon health watchdog (removed in 1.4.0) as fake evidence of censorship. Once this is set,
      * DNS goes over DNS-over-HTTPS on 443 instead - a port no Psiphon server
      * blocks.
      */
     private val dnsPort53Refused = AtomicBoolean(false)
 
-    /** Latched once TCP/853 (Android Private DNS) has been refused. Logged once. */
-    private val privateDnsBlocked = AtomicBoolean(false)
+    /** Latched once TCP/853 (Android Private DNS) has been refused. Logged once. */    private val privateDnsBlocked = AtomicBoolean(false)
 
     /** Session counters for the diagnostics panel; cheap and worth having. */
     private val quicDropped = AtomicLong(0)
@@ -564,9 +629,36 @@ object PsiphonSocksFront {
         val bulk = bulkUdpDropped.get()
         val v6 = ipv6Refused.get()
         val aaaa = aaaaSuppressed.get()
-        if (quic == 0L && bulk == 0L && v6 == 0L && aaaa == 0L) return null
-        return "udp/443 (QUIC) dropped=$quic, congested udpgw frames dropped=$bulk, " +
+        val ended = udpAssociationsEnded.get()
+        if (quic == 0L && bulk == 0L && v6 == 0L && aaaa == 0L && ended == 0L) return null
+        return "udp/443 (QUIC) dropped=$quic, non-DNS UDP flows ended (server carries " +
+            "no UDP)=$ended, congested udpgw frames dropped=$bulk, " +
             "IPv6 flows refused locally=$v6, AAAA answered empty locally=$aaaa"
+    }
+
+    /**
+     * Installs the routing rules for the next session (#66). Called by the VPN
+     * service before [start]; [stop] resets them to [RouteRules.EMPTY].
+     *
+     * The rules arrive already stripped of every DIRECT entry when the session
+     * shares to the LAN (zero-leak sharing, see `ShareLeakGuard` point 1), so
+     * nothing here can send a shared device's traffic out of the real uplink.
+     */
+    fun setRoutes(rules: RouteRules) {
+        routes = rules
+        NameMemory.clear()
+        routedDirect.set(0)
+        routedBlocked.set(0)
+        dnsSinkholed.set(0)
+    }
+
+    /** `null` when no rule matched anything, else a one-line summary for the log. */
+    fun routeSummary(): String? {
+        val direct = routedDirect.get()
+        val blocked = routedBlocked.get()
+        val sinkholed = dnsSinkholed.get()
+        if (direct == 0L && blocked == 0L && sinkholed == 0L) return null
+        return "routing: direct=$direct, blocked=$blocked, DNS names blocked=$sinkholed"
     }
 
     /**
@@ -617,6 +709,8 @@ object PsiphonSocksFront {
         txBytes.set(0)
         rxBytes.set(0)
         running.set(true)
+        closeProbeConn()
+        governor.start()
 
         Thread({
             // The accept loop outlives anything a single connection can do. It
@@ -693,6 +787,8 @@ object PsiphonSocksFront {
         psiphonSocksPort = socksPort
         closeLanes()
         udpgwRefused.set(false)
+        closeProbeConn()
+        governor.onPathChanged()
         ConnectionLog.record(
             "$TAG upstream Psiphon SOCKS moved $previous -> $socksPort; the front keeps its own " +
                 "listener so tun2socks never sees a break",
@@ -700,7 +796,7 @@ object PsiphonSocksFront {
     }
 
     /**
-     * Called after [PsiphonHealth] moves the session to a different server.
+     * Called after the Psiphon health watchdog (removed in 1.4.0) moves the session to a different server.
      *
      * The udpgw refusal is remembered for a whole session on purpose - retrying
      * a refused intercept per datagram means one doomed port forward per UDP
@@ -728,13 +824,18 @@ object PsiphonSocksFront {
         dnsPort53Refused.set(false)
         // A rotation invalidates every warm connection through the old server.
         drainDohPool()
+        // ...and the uplink measurement: a new server is a new path.
+        closeProbeConn()
+        governor.onPathChanged()
         quicSuppressedUntil.set(0)
         bulkDropsInWindow.set(0)
         warmUp()
         ConnectionLog.record(
             if (wasRefused) {
+                // DNS only. QUIC is decided by [quicAllowed], which remembers
+                // refusals for the session.
                 "$TAG server rotated - clearing the udpgw refusal so the new server gets " +
-                    "a fresh chance at real UDP (DNS + QUIC)"
+                    "a fresh chance at real UDP for DNS"
             } else {
                 "$TAG server rotated - udpgw session dropped; the next datagram reopens it"
             },
@@ -748,12 +849,21 @@ object PsiphonSocksFront {
         serverSocket = null
         closeLanes()
         drainDohPool()
+        governor.stop()
+        closeProbeConn()
         udpgwRefused.set(false)
         ipv6Usable.set(true)
         ipv6Refusals.set(0)
         dnsPort53Refused.set(false)
         quicSuppressedUntil.set(0)
+        quicRefusedThisSession.set(0)
         dropSummary()?.let { ConnectionLog.record("$TAG session drops: $it") }
+        routeSummary()?.let { ConnectionLog.record("$TAG $it") }
+        udpAssociationsEnded.set(0)
+        routes = RouteRules.EMPTY
+        NameMemory.clear()
+        directUdp.values.forEach { it.close() }
+        directUdp.clear()
         connPool?.shutdownNow()
         connPool = null
         dnsPool?.shutdownNow()
@@ -848,6 +958,16 @@ object PsiphonSocksFront {
                 return
             }
 
+            // 1.4.0 smart routing (#66). Skipped outright when the session has no
+            // rules, so a session without rules takes exactly the path below.
+            // The udpgw address is Psiphon's own control target, never a user
+            // destination, so no rule may touch it.
+            val rules = routes
+            if (!rules.isEmpty && !(host == UDPGW_HOST && port == UDPGW_PORT)) {
+                routeConnect(client, input, output, host, port, rules)
+                return
+            }
+
             // FAST-FAIL IPv6 once this exit has proven it has none. Sending the
             // flow anyway costs a full round trip to the Psiphon server and comes
             // back refused, and a video player opens dozens of those at once -
@@ -922,7 +1042,7 @@ object PsiphonSocksFront {
      * Records one refused IPv6 dial and latches the verdict once the probe budget
      * is spent.
      *
-     * Deliberately NOT reported to [PsiphonHealth]: a refused IPv6 dial says the
+     * Deliberately NOT reported to the Psiphon health watchdog (removed in 1.4.0): a refused IPv6 dial says the
      * exit has no IPv6, which is true of nearly every Psiphon server and is not
      * censorship. Counting it as censorship is precisely how a healthy tunnel got
      * torn down mid-video.
@@ -985,7 +1105,6 @@ object PsiphonSocksFront {
             }
             return
         }
-        PsiphonHealth.onDestinationRefused(host, port)
     }
 
     /**
@@ -1104,11 +1223,22 @@ object PsiphonSocksFront {
         }
     }
 
+    /**
+     * @param clientIn where the app's bytes are read from. Null = the socket's
+     *   own stream (the pre-1.4.0 path). The routing path passes the buffered
+     *   stream it sniffed through, so nothing it already buffered is lost.
+     * @param head bytes already read from the app for the sniff; sent first.
+     * @param replied true when the SOCKS5 success reply already went out (the
+     *   sniff needs it first); a failure can then only close the flow.
+     */
     private fun relayThroughPsiphon(
         client: Socket,
         host: String,
         port: Int,
         clientOut: OutputStream,
+        clientIn: InputStream? = null,
+        head: ByteArray? = null,
+        replied: Boolean = false,
     ) {
         val refusal = IntArray(1) { -1 }
         val stream = openPsiphonStream(host, port, refusal)
@@ -1121,19 +1251,24 @@ object PsiphonSocksFront {
                 // destination ("ssh: rejected: administratively prohibited").
                 // One refusal is ordinary internet; a server that refuses many
                 // DIFFERENT destinations is filtering, which is what makes
-                // Telegram work while Google does not. [PsiphonHealth] decides -
+                // Telegram work while Google does not. the Psiphon health watchdog (removed in 1.4.0) decides -
                 // but only for refusals that can actually MEAN censorship, see
                 // [reportRefusal].
                 reportRefusal(host, port)
             }
-            replyFailure(clientOut, if (refusal[0] > 0) refusal[0] else REP_GENERAL_FAILURE)
+            if (!replied) replyFailure(clientOut, if (refusal[0] > 0) refusal[0] else REP_GENERAL_FAILURE)
             closeQuietly(client)
             return
         }
         val upstream = stream.socket
 
         try {
-            replySuccess(clientOut)
+            if (!replied) replySuccess(clientOut)
+            if (head != null && head.isNotEmpty()) {
+                stream.output.write(head)
+                stream.output.flush()
+                txBytes.addAndGet(head.size.toLong())
+            }
 
             // getInputStream() is resolved HERE, on the owning thread, and NOT
             // as the first statement of the pump lambda. Either direction
@@ -1142,10 +1277,10 @@ object PsiphonSocksFront {
             // thread's uncaught throw reaches the process-wide handler and kills
             // the app. Resolved here it lands in the catch below instead: one
             // dead flow, and a tunnel that stays up.
-            val clientIn = client.getInputStream()
+            val appIn = clientIn ?: client.getInputStream()
             Thread({
                 try {
-                    pipe(clientIn, stream.output, txBytes)
+                    pipeUp(appIn, stream.output)
                 } catch (_: Throwable) {
                     // Per-flow and unreportable, but never fatal. A relay thread
                     // for one TCP flow must not be able to end the session.
@@ -1167,6 +1302,313 @@ object PsiphonSocksFront {
         }
     }
 
+    // ------------------------------------------------ smart routing (#66)
+
+    /**
+     * Routes one CONNECT by the session's rules: BLOCK refuses it, DIRECT sends
+     * it out of the phone's real uplink, PROXY carries it through Psiphon as
+     * before.
+     *
+     * Same flow as the engine's `handle_connect`: a flow to a bare address (the
+     * only form tun2socks produces) is answered first and its opening bytes are
+     * read for up to [ROUTE_SNIFF_MS] so a domain rule can match the TLS server
+     * name or the HTTP `Host`. A hostname target (proxy mode) is decided by its
+     * name straight away. Sniffing only happens while there are domain rules.
+     *
+     * DIRECT needs no socket protection: this package is always excluded from
+     * the VPN ([studio.cluvex.aether.vpn.AetherVpnService.applyAppFilter]), so a
+     * plain socket opened here already leaves through the real network.
+     */
+    private fun routeConnect(
+        client: Socket,
+        input: DataInputStream,
+        output: OutputStream,
+        host: String,
+        port: Int,
+        rules: RouteRules,
+    ) {
+        val literal = isIpLiteral(host)
+
+        // An IPv6 flow on an exit that has proven it has no IPv6: a DIRECT or
+        // BLOCK verdict by address still applies, but PROXY keeps the instant
+        // refusal (no sniff: the flow is going to fail over the tunnel anyway,
+        // and Happy Eyeballs needs the answer now, not after a sniff window).
+        if (literal && isIpv6Literal(host) && !ipv6Usable.get()) {
+            when (rules.decideTcp(host, null, false, port)) {
+                RouteRules.Verdict.BLOCK -> blockFlow(client, output, replied = false)
+                RouteRules.Verdict.DIRECT -> relayDirect(client, host, port, output, input, null, replied = false)
+                RouteRules.Verdict.PROXY -> {
+                    ipv6Refused.incrementAndGet()
+                    replyFailure(output, REP_HOST_UNREACHABLE)
+                    closeQuietly(client)
+                }
+            }
+            return
+        }
+
+        var head: ByteArray? = null
+        var sniffed: String? = null
+        var replied = false
+        if (literal && rules.hasDomainRules) {
+            replySuccess(output)
+            replied = true
+            head = readSniffHead(client, input) ?: run {
+                // The app closed the flow before sending anything.
+                closeQuietly(client)
+                return
+            }
+            if (head.isNotEmpty()) sniffed = RouteRules.sniffHost(head)
+        }
+
+        when (rules.decideTcp(host, sniffed, head?.isNotEmpty() == true, port)) {
+            RouteRules.Verdict.BLOCK -> blockFlow(client, output, replied)
+            RouteRules.Verdict.DIRECT -> relayDirect(client, host, port, output, input, head, replied)
+            RouteRules.Verdict.PROXY -> relayThroughPsiphon(client, host, port, output, input, head, replied)
+        }
+    }
+
+    /**
+     * The flow's first bytes, read within [ROUTE_SNIFF_MS]. Empty when the app
+     * sent nothing in time (a server-speaks-first protocol), null when it closed.
+     */
+    private fun readSniffHead(client: Socket, input: InputStream): ByteArray? {
+        val buffer = ByteArray(ROUTE_SNIFF_BUDGET)
+        return try {
+            client.soTimeout = ROUTE_SNIFF_MS
+            val read = input.read(buffer)
+            if (read < 0) null else buffer.copyOf(read)
+        } catch (_: java.net.SocketTimeoutException) {
+            ByteArray(0)
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { client.soTimeout = 0 }
+        }
+    }
+
+    private fun blockFlow(client: Socket, output: OutputStream, replied: Boolean) {
+        routedBlocked.incrementAndGet()
+        if (!replied) replyFailure(output, REP_NOT_ALLOWED)
+        closeQuietly(client)
+    }
+
+    /**
+     * Carries one flow straight out of the real uplink (a DIRECT rule).
+     *
+     * A hostname (proxy mode only) is resolved by the system resolver on the real
+     * network, which is what "direct" means. A loopback or wildcard destination
+     * is refused, as the engine refuses it: a rule must never turn this front
+     * into a way to reach the phone's own services.
+     */
+    private fun relayDirect(
+        client: Socket,
+        host: String,
+        port: Int,
+        clientOut: OutputStream,
+        clientIn: InputStream,
+        head: ByteArray?,
+        replied: Boolean,
+    ) {
+        val target = try {
+            RouteRules.literal(host) ?: InetAddress.getByName(host)
+        } catch (_: Exception) {
+            null
+        }
+        if (target == null || target.isLoopbackAddress || target.isAnyLocalAddress) {
+            if (!replied) replyFailure(clientOut, if (target == null) REP_HOST_UNREACHABLE else REP_NOT_ALLOWED)
+            closeQuietly(client)
+            return
+        }
+        val upstream = try {
+            Socket().apply {
+                tcpNoDelay = true
+                connect(InetSocketAddress(target, port), DIRECT_CONNECT_TIMEOUT_MS)
+            }
+        } catch (_: Exception) {
+            if (!replied) replyFailure(clientOut, REP_HOST_UNREACHABLE)
+            closeQuietly(client)
+            return
+        }
+        routedDirect.incrementAndGet()
+        try {
+            if (!replied) replySuccess(clientOut)
+            val upOut = upstream.getOutputStream()
+            val upIn = upstream.getInputStream()
+            if (head != null && head.isNotEmpty()) {
+                upOut.write(head)
+                upOut.flush()
+                txBytes.addAndGet(head.size.toLong())
+            }
+            Thread({
+                try {
+                    pipe(clientIn, upOut, txBytes)
+                } catch (_: Throwable) {
+                } finally {
+                    closeQuietly(upstream)
+                    closeQuietly(client)
+                }
+            }, "psiphon-front-direct").apply {
+                isDaemon = true
+                setUncaughtExceptionHandler { _, _ -> }
+            }.start()
+            pipe(upIn, clientOut, rxBytes)
+        } catch (_: Exception) {
+        } finally {
+            closeQuietly(upstream)
+            closeQuietly(client)
+        }
+    }
+
+    /** Destination of one UDP datagram: (address, hostname) - exactly one is set. */
+    private fun udpDestination(request: UdpRequest): Pair<InetAddress?, String?> {
+        val raw = request.address
+        if (raw != null) {
+            return runCatching { InetAddress.getByAddress(raw.copyOfRange(0, raw.size - 2)) }.getOrNull() to null
+        }
+        val header = request.header
+        if (header.size < 5) return null to null
+        val length = header[4].toInt() and 0xFF
+        if (header.size < 5 + length) return null to null
+        return null to String(header, 5, length, Charsets.US_ASCII)
+    }
+
+    /**
+     * Applies the session's rules to one UDP datagram. True when the datagram
+     * was fully handled here (sinkholed, blocked or sent direct), false when it
+     * should be carried through the tunnel as before.
+     */
+    private fun routeDatagram(
+        rules: RouteRules,
+        relay: DatagramSocket,
+        from: InetSocketAddress,
+        request: UdpRequest,
+    ): Boolean {
+        // DNS sinkhole: a blocked name gets NXDOMAIN at once, byte-identical to
+        // the engine's answer, and never leaves the phone.
+        if (request.port == 53) {
+            val answer = rules.dnsBlockReply(request.payload)
+            if (answer != null) {
+                dnsSinkholed.incrementAndGet()
+                sendUdpReply(relay, from, request, answer)
+                return true
+            }
+        }
+        val (ip, name) = udpDestination(request)
+        if (ip == null && name == null) return false
+        return when (rules.decideUdp(ip, name, request.port)) {
+            RouteRules.Verdict.PROXY -> false
+            RouteRules.Verdict.BLOCK -> {
+                routedBlocked.incrementAndGet()
+                true
+            }
+            RouteRules.Verdict.DIRECT -> {
+                val direct = directUdp.getOrPut(relay) { DirectUdp(relay) }
+                direct.client = from
+                if (ip != null) {
+                    direct.send(InetSocketAddress(ip, request.port), request.payload)
+                } else {
+                    // A hostname datagram (proxy mode only): resolved off the pump
+                    // thread, which must never block - see [dialPool].
+                    val pool = dnsPool
+                    val port = request.port
+                    val payload = request.payload
+                    runCatching {
+                        pool?.execute {
+                            try {
+                                val resolved = InetAddress.getByName(name)
+                                direct.send(InetSocketAddress(resolved, port), payload)
+                            } catch (_: Throwable) {
+                            }
+                        }
+                    }
+                }
+                routedDirect.incrementAndGet()
+                true
+            }
+        }
+    }
+
+    /** Feeds a DNS answer into the address -> name memory, while domain rules exist. */
+    private fun learnDns(answer: ByteArray) {
+        if (routes.hasDomainRules) NameMemory.learn(answer)
+    }
+
+    /** True when a SOCKS5 UDP header names port 53 (its last two bytes). */
+    private fun headerIsDns(header: ByteArray): Boolean =
+        header.size >= 2 &&
+            (((header[header.size - 2].toInt() and 0xFF) shl 8) or (header[header.size - 1].toInt() and 0xFF)) == 53
+
+    /**
+     * The real-uplink UDP socket of ONE association, for datagrams a DIRECT
+     * rule sends outside the tunnel. Created on the first such datagram and
+     * closed with the association. Replies are wrapped in a SOCKS5 UDP header
+     * naming the address they came from, like the engine's `build_udp_reply`.
+     */
+    private class DirectUdp(private val relay: DatagramSocket) {
+        @Volatile var client: InetSocketAddress? = null
+        private val socket = DatagramSocket().apply { soTimeout = UDP_POLL_MS }
+
+        init {
+            Thread({
+                try {
+                    readLoop()
+                } catch (_: Throwable) {
+                } finally {
+                    runCatching { socket.close() }
+                }
+            }, "psiphon-front-direct-udp").apply {
+                isDaemon = true
+                setUncaughtExceptionHandler { _, _ -> }
+            }.start()
+        }
+
+        fun send(to: InetSocketAddress, payload: ByteArray) {
+            val address = to.address ?: return
+            if (address.isLoopbackAddress || address.isAnyLocalAddress) return
+            try {
+                socket.send(DatagramPacket(payload, payload.size, to))
+                txBytes.addAndGet(payload.size.toLong())
+            } catch (_: Exception) {
+            }
+        }
+
+        private fun readLoop() {
+            val buffer = ByteArray(UDP_BUFFER)
+            while (running.get() && !relay.isClosed && !socket.isClosed) {
+                val packet = DatagramPacket(buffer, buffer.size)
+                try {
+                    socket.receive(packet)
+                } catch (_: java.net.SocketTimeoutException) {
+                    continue
+                } catch (_: Exception) {
+                    break
+                }
+                val to = client ?: continue
+                val raw = packet.address.address
+                val header = ByteArray(4 + raw.size + 2)
+                header[3] = (if (raw.size == 16) ATYP_IPV6 else ATYP_IPV4).toByte()
+                System.arraycopy(raw, 0, header, 4, raw.size)
+                header[4 + raw.size] = ((packet.port shr 8) and 0xFF).toByte()
+                header[5 + raw.size] = (packet.port and 0xFF).toByte()
+                val payload = buffer.copyOf(packet.length)
+                if (packet.port == 53) learnDns(payload)
+                val reply = ByteArray(header.size + payload.size)
+                System.arraycopy(header, 0, reply, 0, header.size)
+                System.arraycopy(payload, 0, reply, header.size, payload.size)
+                rxBytes.addAndGet(payload.size.toLong())
+                try {
+                    relay.send(DatagramPacket(reply, reply.size, to.address, to.port))
+                } catch (_: Exception) {
+                    break
+                }
+            }
+        }
+
+        fun close() {
+            runCatching { socket.close() }
+        }
+    }
+
     /**
      * Caps one loopback leg's kernel queue. See [LOOPBACK_QUEUE] for why.
      *
@@ -1180,6 +1622,37 @@ object PsiphonSocksFront {
         }
         try {
             socket.receiveBufferSize = LOOPBACK_QUEUE
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * App -> Psiphon direction, through the uplink shaper (1.4.0-r3).
+     *
+     * While the governor is open this is exactly [pipe]. While it paces, a read
+     * is released in [UplinkTuning.SLICE_BYTES] slices so fairness between bulk
+     * flows has sub-second granularity even on a 30 KB/s uplink. Blocking here is
+     * the intended backpressure: this leg's 64 KB [LOOPBACK_QUEUE] fills, hev's
+     * window to the app closes, and the uploading app slows down at the source.
+     */
+    private fun pipeUp(from: InputStream, to: OutputStream) {
+        val buffer = ByteArray(RELAY_BUFFER)
+        val flow = UplinkShaper.Flow()
+        val shaper = governor.shaper
+        try {
+            while (true) {
+                val read = from.read(buffer)
+                if (read < 0) break
+                var off = 0
+                while (off < read) {
+                    val n = if (shaper.rateBps.isFinite()) min(UplinkTuning.SLICE_BYTES, read - off) else read - off
+                    shaper.acquire(flow, n)
+                    to.write(buffer, off, n)
+                    to.flush()
+                    off += n
+                }
+                txBytes.addAndGet(read.toLong())
+            }
         } catch (_: Exception) {
         }
     }
@@ -1241,7 +1714,7 @@ object PsiphonSocksFront {
 
         val pump = Thread({
             try {
-                pumpUdpAssociate(relay)
+                pumpUdpAssociate(relay, client)
             } catch (_: Throwable) {
                 // Per-association and never fatal.
             } finally {
@@ -1267,11 +1740,64 @@ object PsiphonSocksFront {
         } finally {
             runCatching { relay.close() }
             udpLane.session?.releaseFlowsFor(relay)
+            directUdp.remove(relay)?.close()
             closeQuietly(client)
         }
     }
 
-    private fun pumpUdpAssociate(relay: DatagramSocket) {
+    /**
+     * Relays one association's datagrams, and ends the association when this
+     * server cannot carry what it is being asked to carry.
+     *
+     * ## Why ending it is the fix (1.3.1-r5)
+     *
+     * Field report: browsing, video and downloads are fine on `Aether -> Psiphon`,
+     * but the moment the microphone opens for live dubbing or a voice chat the ping
+     * goes over 1000 ms and the session carries nothing; close the microphone and it
+     * recovers. The log settles what it was:
+     *
+     * ```
+     *   session drops: udp/443 (QUIC) dropped=272,
+     *                  congested udpgw frames dropped=0
+     * ```
+     *
+     * The bulk lane never overflowed, so this was not congestion. Those 272
+     * datagrams were discarded BY POLICY, because both Psiphon servers in that
+     * session had refused the udpgw port forward and real-time audio rides UDP.
+     * A silently discarded datagram tells the app nothing, so it retried for as long
+     * as the microphone was open - and the retry storm is the rest of that log: a
+     * flow holding 48 KB with nothing acknowledged, stalling twice inside a minute,
+     * and the Psiphon health watchdog (removed in 1.4.0) rotating off a server for "refusing 6 different
+     * destinations" that was in truth refusing our own retries.
+     *
+     * SOCKS5 has no per-datagram error. It does have an end-of-association, and
+     * `hev.yaml` asks hev for `udp: 'udp'` with a per-session timeout, which means
+     * hev opens ONE ASSOCIATION PER UDP FLOW. Closing this association therefore
+     * ends exactly one flow: the app's UDP socket fails, and both Gemini Live and
+     * voice chat fall back to their own TCP path in about a second instead of
+     * fighting for minutes and taking the tunnel down with them.
+     *
+     * ## The guard that makes this safe without hev's source
+     *
+     * hev is fetched at build time and is not in this tree, so "one association per
+     * flow" is read off the config rather than proven. [sawDns] makes the change
+     * safe either way: an association that has carried even one DNS query is NEVER
+     * closed here.
+     *
+     *  * If the reading is right, audio associations are closed and DNS - which has
+     *    its own associations - is untouched.
+     *  * If hev multiplexes everything onto one association instead, that
+     *    association sees a DNS query almost immediately and becomes permanently
+     *    immune, leaving today's behaviour exactly as it is.
+     *
+     * So the worst case of this change is no improvement, never a broken resolver.
+     * That matters here: DNS is answered by this front itself once udpgw is refused
+     * (DNS-over-TCP, then DNS-over-HTTPS on 443), and it arrives through an
+     * association like everything else.
+     */
+    private fun pumpUdpAssociate(relay: DatagramSocket, client: Socket) {
+        // Per association, because the pump is per association.
+        var sawDns = false
         val buffer = ByteArray(UDP_BUFFER)
         while (running.get() && !relay.isClosed) {
             val packet = DatagramPacket(buffer, buffer.size)
@@ -1289,6 +1815,15 @@ object PsiphonSocksFront {
             val request = parseUdpRequest(datagram) ?: continue
             if (request.payload.isEmpty()) continue
 
+            // 1.4.0 smart routing (#66): the DNS sinkhole, BLOCK and DIRECT come
+            // before every tunnel policy below, because none of them touches the
+            // tunnel. Skipped outright when the session has no rules.
+            val rules = routes
+            if (!rules.isEmpty && routeDatagram(rules, relay, from, request)) {
+                if (request.port == 53) sawDns = true
+                continue
+            }
+
             // POLICY, before anything is carried.
             if (request.isIpv6 && !ipv6Usable.get()) {
                 // This exit has no IPv6 (see [latchIpv6Unusable]); the round trip
@@ -1296,6 +1831,24 @@ object PsiphonSocksFront {
                 ipv6Refused.incrementAndGet()
                 continue
             }
+            if (request.port == 53) {
+                // This association carries name resolution. It is answered locally
+                // when udpgw is refused, so it must never be torn down below.
+                sawDns = true
+            } else if (udpgwRefused.get() && !sawDns) {
+                if (udpAssociationsEnded.incrementAndGet() == 1L) {
+                    ConnectionLog.record(
+                        "$TAG this server carries no UDP, so a non-DNS UDP flow is ended " +
+                            "at once (port ${request.port}) instead of having its datagrams " +
+                            "dropped in silence. Real-time audio and video fall back to " +
+                            "their own TCP path in about a second; DNS is unaffected.",
+                    )
+                }
+                runCatching { relay.close() }
+                closeQuietly(client)
+                return
+            }
+
             if (request.port == QUIC_PORT && !quicAllowed()) {
                 // Only while the breaker is open or the server refuses udpgw
                 // outright. QUIC is carried by default - see [CARRY_QUIC].
@@ -1694,30 +2247,48 @@ object PsiphonSocksFront {
          */
         private fun writeLoop() {
             while (alive.get()) {
-                val first: ByteArray
+                var frame: ByteArray? = null
+                var priority = false
                 queueLock.lock()
                 try {
                     while (alive.get() && priorityFrames.isEmpty() && bulkFrames.isEmpty()) {
                         notEmpty.await()
                     }
                     if (!alive.get()) return
-                    first = priorityFrames.removeFirstOrNull() ?: bulkFrames.removeFirst()
+                    frame = priorityFrames.removeFirstOrNull()
+                    priority = frame != null
+                    if (frame == null) frame = bulkFrames.removeFirst()
                 } finally {
                     queueLock.unlock()
                 }
                 try {
-                    output.write(first)
-                    var batched = 1
-                    while (batched < WRITE_BATCH) {
+                    var batched = 0
+                    var next: ByteArray? = frame
+                    while (next != null) {
+                        // 1.4.0-r3: every udpgw byte is paced by the uplink
+                        // governor too. DNS rides the sparse path (never waits);
+                        // bulk (QUIC / RTP) waits its fair turn. If the pacer
+                        // is about to hold us, flush first so nothing already
+                        // granted sits in the stream buffer.
+                        if (!priority && governor.shaper.rateBps.isFinite() && batched > 0) {
+                            output.flush()
+                        }
+                        governor.shaper.acquire(
+                            if (priority) udpgwPriorityFlow else udpgwBulkFlow,
+                            next.size,
+                            priority,
+                        )
+                        output.write(next)
+                        batched++
+                        if (batched >= WRITE_BATCH) break
                         queueLock.lock()
-                        val next = try {
-                            priorityFrames.removeFirstOrNull() ?: bulkFrames.removeFirstOrNull()
+                        try {
+                            next = priorityFrames.removeFirstOrNull()
+                            priority = next != null
+                            if (next == null) next = bulkFrames.removeFirstOrNull()
                         } finally {
                             queueLock.unlock()
                         }
-                        if (next == null) break
-                        output.write(next)
-                        batched++
                     }
                     output.flush()
                 } catch (e: Exception) {
@@ -1748,6 +2319,7 @@ object PsiphonSocksFront {
                 if (payload.isEmpty()) continue
 
                 val flow = flows[conid] ?: continue
+                if (headerIsDns(flow.header)) learnDns(payload)
                 // The reply echoes the header the client sent rather than the
                 // address the server reports: hev matches replies against the
                 // destination it asked for, and the two are the same endpoint.
@@ -1843,11 +2415,23 @@ object PsiphonSocksFront {
                     // A real answer from the server: it will not intercept.
                     // Falling back is the correct outcome, not an error.
                     if (udpgwRefused.compareAndSet(false, true)) {
+                        // Session-wide, unlike [udpgwRefused] which a rotation
+                        // clears: see [quicAllowed] for why QUIC must not be
+                        // offered again after this.
+                        val refusals = quicRefusedThisSession.incrementAndGet()
                         ConnectionLog.record(
                             "$TAG this server refused the udpgw port forward (SOCKS reply " +
                                 "${refusal[0]}) - DNS moves to the resolver path (DNS-over-TCP, " +
                                 "then DNS-over-HTTPS on 443) and non-DNS UDP is dropped",
                         )
+                        if (refusals == QUIC_REFUSALS_BEFORE_LATCH) {
+                            ConnectionLog.record(
+                                "$TAG QUIC (udp/443) stays off for the rest of this session. " +
+                                    "Apps fall back to HTTP/2 over TCP and stay there, which is " +
+                                    "steady; QUIC that comes and going with every server " +
+                                    "rotation is what stalls video and chat.",
+                            )
+                        }
                     }
                 } else if (failures == 1 || failures % 10 == 0) {
                     ConnectionLog.record(
@@ -1956,8 +2540,45 @@ object PsiphonSocksFront {
     private fun quicAllowed(): Boolean {
         if (!CARRY_QUIC) return false
         if (udpgwRefused.get()) return false
+        // 1.3.1-r3: QUIC STAYS OFF once this session has met servers that refuse
+        // udpgw, instead of being offered again after every rotation.
+        //
+        // THE CONTRADICTION THIS RESOLVES, in this project's own words.
+        // `docs/PSIPHON_MEDIA_STALL.md` §4 gave the reason UDP/443 was suppressed
+        // from the first datagram: "Consistency is the point: intermittently
+        // working QUIC is far worse than QUIC that never works, because Chromium
+        // caches 'HTTP/3 works for this origin'." Then [CARRY_QUIC] turned QUIC
+        // back on — correctly, because a server that intercepts udpgw carries it
+        // well — and `onServerRotated` clears the refusal so each new server gets
+        // a fresh chance. Put together, those two produce exactly the state §4
+        // warned about: QUIC works, the tunnel dies, the replacement server
+        // refuses udpgw, QUIC is dropped, the next rotation offers it again.
+        //
+        // The field log of that shape: `udpgw session closed` → `no active
+        // tunnels` → `this server refused the udpgw port forward` → twice more
+        // across six minutes, ending `udp/443 (QUIC) dropped=30`. The user's
+        // report of it: "the first minutes are excellent, then the ping goes over
+        // 900 ms and it cuts in and out."
+        //
+        // So a refusal is remembered for the SESSION now, not for one server. DNS
+        // is unaffected — it has its own fallback chain (TCP/53, then DoH on 443)
+        // and every rotation still gets a fresh attempt at real UDP for it, which
+        // is what [udpgwRefused] alone controls. What is latched here is only
+        // whether the device is offered a transport that may vanish again.
+        if (quicRefusedThisSession.get() >= QUIC_REFUSALS_BEFORE_LATCH) return false
         return nowMs() >= quicSuppressedUntil.get()
     }
+
+    /**
+     * How many udpgw refusals a session tolerates before QUIC is left off.
+     *
+     * One. A single refusal already means this exit pool contains servers without
+     * the intercept, and the cost of being wrong in this direction is that HTTP/3
+     * is replaced by HTTP/2 for the rest of the session — which is what happens on
+     * every network that blocks UDP anyway. The cost of being wrong in the other
+     * direction is the stall this comment exists for.
+     */
+    private const val QUIC_REFUSALS_BEFORE_LATCH = 1
 
     /**
      * Counts one dropped bulk frame and trips the breaker on a sustained storm.
@@ -1994,6 +2615,7 @@ object PsiphonSocksFront {
         request: UdpRequest,
         answer: ByteArray,
     ) {
+        if (request.port == 53) learnDns(answer)
         val reply = ByteArray(request.header.size + answer.size)
         System.arraycopy(request.header, 0, reply, 0, request.header.size)
         System.arraycopy(answer, 0, reply, request.header.size, answer.size)
@@ -2112,6 +2734,7 @@ object PsiphonSocksFront {
             closeQuietly(stream.socket)
         }
 
+        learnDns(answer)
         val reply = ByteArray(request.header.size + answer.size)
         System.arraycopy(request.header, 0, reply, 0, request.header.size)
         System.arraycopy(answer, 0, reply, request.header.size, answer.size)
@@ -2253,6 +2876,72 @@ object PsiphonSocksFront {
     }
 
     private val dohLock = Any()
+
+    // ------------------------------------------------ uplink SQM (1.4.0-r3)
+
+    /**
+     * Paces every byte this front hands to Psiphon at the path's real
+     * bottleneck rate, with sparse flows first. See [UplinkGovernor] for the
+     * loge2 / loge3 root cause (home Wi-Fi + Gemini Live).
+     */
+    private val governor = UplinkGovernor(
+        probe = { probeRoundTripMs() },
+        log = { ConnectionLog.record("$TAG $it") },
+    )
+
+    /** One shaper flow for all udpgw bulk (QUIC / RTP) frames. */
+    private val udpgwBulkFlow = UplinkShaper.Flow()
+    private val udpgwPriorityFlow = UplinkShaper.Flow()
+
+    /** The governor's own warm connection; never shared with the DNS pool. */
+    private val probeLock = Any()
+    private var probeConn: DohConn? = null
+
+    private fun closeProbeConn() {
+        val doomed = synchronized(probeLock) { probeConn.also { probeConn = null } }
+        doomed?.let { closeDohConn(it) }
+    }
+
+    /**
+     * One round trip through the FULL chain (front -> Psiphon SSH -> stage 1 ->
+     * exit -> resolver), in ms. A cached-name DoH exchange on a warm, dedicated
+     * connection: ~250 bytes each way, answered from the resolver's cache, so it
+     * measures path + queue and nothing else. Connection setup is never timed.
+     */
+    private fun probeRoundTripMs(): Long? {
+        if (!running.get()) return null
+        val conn = synchronized(probeLock) { probeConn } ?: (openDohConn() ?: return null).also { fresh ->
+            synchronized(probeLock) { probeConn = fresh }
+        }
+        val query = PROBE_QUERY.copyOf()
+        val id = (System.nanoTime() and 0xFFFF).toInt()
+        query[0] = (id shr 8).toByte()
+        query[1] = id.toByte()
+        val t0 = System.nanoTime()
+        val answer = try {
+            dohExchange(conn, query)
+        } catch (e: Exception) {
+            null
+        }
+        val elapsed = (System.nanoTime() - t0) / 1_000_000L
+        if (answer == null || answer.size < 2 || answer[0] != query[0] || answer[1] != query[1]) {
+            closeProbeConn()
+            return null
+        }
+        return elapsed
+    }
+
+    /** DNS query header + "cloudflare.com" IN A; the id is rewritten per probe. */
+    private val PROBE_QUERY: ByteArray = run {
+        val out = java.io.ByteArrayOutputStream()
+        out.write(byteArrayOf(0, 0, 0x01, 0x00, 0, 1, 0, 0, 0, 0, 0, 0))
+        for (label in listOf("cloudflare", "com")) {
+            out.write(label.length)
+            out.write(label.toByteArray(Charsets.US_ASCII))
+        }
+        out.write(byteArrayOf(0, 0, 1, 0, 1))
+        out.toByteArray()
+    }
     private val dohIdle = ArrayDeque<DohConn>()
 
     /** Most-recently-used first, so a warm connection is preferred over a cold one. */

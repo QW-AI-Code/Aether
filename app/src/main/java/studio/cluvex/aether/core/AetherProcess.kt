@@ -24,7 +24,7 @@ class AetherProcess(
 ) {
     private var process: Process? = null
 
-    fun start(profile: ConnectionProfile) {
+    fun start(profile: ConnectionProfile, extraEnv: Map<String, String> = emptyMap()) {
         val bin = File(nativeLibDir, "libaether.so")
         if (!bin.exists()) {
             throw IllegalStateException("Engine binary missing: ${bin.absolutePath}")
@@ -36,23 +36,136 @@ class AetherProcess(
         IdentityVault.unsealInto(workingDir)
 
         val command = mutableListOf(bin.absolutePath).apply { addAll(profile.toArgs()) }
+        // 1.4.0-r5 zero-leak sharing: tell the share bridge, from the argv that is
+        // ACTUALLY handed to the engine, whether this engine can route anything
+        // directly. If it can, the bridge refuses LAN clients until a reconnect
+        // starts an engine without direct rules. Ground truth, not intent.
+        // 1.4.0 smart routing: the built-in lists travel as a routes file.
+        val smartRoutes = SmartLists.engineRoutesFile(workingDir, profile)
+        ShareBridge.noteEngineRoutes(
+            directRulesActive = command.contains("--route-direct") ||
+                (smartRoutes != null && SmartLists.smartDirectActive(profile) && !profile.enginePsiphon),
+        )
         val builder = ProcessBuilder(command)
             .directory(workingDir)
             .redirectErrorStream(true)
         builder.environment().apply {
             putAll(profile.toEnv())
+            putAll(extraEnv)
+            smartRoutes?.let { put("AETHER_ROUTES_FILE", it.absolutePath) }
             put("HOME", workingDir.absolutePath)
             put("TMPDIR", workingDir.absolutePath)
+            // ---- 1.5.0 ROOT-CAUSE FIX: the engine's own shared libraries --------
+            //
+            // Core 2.3.0 links BoringSSL (boring 5.2), which needs the NDK's C++
+            // runtime, libc++_shared.so. It is not an Android system library, so it
+            // ships in jniLibs next to libaether.so. A dlopen()ed library would find
+            // it through the app's linker namespace, but the engine is an
+            // EXECUTABLE: the dynamic linker searches only the system paths and
+            // LD_LIBRARY_PATH. Without this, every mode died before main() with
+            // `CANNOT LINK EXECUTABLE ... "libc++_shared.so" not found`.
+            put(
+                "LD_LIBRARY_PATH",
+                listOfNotNull(nativeLibDir, get("LD_LIBRARY_PATH")?.takeIf { it.isNotBlank() })
+                    .joinToString(":"),
+            )
+            // ---- Tor (engine core 2.0.0) ---------------------------------
+            //
+            // Two paths the engine cannot work out for itself on Android, so they
+            // are handed over here rather than guessed at in the engine:
+            //
+            //  * the directory cache. Tor downloads a consensus and remembers its
+            //    guards; without a writable, PERSISTENT directory it would
+            //    bootstrap from nothing on every connect, which is the slow first
+            //    start users read as a hang.
+            //  * the pluggable transports. On Android the only files that may be
+            //    executed are the ones packaged in jniLibs, so lyrebird ships as
+            //    `libpt-lyrebird.so` and is named explicitly. Without this the
+            //    engine searches PATH and the usual system directories, none of
+            //    which exist here, and a bridged connect would fail with nothing
+            //    to point at.
+            if (profile.backend.usesTor) {
+                val torDir = File(workingDir, "tor").apply { mkdirs() }
+                put("AETHER_TOR_DIR", torDir.absolutePath)
+                put("AETHER_TOR_PT_DIR", nativeLibDir)
+                val lyrebird = File(nativeLibDir, "libpt-lyrebird.so")
+                if (lyrebird.exists()) {
+                    // `name=path`, the form core 2.0.0's --tor-pt documents. One
+                    // binary serves obfs4, meek_lite and webtunnel.
+                    put(
+                        "AETHER_TOR_PT",
+                        listOf("obfs4", "meek_lite", "webtunnel")
+                            .joinToString(";") { "$it=${lyrebird.absolutePath}" },
+                    )
+                } else {
+                    DiagnosticsLog.w(
+                        "engine",
+                        "No libpt-lyrebird.so in this APK: Tor can still connect directly " +
+                            "and through the tunnel, but bridges have no transport to run.",
+                    )
+                }
+            }
+        }
+
+        // ---- Psiphon (engine core 2.1.0, app 1.4.0) ------------------------
+        // The engine runs psiphon-tunnel-core itself; on Android only files
+        // packaged in jniLibs may be executed, so the binary ships as
+        // libpsiphon.so and is named explicitly, and its datastore gets a
+        // persistent directory of its own.
+        if (profile.enginePsiphon) {
+            builder.environment().apply {
+                val psiphonDir = PsiphonBootstrap.dir(workingDir).apply { mkdirs() }
+                put("AETHER_PSIPHON_DIR", psiphonDir.absolutePath)
+                // 1.4.0-r1 ROOT-CAUSE FIX: a trust store and an embedded server
+                // list. Without them the static-linux console client cannot verify
+                // any certificate on Android and has no server to dial, which is
+                // why `Aether -> Psiphon` and `Tor -> Psiphon` never connected. See
+                // [PsiphonBootstrap] for the field log.
+                putAll(PsiphonBootstrap.env(workingDir))
+                val psiphonBin = File(nativeLibDir, "libpsiphon.so")
+                if (psiphonBin.exists()) {
+                    put("AETHER_PSIPHON_BIN", psiphonBin.absolutePath)
+                } else {
+                    DiagnosticsLog.w(
+                        "engine",
+                        "No libpsiphon.so in this APK: the engine's Psiphon cannot start.",
+                    )
+                }
+            }
+            reapPsiphonOrphans()
         }
 
         val proc = builder.start()
         process = proc
         IdentityVault.markRunning(true)
+        // ZERO TRUST (1.3.1, issue #12): hand the engine's stdin to the login-code
+        // prompt. Nothing in the app had ever written to it, which is why the
+        // e-mail enrolment path could not work - the engine asks for the code on
+        // stdout and waits for it on stdin. See [LoginCodePrompt].
+        //
+        // Not for a racing engine: that flow needs ONE stdin to write the code to,
+        // and a race has two engines. Smart Plus therefore never races a profile
+        // with the e-mail flow (SmartPlusPlan.eligible), and a racing engine does
+        // not claim the prompt either - so a race can never leave the winner's
+        // session attached to a dead lane's stdin.
+        if (profile.bindOverride == 0) LoginCodePrompt.attach(proc.outputStream)
 
         // 1.2.8-r5: say which build this is BEFORE the engine speaks, so the
         // log identifies itself even if the engine dies immediately.
         BuildProvenance.logApkIdentity()
         DiagnosticsLog.i("engine", "Spawned ${bin.name} ${redactArgs(profile.toArgs())}")
+        // A new engine means a new bootstrap: the previous run's percentage must
+        // not make this one look like it is already progressing.
+        TorBootstrap.reset()
+        PsiphonEngine.reset()
+        // A racing lane is a probe, not the session: its lines are tagged so two
+        // interleaved engines can be told apart in the diagnostics panel, and it
+        // publishes nothing to the UI. The info row, the Tor bootstrap percentage
+        // and the build-provenance cross-check all describe THE SESSION, and a
+        // losing lane must not be able to write its endpoint into a row the user
+        // reads as "what I am connected through".
+        val racing = profile.bindOverride > 0
+        val tag = if (racing) "engine/lane:${profile.bindOverride}" else "engine"
         // Drain stdout/stderr so a full pipe never blocks the engine, mirroring
         // every line into both logcat and the in-app diagnostics panel.
         Thread({
@@ -65,22 +178,41 @@ class AetherProcess(
                         // ends up in bug reports. The in-app diagnostics panel
                         // (app-private file) still receives every line below.
                         if (BuildConfig.DEBUG) Log.i("aether-engine", it)
-                        DiagnosticsLog.d("engine", it)
-                        // Desktop-parity info row: pick out the endpoint the
-                        // engine selected (no-op for every other line).
-                        EngineMeta.ingest(it)
+                        DiagnosticsLog.d(tag, it)
+                        if (!racing) {
+                            // Desktop-parity info row: pick out the endpoint the
+                            // engine selected (no-op for every other line).
+                            EngineMeta.ingest(it)
+                        }
+                        // Tor bootstrap percentage. Without this the app has no
+                        // way to tell "Tor is still working" from "Tor is being
+                        // blocked", and 1.3.0 shipped a stage gate that assumed
+                        // the worse of the two after four seconds.
+                        if (!racing) TorBootstrap.ingest(it)
+                        if (!racing) PsiphonEngine.ingest(it)
                         // Cross-check the engine's build stamp against this
                         // APK's. See [BuildProvenance] for the r4 round this
-                        // single line would have saved.
-                        BuildProvenance.ingest(it)
+                        // single line would have saved. Once per session is
+                        // enough; a lane would only repeat the same verdict.
+                        if (!racing) BuildProvenance.ingest(it)
+                        // ZERO TRUST: "[zerotrust] login-code-needed attempt=N
+                        // email=..." means the engine is blocked on stdin waiting
+                        // for the code Cloudflare just emailed. Raise it to the UI.
+                        if (!racing) LoginCodePrompt.ingest(it)
                     }
                 }
             } catch (_: Exception) {
             } finally {
-                DiagnosticsLog.w("engine", "Engine output stream closed.")
+                DiagnosticsLog.w(tag, "Engine output stream closed.")
+                // The engine is gone, so its stdin is too: drop any prompt still on
+                // screen rather than collecting a code nothing can read. Only the
+                // engine that claimed the prompt may drop it - a racing lane exiting
+                // must not take the prompt away from the session's engine.
+                if (!racing) LoginCodePrompt.detach()
                 // An engine that never identified itself is an engine older than
-                // r5, i.e. a stale native library in this install.
-                BuildProvenance.noteSilentEngine()
+                // r5, i.e. a stale native library in this install. One verdict per
+                // session: a racing lane would repeat it for the same binary.
+                if (!racing) BuildProvenance.noteSilentEngine()
             }
         }, "aether-log").apply { isDaemon = true }.start()
     }
@@ -134,8 +266,7 @@ class AetherProcess(
         val proc = process ?: run {
             // Nothing to reap, but a previous session may still have left the
             // identity in the clear (e.g. start() threw after the unseal).
-            IdentityVault.markRunning(false)
-            IdentityVault.sealAndShred(workingDir)
+            sealIfLastEngine()
             return
         }
         process = null
@@ -150,11 +281,51 @@ class AetherProcess(
                 proc.destroyForcibly()
             }
         }
+        // The engine's Psiphon child must not outlive it (a SIGKILLed engine
+        // cannot reap it) and keep holding its port and a tunnel.
+        reapPsiphonOrphans()
         // The engine is gone, so the identity files are nobody's working set any
         // more: seal them and shred the plaintext. Done AFTER the reap on purpose -
         // sealing a file the engine is still writing would race its own save.
-        IdentityVault.markRunning(false)
+        sealIfLastEngine()
+    }
+
+    /**
+     * Seals the identity, but only once the LAST engine has gone.
+     *
+     * A Smart Plus race has two engines alive at the same time
+     * ([studio.cluvex.aether.core.SmartPlusPlan]), and sealing SHREDS the
+     * plaintext. Sealing when the first of them is reaped would therefore pull the
+     * WARP identity and the WireGuard private key out from under the engine that
+     * is still connecting - not a slow path but a broken session and a device that
+     * has to enrol again. [IdentityVault.markRunning] returns how many are left.
+     */
+    private fun sealIfLastEngine() {
+        val stillRunning = IdentityVault.markRunning(false)
+        if (stillRunning > 0) {
+            DiagnosticsLog.d(
+                "engine",
+                "Engine reaped; $stillRunning still running, so the identity stays unsealed.",
+            )
+            return
+        }
         IdentityVault.sealAndShred(workingDir)
+    }
+
+    /** Kills psiphon-tunnel-core processes of this app left behind by an earlier engine. */
+    private fun reapPsiphonOrphans() {
+        runCatching {
+            val self = android.os.Process.myPid()
+            File("/proc").listFiles()?.forEach { dir ->
+                val pid = dir.name.toIntOrNull() ?: return@forEach
+                if (pid == self) return@forEach
+                val cmd = runCatching { File(dir, "cmdline").readText() }.getOrNull() ?: return@forEach
+                if (cmd.contains("libpsiphon.so")) {
+                    android.os.Process.killProcess(pid)
+                    DiagnosticsLog.w("engine", "Stopped a leftover Psiphon process ($pid).")
+                }
+            }
+        }
     }
 
     private companion object {

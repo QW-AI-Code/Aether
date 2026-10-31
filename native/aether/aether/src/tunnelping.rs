@@ -97,6 +97,8 @@ pub struct MasquePingParams {
     pub path: String,
     pub cert_pem: Vec<u8>,
     pub key_pem: Vec<u8>,
+    /// The ECHConfigList the handshake offers, that of the scan the check is part of.
+    pub ech_config_list: Option<Vec<u8>>,
     pub noize: NoizeConfig,
     pub local_ipv4: Ipv4Addr,
     pub local_ipv4_str: String,
@@ -133,9 +135,18 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                 local_ipv4: p.local_ipv4,
                 quiet: true,
                 pin_endpoint: true,
-                expected_pins: crate::consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+                expected_pins: crate::consts::MASQUE_PINS
+                    .iter()
+                    .map(|p| p.to_vec())
+                    .collect(),
+                ech_config_list: p.ech_config_list.clone(),
             };
-            AbortGuard(tokio::spawn(masque_h2::run(h2cfg, internals, None, Some(ready_tx))))
+            AbortGuard(tokio::spawn(masque_h2::run(
+                h2cfg,
+                internals,
+                None,
+                Some(ready_tx),
+            )))
         } else {
             let cfg = quic::TunnelConfig {
                 peer: p.peer,
@@ -144,12 +155,19 @@ pub async fn masque_http_ping(p: &MasquePingParams, timeout: Duration) -> Result
                 path: p.path.clone(),
                 cert_pem: p.cert_pem.clone(),
                 key_pem: p.key_pem.clone(),
-                ech_config_list: None,
+                ech_config_list: p.ech_config_list.clone(),
                 noize: p.noize.clone(),
                 local_ipv4: p.local_ipv4,
                 quiet: true,
+                max_datagram: quic::MAX_DATAGRAM_SIZE,
+                version_bait: true,
             };
-            AbortGuard(tokio::spawn(quic::run(cfg, internals, None, Some(ready_tx))))
+            AbortGuard(tokio::spawn(quic::run(
+                cfg,
+                internals,
+                None,
+                Some(ready_tx),
+            )))
         };
 
         if ready_rx.await.is_err() {
@@ -185,8 +203,10 @@ pub async fn wg_http_ping_established(
     timeout: Duration,
 ) -> Result<Duration> {
     let attempt = async {
-        let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(crate::sysprofile::channel_capacity());
-        let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(crate::sysprofile::channel_capacity());
+        let (outbound_tx, outbound_rx) =
+            tokio::sync::mpsc::channel(crate::sysprofile::channel_capacity());
+        let (inbound_tx, inbound_rx) =
+            tokio::sync::mpsc::channel(crate::sysprofile::channel_capacity());
 
         let tunnel = wireguard::WgTunnel::from_established(
             session,

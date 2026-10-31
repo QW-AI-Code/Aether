@@ -1,8 +1,8 @@
 use std::net::SocketAddr;
 use std::time::Duration;
 
-use rand::RngExt;
 use rand::Rng;
+use rand::RngExt;
 use tokio::net::UdpSocket;
 
 #[derive(Debug, Clone)]
@@ -116,18 +116,18 @@ fn parse_cps(spec: &str) -> Vec<u8> {
                 if let Ok(decoded) = hex::decode(&hexstr) {
                     out.extend_from_slice(&decoded);
                 }
-            },
+            }
             "t" => {
                 let ts = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .map(|d| d.as_secs() as u32)
                     .unwrap_or(0);
                 out.extend_from_slice(&ts.to_be_bytes());
-            },
+            }
             "n" => {
                 let nonce: u64 = rand::random();
                 out.extend_from_slice(&nonce.to_be_bytes());
-            },
+            }
             "r" => {
                 let len: usize = data.parse().unwrap_or(0).min(1024);
                 if len > 0 {
@@ -135,13 +135,24 @@ fn parse_cps(spec: &str) -> Vec<u8> {
                     rand::rng().fill_bytes(&mut r);
                     out.extend_from_slice(&r);
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
 
         i = end + 1;
     }
     out
+}
+
+async fn send_junk(sock: &UdpSocket, peer: SocketAddr, pkt: &[u8]) -> std::io::Result<usize> {
+    if sock.peer_addr().is_ok() {
+        return sock.send(pkt).await;
+    }
+    let target = match sock.local_addr() {
+        Ok(local) => crate::upstream::relay_target(local, peer),
+        Err(_) => peer,
+    };
+    sock.send_to(pkt, target).await
 }
 
 pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig) {
@@ -153,7 +164,7 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
 
     for i in 0..cfg.jc_before_hs {
         let pkt = junk_packet(cfg);
-        match sock.send_to(&pkt, peer).await {
+        match send_junk(sock, peer, &pkt).await {
             Ok(n) => log::trace!("junk[{i}] sent {n} bytes"),
             Err(e) => log::debug!("junk[{i}] send failed: {e}"),
         }
@@ -165,7 +176,7 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
     if let Some(i1) = &cfg.i1 {
         let pkt = parse_cps(i1);
         if !pkt.is_empty() {
-            match sock.send_to(&pkt, peer).await {
+            match send_junk(sock, peer, &pkt).await {
                 Ok(n) => log::trace!("signature i1 sent {n} bytes"),
                 Err(e) => log::debug!("signature i1 send failed: {e}"),
             }
@@ -175,7 +186,7 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
 
     for i in 0..cfg.jc_after_i1 {
         let pkt = junk_packet(cfg);
-        match sock.send_to(&pkt, peer).await {
+        match send_junk(sock, peer, &pkt).await {
             Ok(n) => log::trace!("junk_after[{i}] sent {n} bytes"),
             Err(e) => log::debug!("junk_after[{i}] send failed: {e}"),
         }
@@ -187,7 +198,7 @@ pub async fn pre_handshake(sock: &UdpSocket, peer: SocketAddr, cfg: &NoizeConfig
     if let Some(i2) = &cfg.i2 {
         let pkt = parse_cps(i2);
         if !pkt.is_empty() {
-            match sock.send_to(&pkt, peer).await {
+            match send_junk(sock, peer, &pkt).await {
                 Ok(n) => log::trace!("signature i2 sent {n} bytes"),
                 Err(e) => log::debug!("signature i2 send failed: {e}"),
             }

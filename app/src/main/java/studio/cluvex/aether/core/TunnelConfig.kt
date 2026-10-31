@@ -57,6 +57,29 @@ object TunnelConfig {
      */
     const val PSIPHON_SOCKS_PORT = 1827
 
+    /**
+     * The engine's Tor listener when Tor rides INSIDE the tunnel (`--tor`).
+     *
+     * In that mode [SOCKS_PORT] keeps the WARP exit and Tor gets its own
+     * listener, exactly as core 2.0.0 documents `--tor-bind`. With `--tor-only`
+     * there is no tunnel to keep, so Tor is on [SOCKS_PORT] itself and this port
+     * is unused - see [studio.cluvex.aether.model.TransportBackend.torSocksPort].
+     */
+    const val TOR_SOCKS_PORT = 1820
+
+    /**
+     * The port tun2socks talks to in the two modes whose traffic leaves through
+     * Tor, owned by [studio.cluvex.aether.transport.TorSocksFront].
+     *
+     * It exists for one reason: **Tor carries TCP only**, in every
+     * implementation, and hev-socks5-tunnel sends every UDP flow - so every DNS
+     * query on the device - as SOCKS5 `UDP ASSOCIATE`. Pointing hev straight at a
+     * Tor listener is a session that connects and opens nothing, which is the
+     * failure the retired 1.2.7 Tor backend shipped. The front answers that
+     * command itself and resolves DNS over TCP inside Tor.
+     */
+    const val TOR_FRONT_PORT = 1821
+
     /** DNS resolvers advertised on the TUN interface. */
     val DNS_SERVERS = listOf("1.1.1.1", "8.8.8.8")
 }

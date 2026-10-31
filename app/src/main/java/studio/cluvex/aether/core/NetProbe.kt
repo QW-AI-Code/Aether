@@ -9,6 +9,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
@@ -21,11 +22,25 @@ import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
 import kotlin.concurrent.thread
 
-/** Public IP + country as reported by a geolocation endpoint. */
-data class IpInfo(val ip: String, val countryCode: String?)
+/**
+ * Public IP + country as reported by a geolocation endpoint.
+ *
+ * 1.6.0: [countryCode] is always a canonical ISO 3166-1 alpha-2 code or `null`
+ * (= unknown, see [NetProbe.normalizeCountryCode]); it is never a raw provider
+ * string. [alternateIp] carries the OTHER address family observed on the SAME
+ * exit in the SAME race (dual-stack exits), so preferring IPv4 for display does
+ * not hide that the exit also speaks IPv6. It is never a converted address.
+ */
+data class IpInfo(val ip: String, val countryCode: String?, val alternateIp: String? = null)
 
 /** IP shown in the UI, tagged with whether it came through the tunnel. */
-data class IpEndpoint(val ip: String, val countryCode: String?, val viaTunnel: Boolean)
+data class IpEndpoint(
+    val ip: String,
+    val countryCode: String?,
+    val viaTunnel: Boolean,
+    /** See [IpInfo.alternateIp]; `null` until the state pipeline forwards it. */
+    val alternateIp: String? = null,
+)
 
 /**
  * Low-level, dependency-free network probes.
@@ -65,27 +80,43 @@ object NetProbe {
     )
 
     /**
-     * SECURITY (audit 1.2.7-r2): TLS FIRST, on purpose.
+     * SECURITY (audit 1.2.7-r2, tightened in 1.3.0): TLS ONLY, on purpose.
      *
      * The order used to be cleartext-first (`ip-api.com:80`), so on a healthy
      * network the exit IP shown in the UI always arrived over plain HTTP - which
      * anyone on the path can rewrite. On the networks this app exists for that is
      * not theoretical: a censor able to answer the probe can make the badge show a
      * plausible foreign IP and flag while the traffic is not tunnelled at all,
-     * turning the app's own reassurance into the attack. The authenticated
-     * provider is now tried first and the cleartext ones are only a
-     * last-resort availability fallback.
+     * turning the app's own reassurance into the attack. 1.2.7-r2 moved the
+     * authenticated provider first and kept two cleartext entries as an
+     * availability fallback.
      *
-     * The country REFINEMENT (see [refineCountry]) still uses ip-api over plain
-     * HTTP because its free tier offers no TLS. The country label is therefore
-     * informational and must never be treated as proof of anything; the exit IP,
-     * which is what the self-test and the user actually rely on, now comes from an
-     * authenticated source whenever one is reachable.
+     * AUDIT F-5 (1.3.0): those two are gone. `1.1.1.1` serves the same
+     * `/cdn-cgi/trace` on 443, so the fallback costs nothing to authenticate, and
+     * `ip-api.com` as an IP source is dropped entirely. Two reasons beyond the
+     * rewrite risk: a cleartext GET for "what is my IP" is a recognisable
+     * fingerprint of this app on a network where the app's presence is itself the
+     * sensitive fact, and these are raw sockets, so `usesCleartextTraffic=false`
+     * never applied to them.
+     *
+     * The IP literal is deliberate ([GeoProvider.hostIsDomain] = false): no DNS is
+     * involved, so a poisoned resolver cannot redirect the probe. Verification
+     * still holds - the Cloudflare DNS certificate carries `1.1.1.1` as an
+     * iPAddress SAN and [tlsWrap] checks it through the platform verifier.
+     *
+     * The country REFINEMENT used ip-api over plain HTTP (its free tier offers no
+     * TLS); F-5 left that call reachable from the DIRECT path, which was the actual
+     * leak and is gated in [shouldRefineCountry]. 1.6.0 removes the cleartext hop
+     * entirely: [enrichCountry] asks the authenticated trace endpoints through the
+     * same SOCKS address and only accepts a country for the exact IP it was asked
+     * about. The label is informational and must never be treated as proof of
+     * anything; the exit IP, which is what the self-test and the user rely on,
+     * only ever comes from an authenticated source.
      */
     private val GEO_PROVIDERS = listOf(
         GeoProvider("www.cloudflare.com", 443, "/cdn-cgi/trace", tls = true, hostIsDomain = true),
-        GeoProvider("ip-api.com", 80, "/json/?fields=status,query,countryCode", tls = false, hostIsDomain = true),
-        GeoProvider("1.1.1.1", 80, "/cdn-cgi/trace", tls = false, hostIsDomain = false),
+        GeoProvider("1.1.1.1", 443, "/cdn-cgi/trace", tls = true, hostIsDomain = false),
+        GeoProvider("api.ipify.org", 443, "/?format=json", tls = true, hostIsDomain = true),
     )
 
     // ---- Public: geolocation --------------------------------------------
@@ -101,11 +132,23 @@ object NetProbe {
             }.onFailure {
                 DiagnosticsLog.d("netprobe", "direct geo ${p.host} failed: ${it.message}")
             }.getOrNull()
-            if (info != null) {
-                return refineCountry(info, p) { host, port ->
-                    openDirectIpv4(host, port, timeoutMs)
-                }
-            }
+            // SECURITY (F-5 follow-up): NO country refinement on this path.
+            //
+            // This is the UNTUNNELLED probe - it exists to show the operator's own
+            // IP while disconnected. Refining the country here opened a SECOND,
+            // CLEARTEXT connection (ip-api.com:80, a raw socket, so
+            // `usesCleartextTraffic="false"` never applied) whose request line
+            // carried this device's real public IP, sent over the very network the
+            // app is supposed to protect the user from. The operator already knows
+            // that IP - it is the source address of the packet - so the leak is not
+            // the address itself: it is a plaintext, app-shaped
+            // "GET /json/<my own ip>?fields=status,countryCode" that identifies
+            // Aether on a network where merely running Aether is the sensitive
+            // fact. The flag on a disconnected badge is not worth that.
+            //
+            // The provider's own `loc=` is used as-is; no refinement, no second
+            // request. See [shouldRefineCountry] for the rule and the test.
+            if (info != null) return info
         }
         return null
     }
@@ -150,9 +193,12 @@ object NetProbe {
                 DiagnosticsLog.d("netprobe", "proxied geo ${p.host} failed: ${it.message}")
             }.getOrNull()
             if (info != null) {
-                return refineCountry(info, p) { host, port ->
-                    socks5Connect(socksHost, socksPort, host, port, useDomain = true, timeoutMs)
-                }
+                // 1.6.0: the refinement is now the HTTPS [enrichCountry] through the
+                // SAME SOCKS address (no cleartext hop any more); the policy gate in
+                // [shouldRefineCountry] is unchanged: tunnelled only, unknown only.
+                if (!shouldRefineCountry(p.host, info.countryCode, viaTunnel = true)) return info
+                val cc = enrichCountry(socksHost, socksPort, info.ip, timeoutMs)
+                return if (cc != null) info.copy(countryCode = cc) else info
             }
         }
         return null
@@ -172,10 +218,34 @@ object NetProbe {
         socksHost: String,
         socksPort: Int,
         timeoutMs: Int = 6000,
+        /**
+         * 1.6.0 IPv4 PREFERENCE: when the first answer is an IPv6 address, wait at
+         * most this long (never past the overall budget) for the IPv4-literal
+         * provider (`1.1.1.1`, SOCKS ATYP=0x01) to report the SAME exit's IPv4.
+         * Only that provider observes the exit's IPv4 by construction; the
+         * domain providers let the exit pick a family. `0` disables the grace.
+         */
+        ipv4GraceMs: Long = IPV4_GRACE_MS,
+        /**
+         * ASYNC ENRICHMENT: invoked at most once on a pool thread (it may race
+         * the caller publishing the initial result), with a copy of the returned [IpInfo] whose country
+         * was filled in by [enrichCountry] (same IP, same SOCKS address, HTTPS).
+         * Never invoked when the returned info already has a country or when the
+         * enrichment fails. The CALLER owns the staleness check: it must drop the
+         * value if the session epoch changed or the displayed IP is no longer
+         * `enriched.ip`. This keeps the authenticated IP fast and the cosmetic
+         * flag catch-up off the critical path.
+         */
+        onEnriched: ((IpInfo) -> Unit)? = null,
     ): IpInfo? {
         val winner = AtomicReference<IpInfo?>(null)
+        val ipv4 = AtomicReference<IpInfo?>(null)
+        val ipv6 = AtomicReference<IpInfo?>(null)
         val remaining = AtomicInteger(GEO_PROVIDERS.size)
         val done = CountDownLatch(1)
+        val ipv4Ready = CountDownLatch(1)
+        // Monotonic overall budget: per-connection timeout + headroom for TLS/HTTP.
+        val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs.toLong() + 4_000L)
         for (p in GEO_PROVIDERS) {
             // 1.2.2 CPU/MEMORY FIX: run the race on a SHARED, recycled pool
             // instead of spawning brand-new OS threads on every call. This
@@ -194,20 +264,117 @@ object NetProbe {
                     DiagnosticsLog.d("netprobe", "raced geo ${p.host} failed: ${it.message}")
                 }.getOrNull()
                 if (info != null) {
-                    val refined = runCatching {
-                        refineCountry(info, p) { host, port ->
-                            socks5Connect(socksHost, socksPort, host, port, useDomain = true, timeoutMs)
-                        }
-                    }.getOrDefault(info)
-                    if (winner.compareAndSet(null, refined)) done.countDown()
+                    if (info.ip.contains(':')) {
+                        ipv6.compareAndSet(null, info)
+                    } else if (ipv4.compareAndSet(null, info)) {
+                        ipv4Ready.countDown()
+                    }
+                    // Publish authenticated IP immediately. A missing cosmetic country
+                    // must not hold the IP hostage to another provider's timeout.
+                    if (winner.compareAndSet(null, info)) done.countDown()
                 }
-                if (remaining.decrementAndGet() == 0) done.countDown()
+                if (remaining.decrementAndGet() == 0) {
+                    done.countDown()
+                    ipv4Ready.countDown()
+                }
             }
         }
-        // Small headroom over the per-connection timeout for TLS + HTTP I/O.
-        done.await(timeoutMs.toLong() + 4_000L, TimeUnit.MILLISECONDS)
-        return winner.get()
+        done.await(remainingMs(deadlineNanos), TimeUnit.MILLISECONDS)
+        val first = winner.get()
+        if (first != null && first.ip.contains(':') && ipv4.get() == null && ipv4GraceMs > 0L) {
+            // Bounded grace for a confirmed IPv4 of the same exit; never past the budget.
+            ipv4Ready.await(minOf(ipv4GraceMs, remainingMs(deadlineNanos)), TimeUnit.MILLISECONDS)
+        }
+        val result = mergeDualStack(first, ipv4.get(), ipv6.get()) ?: return null
+        if (result.countryCode == null && onEnriched != null) {
+            geoPool.execute {
+                // Bounded background retries. A fast IP-only provider must not
+                // permanently pin the globe when a geo provider is warming up.
+                repeat(3) { attempt ->
+                    val cc = enrichCountry(socksHost, socksPort, result.ip, minOf(timeoutMs, 4_000))
+                    if (cc != null) { onEnriched(result.copy(countryCode = cc)); return@execute }
+                    if (attempt < 2) {
+                        try { Thread.sleep(1_000L) } catch (_: InterruptedException) { return@execute }
+                    }
+                }
+            }
+        }
+        return result
     }
+
+    private fun remainingMs(deadlineNanos: Long): Long =
+        TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()).coerceAtLeast(0L)
+
+    /**
+     * Picks what the badge shows from one race against ONE SOCKS address.
+     *
+     *  - IPv4 winner: shown as-is; an IPv6 already seen in the same race becomes
+     *    [IpInfo.alternateIp].
+     *  - IPv6 winner + confirmed IPv4 from the same race: the IPv4 is shown (with
+     *    ITS OWN country, never the IPv6 answer's `loc`), the IPv6 is kept as
+     *    [IpInfo.alternateIp] so the dual-stack exit stays visible.
+     *  - IPv6 only: the IPv6 stays. There is no IPv6->IPv4 conversion.
+     *
+     * Pure function; pinned on the JVM by `NetProbeCountryCodeTest`.
+     */
+    internal fun mergeDualStack(first: IpInfo?, ipv4: IpInfo?, ipv6: IpInfo? = null): IpInfo? {
+        if (first == null) return ipv4 ?: ipv6
+        val firstIsV6 = first.ip.contains(':')
+        if (!firstIsV6) {
+            val alt = ipv6?.ip?.takeIf { it != first.ip }
+            return if (alt != null && first.alternateIp == null) first.copy(alternateIp = alt) else first
+        }
+        if (ipv4 == null || ipv4.ip.contains(':')) return first
+        return IpInfo(ipv4.ip, ipv4.countryCode, alternateIp = first.ip)
+    }
+
+    /**
+     * Country for [ip] over HTTPS, through the SAME SOCKS address the IP came from.
+     *
+     * Races authenticated Cloudflare traces and an explicit-IP HTTPS geo lookup
+     * and accepts `loc=` ONLY when the trace's own `ip=` equals [ip]: the country
+     * of one address is never attached to another. The explicit-IP provider
+     * validates the requested address even on split-egress tunnels. All probes
+     * run in parallel; the first valid ISO result wins. Returns `null` = unknown.
+     *
+     * Privacy: no request leaves on the direct path ([fetchIpInfoDirect] never
+     * calls this), nothing is sent in the clear, and [ip] never appears in a
+     * cleartext request. The explicit lookup sends only the displayed exit IP
+     * to ipwho.is through the tunnel; never the direct/operator address.
+     */
+    fun enrichCountry(socksHost: String, socksPort: Int, ip: String, timeoutMs: Int = 4000): String? {
+        if (!validIpLiteral(ip)) return null
+        val trace = GEO_PROVIDERS.filter { it.path == "/cdn-cgi/trace" && it.tls }
+        // Explicit-IP TLS fallback handles split egress: a trace from another
+        // destination may observe a different IP. Never borrow that trace's flag.
+        // Only the displayed EXIT IP is disclosed, via the SAME SOCKS tunnel.
+        val providers = trace + GeoProvider("ipwho.is", 443,
+            "/$ip?fields=ip,success,country_code", tls = true, hostIsDomain = true)
+        val cc = AtomicReference<String?>(null)
+        val done = CountDownLatch(1)
+        val remaining = AtomicInteger(providers.size)
+        for (p in providers) geoPool.execute {
+            val info = runCatching {
+                socks5Connect(socksHost, socksPort, p.host, p.port, useDomain = p.hostIsDomain, timeoutMs).use { s ->
+                    parseIpInfo(httpGet(tlsWrap(s, p.host, p.port, timeoutMs), p.host, p.path))
+                }
+            }.getOrNull()
+            countryForIp(ip, info)?.let { if (cc.compareAndSet(null, it)) done.countDown() }
+            if (remaining.decrementAndGet() == 0) done.countDown()
+        }
+        done.await(timeoutMs.toLong() + 4_000L, TimeUnit.MILLISECONDS)
+        return cc.get()
+    }
+
+    internal fun countryForIp(ip: String, info: IpInfo?): String? {
+        if (!validIpLiteral(ip) || info == null || !validIpLiteral(info.ip)) return null
+        // Numeric literals were validated BEFORE this call: DNS is impossible.
+        if (InetAddress.getByName(ip) != InetAddress.getByName(info.ip)) return null
+        return normalizeCountryCode(info.countryCode)
+    }
+
+    /** Upper bound of the IPv4 grace in [fetchIpInfoViaSocksRaced]. */
+    const val IPV4_GRACE_MS = 1_500L
 
     /**
      * Shared worker pool for the geolocation race (see
@@ -247,29 +414,42 @@ object NetProbe {
     }
 
     /**
-     * FLAG-CORRECTNESS FIX: Cloudflare's /cdn-cgi/trace `loc=` is the country
-     * Cloudflare attributes to the CLIENT — behind WARP that often differs
-     * from the country the exit IP itself is registered in (which is what
-     * ip-api reports). Depending on which provider happened to win, the badge
-     * showed a different flag for the very same connection. Whenever a
-     * non-ip-api provider supplied the IP, re-ask ip-api about THAT exact IP
-     * over the same network path, so the flag always comes from one geo
-     * database. Falls back to the provider's own country code if ip-api is
-     * unreachable.
+     * Whether a country refinement lookup may be made at all.
+     *
+     * SECURITY RULE (F-5 follow-up, 1.6.0). The refinement used to be one plaintext
+     * HTTP request to `ip-api.com:80` whose path contained an IP address; since
+     * 1.6.0 it is the HTTPS [enrichCountry] through the session's own SOCKS
+     * address and nothing leaves in the clear. The gate is kept unchanged because
+     * a cosmetic request is still a request. Two conditions have to hold before
+     * it is allowed to exist, and BOTH are enforced here so there is exactly one
+     * place to audit and one place to test:
+     *
+     *  1. **Tunnelled only.** [viaTunnel] must be true. On a direct socket the
+     *     request travels the operator's network in the clear, carrying the user's
+     *     real IP in its request line and the recognisable shape of this app. That
+     *     was the leak: it fired on every disconnected IP refresh, which is exactly
+     *     when the user has no protection. Through the tunnel the request leaves
+     *     from the exit, so neither the operator nor anyone between sees it, and
+     *     the address in it is the exit address - not the user's.
+     *  2. **Only when the country is actually unknown.** The refinement used to run
+     *     on EVERY successful probe, purely to make two geo databases agree on a
+     *     flag. A cosmetic request is still a request; it does not get to exist. If
+     *     the provider already reported a country, that country is used.
+     *
+     * The [providerHost] check keeps the historical guard (ip-api never re-asked
+     * itself); it is harmless now that ip-api is no longer a provider.
+     *
+     * `internal` rather than `private` so `NetProbeGeoPolicyTest` can pin the rule
+     * on the JVM. It is a pure function - no socket, no Android type.
      */
-    private fun refineCountry(
-        info: IpInfo,
-        provider: GeoProvider,
-        open: (host: String, port: Int) -> Socket,
-    ): IpInfo {
-        if (provider.host == "ip-api.com") return info
-        val cc = runCatching {
-            open("ip-api.com", 80).use { s ->
-                val body = httpGet(s, "ip-api.com", "/json/${info.ip}?fields=status,countryCode")
-                Regex("\"countryCode\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
-            }
-        }.getOrNull()
-        return if (cc != null) info.copy(countryCode = cc) else info
+    internal fun shouldRefineCountry(
+        providerHost: String,
+        countryCode: String?,
+        viaTunnel: Boolean,
+    ): Boolean {
+        if (!viaTunnel) return false
+        if (providerHost == "ip-api.com") return false
+        return countryCode.isNullOrBlank()
     }
 
     // ---- Retry wrappers -------------------------------------------------
@@ -308,9 +488,11 @@ object NetProbe {
         attempts: Int = 12,
         delayMs: Long = 1000,
         timeoutMs: Int = 6000,
+        /** See [fetchIpInfoViaSocksRaced]; forwarded to the attempt that succeeds. */
+        onEnriched: ((IpInfo) -> Unit)? = null,
     ): IpInfo? {
         repeat(attempts) { i ->
-            fetchIpInfoViaSocksRaced(socksHost, socksPort, timeoutMs)?.let { return it }
+            fetchIpInfoViaSocksRaced(socksHost, socksPort, timeoutMs, onEnriched = onEnriched)?.let { return it }
             if (i < attempts - 1) {
                 try {
                     Thread.sleep(delayMs)
@@ -575,7 +757,13 @@ object NetProbe {
         val request = buildString {
             append("GET ").append(path).append(" HTTP/1.1\r\n")
             append("Host: ").append(host).append("\r\n")
-            append("User-Agent: Aether/1.0\r\n")
+            // SECURITY (F-5 follow-up): NO app name on the wire. This header used
+            // to read "Aether/1.0", which named the app - and its version - in
+            // every probe, including the one plaintext request this class can still
+            // make. On a network where running this app is itself the sensitive
+            // fact, that is the fingerprint, more direct than the shape of the
+            // request. A bare, extremely common token identifies nothing.
+            append("User-Agent: Mozilla/5.0\r\n")
             append("Accept: */*\r\n")
             append("Connection: close\r\n\r\n")
         }
@@ -586,31 +774,135 @@ object NetProbe {
         return socket.getInputStream().readBytes().toString(Charsets.UTF_8)
     }
 
-    private fun parseIpInfo(response: String): IpInfo? {
+    /**
+     * Parses one provider response. 1.6.0: EVERY format goes through
+     * [validIpLiteral] (previously only ipify did) and every country through
+     * [normalizeCountryCode]; no resolver is ever consulted for untrusted bytes.
+     * A response whose address is not a literal yields `null` even if it carries
+     * a country - a country without its address is worthless.
+     */
+    internal fun parseIpInfo(response: String): IpInfo? {
         val body = response.substringAfter("\r\n\r\n", "")
-        // Format 1: ip-api.com JSON  {"query":"1.2.2.4","countryCode":"DE"}
+        // Independent authenticated provider (ipify JSON): address only.
+        val jsonIp = Regex("\"ip\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+        if (jsonIp != null) {
+            if (!validIpLiteral(jsonIp) || Regex("\"success\"\\s*:\\s*false").containsMatchIn(body)) return null
+            val cc = Regex("\"country_code\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
+            return IpInfo(jsonIp, normalizeCountryCode(cc))
+        }
+        // Format 1: ip-api style JSON  {"query":"1.2.2.4","countryCode":"DE"}
         val ip = Regex("\"query\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
         if (ip != null) {
+            if (!validIpLiteral(ip)) return null
             val cc = Regex("\"countryCode\"\\s*:\\s*\"([^\"]+)\"").find(body)?.groupValues?.get(1)
-            return IpInfo(ip, cc)
+            return IpInfo(ip, normalizeCountryCode(cc))
         }
         // Format 2: Cloudflare /cdn-cgi/trace key=value lines (ip=..., loc=...)
         val traceIp = Regex("(?m)^ip=(\\S+)").find(body)?.groupValues?.get(1)
         if (traceIp != null) {
-            val loc = Regex("(?m)^loc=([A-Za-z]{2})").find(body)?.groupValues?.get(1)
-            return IpInfo(traceIp, loc?.uppercase())
+            if (!validIpLiteral(traceIp)) return null
+            val loc = Regex("(?m)^loc=(\\S+)").find(body)?.groupValues?.get(1)
+            return IpInfo(traceIp, normalizeCountryCode(loc))
         }
         return null
     }
 
-    /** Turns a 2-letter ISO country code into its flag emoji. */
-    fun flagEmoji(countryCode: String?): String {
-        if (countryCode == null || countryCode.length != 2) return "\uD83C\uDFF3\uFE0F"
-        val cc = countryCode.uppercase()
-        if (!cc.all { it in 'A'..'Z' }) return "\uD83C\uDFF3\uFE0F"
+    /**
+     * Strict, resolver-free literal check for both families.
+     *
+     * 1.6.0: the IPv6 branch used to fall through to `InetAddress.getByName`,
+     * which on a malformed-but-plausible string can hit the platform resolver
+     * with provider-supplied bytes. Both branches are now pure string parsers.
+     */
+    internal fun validIpLiteral(value: String): Boolean =
+        if (value.contains(':')) isIpv6Literal(value) else isIpv4Literal(value)
+
+    internal fun isIpv4Literal(value: String): Boolean {
+        val parts = value.split('.')
+        return parts.size == 4 && parts.all { p ->
+            p.isNotEmpty() && p.length <= 3 && p.all { it in '0'..'9' } && p.toInt() in 0..255
+        }
+    }
+
+    /** RFC 4291 text forms incl. `::` compression and an embedded IPv4 tail; no zone ids. */
+    internal fun isIpv6Literal(value: String): Boolean {
+        if (value.isEmpty() || value.length > 45) return false
+        if (value.any { it !in "0123456789abcdefABCDEF:." }) return false
+        val dc = value.indexOf("::")
+        if (dc >= 0 && value.indexOf("::", dc + 1) >= 0) return false
+        val halves = if (dc >= 0) listOf(value.substring(0, dc), value.substring(dc + 2)) else listOf(value)
+        var groups = 0
+        for ((hi, half) in halves.withIndex()) {
+            if (half.isEmpty()) continue
+            val pieces = half.split(':')
+            for ((i, piece) in pieces.withIndex()) {
+                val last = hi == halves.lastIndex && i == pieces.lastIndex
+                if (last && piece.contains('.')) {
+                    if (!isIpv4Literal(piece)) return false
+                    groups += 2
+                } else {
+                    if (piece.isEmpty() || piece.length > 4 || piece.contains('.')) return false
+                    groups += 1
+                }
+            }
+        }
+        return if (dc >= 0) groups <= 7 else groups == 8
+    }
+
+    // ---- Country code policy (1.6.0) ---------------------------------------
+
+    /** Assigned ISO 3166-1 alpha-2 codes known to the platform (no user-assigned codes). */
+    private val ISO_COUNTRIES: Set<String> by lazy { Locale.getISOCountries().toHashSet() }
+
+    /** White flag: the explicit "unknown" glyph kept for callers that need a String. */
+    const val FLAG_UNKNOWN = "\uD83C\uDFF3\uFE0F"
+
+    /**
+     * Canonical country code or `null` (= unknown). The ONLY place that decides
+     * what counts as a country:
+     *
+     *  - whitespace (incl. NBSP) and Unicode FORMAT characters (LRM/RLM, bidi
+     *    embeddings/overrides/isolates, ZWJ/ZWNJ/ZWSP, BOM) are stripped, so a
+     *    provider string pasted through an RTL layer cannot break the glyph;
+     *  - the remainder must be exactly two ASCII letters, upper-cased with
+     *    `Locale.ROOT` (no Turkish dotless-i surprises);
+     *  - and must be an ASSIGNED code per `Locale.getISOCountries()`.
+     *
+     * Reserved / user-assigned codes are therefore unknown ON PURPOSE: `XX`, `ZZ`,
+     * `QQ`, Cloudflare's `T1`, and `XK` (no ISO entry, no RGI flag - it renders as
+     * two boxed letters on most OEM fonts). No country is invented for them; the
+     * UI shows a neutral globe instead.
+     *
+     * Pure function (no Android type); pinned by `NetProbeCountryCodeTest`.
+     */
+    fun normalizeCountryCode(raw: String?): String? {
+        if (raw == null) return null
+        val cleaned = buildString(raw.length) {
+            for (ch in raw) {
+                if (Character.getType(ch) == Character.FORMAT.toInt()) continue
+                if (Character.isWhitespace(ch) || Character.isSpaceChar(ch)) continue
+                append(ch)
+            }
+        }
+        if (cleaned.length != 2) return null
+        if (!cleaned.all { it in 'a'..'z' || it in 'A'..'Z' }) return null
+        val cc = cleaned.uppercase(Locale.ROOT)
+        return if (cc in ISO_COUNTRIES) cc else null
+    }
+
+    /**
+     * Regional-indicator pair for a KNOWN country, `null` for unknown. UI code
+     * should prefer this over [flagEmoji] and draw a neutral placeholder for
+     * `null` instead of a white flag or boxed letters.
+     */
+    fun flagEmojiOrNull(countryCode: String?): String? {
+        val cc = normalizeCountryCode(countryCode) ?: return null
         val base = 0x1F1E6
         val first = base + (cc[0].code - 'A'.code)
         val second = base + (cc[1].code - 'A'.code)
         return String(Character.toChars(first)) + String(Character.toChars(second))
     }
+
+    /** Turns a 2-letter ISO country code into its flag emoji; [FLAG_UNKNOWN] for anything else. */
+    fun flagEmoji(countryCode: String?): String = flagEmojiOrNull(countryCode) ?: FLAG_UNKNOWN
 }

@@ -52,6 +52,7 @@ import studio.cluvex.aether.data.LanguagePrefs
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.ui.components.LtrOutlinedTextField
+import studio.cluvex.aether.ui.components.SecureSurface
 import studio.cluvex.aether.ui.settings.GroupCaption
 import studio.cluvex.aether.ui.settings.GroupFooter
 import studio.cluvex.aether.ui.settings.RowDivider
@@ -103,6 +104,11 @@ fun AiSettingsPage(
 
     val forgotten = stringResource(R.string.ai_key_forgotten)
 
+    // AUDIT F-3: the Gemini API key lives on this page, and the reveal toggle
+    // below puts it on screen in the clear. Blocks screenshots, screen recording
+    // and the recents thumbnail for as long as the page is composed.
+    SecureSurface()
+
     SettingsScaffold(stringResource(R.string.ai_title), onBack, modifier) {
         if (!gate.ready) {
             settingsSection {
@@ -113,7 +119,7 @@ fun AiSettingsPage(
 
         // ---- key ---------------------------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_section_key))
+            GroupCaption(stringResource(R.string.ai_section_key), aiTopic = AiTopic.AI_KEY)
             SettingsGroup {
                 SettingsBlock {
                     LtrOutlinedTextField(
@@ -145,7 +151,10 @@ fun AiSettingsPage(
                                 } else {
                                     Icons.Rounded.Visibility
                                 },
-                                contentDescription = null,
+                                contentDescription = stringResource(
+                                    if (reveal) R.string.a11y_hide_password
+                                    else R.string.a11y_show_password,
+                                ),
                                 modifier = Modifier.size(16.dp),
                             )
                             Spacer(Modifier.width(6.dp))
@@ -179,6 +188,7 @@ fun AiSettingsPage(
                 if (settings.hasKey) {
                     RowDivider(inset = false)
                     SettingsActionRow(
+                        aiTopic = AiTopic.AI_KEY,
                         title = stringResource(R.string.ai_key_forget),
                         icon = Icons.Rounded.Delete,
                         destructive = true,
@@ -196,7 +206,7 @@ fun AiSettingsPage(
 
         // ---- models ------------------------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_section_models))
+            GroupCaption(stringResource(R.string.ai_section_models), aiTopic = AiTopic.AI_MODEL)
             SettingsGroup {
                 if (models.isEmpty()) {
                     // Two genuinely different situations, and telling them apart is
@@ -230,6 +240,10 @@ fun AiSettingsPage(
                         // list - see AiModelPolicy.displayNumber for why that
                         // distinction matters.
                         label = { modelRowLabel(it) },
+                        // 1.4.0-r5: each model says what it trades - the default
+                        // (3.1 Flash-Lite) has the highest free daily limit; the
+                        // newer Flash models are faster but run out sooner.
+                        optionDescription = { modelDescription(it) },
                         onSelect = { AiSession.setModel(it) },
                         summary = stringResource(R.string.ai_models_count, models.size),
                         aiTopic = AiTopic.AI_MODEL,
@@ -237,6 +251,7 @@ fun AiSettingsPage(
                     RowDivider(inset = false)
                 }
                 SettingsActionRow(
+                    aiTopic = AiTopic.AI_MODEL,
                     title = stringResource(R.string.ai_models_refresh),
                     summary = stringResource(R.string.ai_models_filtered),
                     icon = Icons.Rounded.Refresh,
@@ -249,7 +264,7 @@ fun AiSettingsPage(
 
         // ---- behaviour ---------------------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_section_behaviour))
+            GroupCaption(stringResource(R.string.ai_section_behaviour), aiTopic = AiTopic.AI_AUTO_OPTIMIZE)
             SettingsGroup {
                 SettingsSwitchRow(
                     title = stringResource(R.string.ai_auto_optimize),
@@ -293,6 +308,7 @@ fun AiSettingsPage(
                 )
                 RowDivider()
                 SettingsNavRow(
+                    aiTopic = AiTopic.DIAGNOSTICS,
                     title = stringResource(R.string.ai_advisor_title),
                     summary = stringResource(R.string.ai_advisor_subtitle),
                     icon = Icons.Rounded.Insights,
@@ -303,7 +319,7 @@ fun AiSettingsPage(
 
         // ---- the honest small print --------------------------------------
         settingsSection {
-            GroupCaption(stringResource(R.string.ai_privacy_title))
+            GroupCaption(stringResource(R.string.ai_privacy_title), aiTopic = AiTopic.AI_PRIVACY)
             SettingsGroup {
                 InfoBlock(
                     icon = Icons.Rounded.Lock,
@@ -352,6 +368,7 @@ fun AiAdvisorPage(
         settingsSection {
             SettingsGroup {
                 SettingsActionRow(
+                    aiTopic = AiTopic.DIAGNOSTICS,
                     title = stringResource(R.string.ai_advisor_run),
                     summary = stringResource(R.string.ai_advisor_subtitle),
                     icon = Icons.Rounded.Insights,
@@ -441,7 +458,7 @@ fun AiAdvisorPage(
                         }
                         if (current.advice.dpi.isNotBlank()) {
                             Spacer(Modifier.height(8.dp))
-                            Text(
+                            AiRichText(
                                 text = current.advice.dpi,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = OnDark,
@@ -449,7 +466,7 @@ fun AiAdvisorPage(
                         }
                         if (current.advice.summary.isNotBlank()) {
                             Spacer(Modifier.height(10.dp))
-                            Text(
+                            AiRichText(
                                 text = current.advice.summary,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = OnDarkMuted,
@@ -550,6 +567,15 @@ private fun probeSummary(probe: AiProbe, discovering: Boolean): String = when {
 private fun modelRowLabel(id: String): String {
     val number = AiModelPolicy.displayNumber(id)
     return if (number > 0) "$number. $id" else id
+}
+
+/** 1.4.0-r5: the one-line guidance shown under each model in the picker. */
+@Composable
+private fun modelDescription(id: String): String? = when (AiModelPolicy.tier(id)) {
+    AiModelPolicy.Tier.RECOMMENDED_DEFAULT -> stringResource(R.string.ai_model_desc_default)
+    AiModelPolicy.Tier.FAST_LOW_QUOTA -> stringResource(R.string.ai_model_desc_fast)
+    AiModelPolicy.Tier.HIGH_QUOTA_ALT -> stringResource(R.string.ai_model_desc_alt)
+    null -> null
 }
 
 /** Maps the model's confidence word onto a localised label, or null if absent. */

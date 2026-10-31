@@ -91,13 +91,13 @@ import kotlin.math.floor
  *  * the bloom is additive strokes, not a blur pass and not an extra layer.
  */
 @Composable
-fun AetherMark(modifier: Modifier = Modifier) {
-    val transition = rememberInfiniteTransition(label = "aetherMark")
+fun AetherMark(modifier: Modifier = Modifier, animated: Boolean = true) {
+    val transition = if (animated) rememberInfiniteTransition(label = "aetherMark") else null
 
     // 0 -> N linearly, so floor() is the current colour and the fraction is the
     // blend to the next one. Restarting at 0 after the last colour is what makes
     // the ramp endless with no visible seam.
-    val hue = transition.animateFloat(
+    val hue = transition?.animateFloat(
         initialValue = 0f,
         targetValue = MARK_COLORS.size.toFloat(),
         animationSpec = infiniteRepeatable(
@@ -106,7 +106,7 @@ fun AetherMark(modifier: Modifier = Modifier) {
         ),
         label = "hue",
     )
-    val sweep = transition.animateFloat(
+    val sweep = transition?.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -115,7 +115,7 @@ fun AetherMark(modifier: Modifier = Modifier) {
         ),
         label = "sweep",
     )
-    val scan = transition.animateFloat(
+    val scan = transition?.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -124,7 +124,7 @@ fun AetherMark(modifier: Modifier = Modifier) {
         ),
         label = "scan",
     )
-    val breath = transition.animateFloat(
+    val breath = transition?.animateFloat(
         initialValue = 0.74f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
@@ -139,9 +139,9 @@ fun AetherMark(modifier: Modifier = Modifier) {
     // this composable only exists while connected, so its first frame IS the
     // moment the tunnel came up.
     var arrived by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { arrived = true }
+    LaunchedEffect(animated) { arrived = true }
     val reveal = animateFloatAsState(
-        targetValue = if (arrived) 1f else 0f,
+        targetValue = if (animated) { if (arrived) 1f else 0f } else 1f,
         animationSpec = tween(REVEAL_MS, easing = FastOutSlowInEasing),
         label = "reveal",
     )
@@ -150,10 +150,10 @@ fun AetherMark(modifier: Modifier = Modifier) {
     val counter = remember { Path() }
 
     Canvas(modifier = modifier) {
-        val phase = hue.value
+        val phase = hue?.value ?: 0.8f
         val colour = cycleColour(phase)
         val ahead = cycleColour(phase + 0.45f)
-        val pulse = breath.value
+        val pulse = breath?.value ?: 0.9f
         val entered = reveal.value.coerceIn(0f, 1f)
         if (entered <= 0.001f) return@Canvas
 
@@ -168,9 +168,9 @@ fun AetherMark(modifier: Modifier = Modifier) {
         clipRect(left = 0f, top = wipeTop, right = size.width, bottom = size.height) {
             clipPath(outline) {
                 drawBody(colour, ahead)
-                drawHairlines(scan.value)
-                drawSweepLight(sweep.value, pulse)
-                drawScanBar(scan.value, colour, pulse)
+                drawHairlines(scan?.value ?: 0.35f)
+                drawSweepLight(sweep?.value ?: 0.42f, pulse)
+                drawScanBar(scan?.value ?: 0.35f, colour, pulse)
             }
         }
 
@@ -178,7 +178,7 @@ fun AetherMark(modifier: Modifier = Modifier) {
         //    letter, so its bloom reads as light instead of as a border.
         clipRect(left = 0f, top = wipeTop, right = size.width, bottom = size.height) {
             drawEdge(outline, colour, pulse)
-            drawCounter(counter, colour, pulse, scan.value)
+            drawCounter(counter, colour, pulse, scan?.value ?: 0.35f)
         }
 
         // 4. The construction line: only while the wipe is running.

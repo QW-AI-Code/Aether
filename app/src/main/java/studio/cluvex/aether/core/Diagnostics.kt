@@ -88,6 +88,9 @@ object Diagnostics {
 
     private const val OUTBOUND_RETRY_DELAY_MS = 750L
     private const val TCP_PROBE_TIMEOUT_MS = 4_000
+
+    /** Gap between two SOCKS5 handshake attempts while a stage is still coming up. */
+    private const val HANDSHAKE_RETRY_DELAY_MS = 1_500L
     private const val GEO_PROBE_TIMEOUT_MS = 6_000
 
     /**
@@ -102,7 +105,7 @@ object Diagnostics {
 
     fun resetChecks(
         host: String = TunnelConfig.SOCKS_HOST,
-        port: Int = TunnelConfig.SOCKS_PORT,
+        port: Int = PortLease.socks,
     ) {
         DiagnosticsLog.setChecks(
             listOf(
@@ -118,7 +121,7 @@ object Diagnostics {
     /** Runs all checks (steps 3+4 concurrently). Safe to call from any coroutine. */
     suspend fun run(
         host: String = TunnelConfig.SOCKS_HOST,
-        port: Int = TunnelConfig.SOCKS_PORT,
+        port: Int = PortLease.socks,
         graceMs: Long = OUTBOUND_GRACE_MS,
     ): Boolean = withContext(Dispatchers.IO) {
         resetChecks(host, port)
@@ -255,15 +258,18 @@ object Diagnostics {
      */
     suspend fun runProxyStage(
         host: String = TunnelConfig.SOCKS_HOST,
-        port: Int = TunnelConfig.SOCKS_PORT,
+        port: Int = PortLease.socks,
         graceMs: Long = OUTBOUND_GRACE_MS,
+        handshakeGraceMs: Long = 0L,
+        alive: () -> Boolean = { true },
+        abort: () -> Boolean = { false },
     ): Boolean = withContext(Dispatchers.IO) {
         DiagnosticsLog.i(TAG, "Stage 1 check: is $host:$port a working SOCKS5 proxy?")
         if (!PortProbe.isOpen(host, port, 1500)) {
             DiagnosticsLog.e(TAG, "stage 1: nothing listening on $host:$port")
             return@withContext false
         }
-        if (!NetProbe.checkSocksHandshake(host, port)) {
+        if (!awaitSocksHandshake(host, port, handshakeGraceMs, alive, abort)) {
             DiagnosticsLog.e(TAG, "stage 1: $host:$port does not speak SOCKS5")
             return@withContext false
         }
@@ -283,5 +289,73 @@ object Diagnostics {
 
     private fun failRemaining(vararg ids: String) {
         ids.forEach { DiagnosticsLog.updateCheck(it, CheckState.FAIL, "skipped") }
+    }
+
+    /**
+     * SOCKS5 handshake with a WAITING period instead of a single attempt.
+     *
+     * 1.3.0 FIELD FIX (the "Tor does not connect on my network" report). A
+     * tor-fronted stage 1 binds its port at launch but cannot answer a handshake
+     * until Tor has reached the network -- a first bootstrap that downloads the
+     * directory takes tens of seconds on a good network. The old single 4-second
+     * attempt therefore failed *every* such connect at +4 s, with the engine's own
+     * log showing the bootstrap at 30 % and climbing, and the app then reported the
+     * generic "self-test failed" for a Tor that was simply not finished yet.
+     *
+     * [handshakeGraceMs] `<= 0` keeps the old single-shot behaviour, which is the
+     * right one for a stage that is up the moment its port is: an Aether tunnel
+     * that cannot handshake immediately is broken, and waiting on it would only
+     * delay the ladder's next rung.
+     *
+     * [alive] lets a dead engine end the wait instantly, and [abort] is how the
+     * caller stops waiting on a bootstrap that has stopped moving -- without it,
+     * a network that silently drops Tor would hold the UI at "Connecting" for the
+     * whole budget.
+     */
+    /** Public wait for a SOCKS5 listener that binds early but answers late (see [awaitSocksHandshake]). */
+    suspend fun awaitProxyReady(
+        host: String,
+        port: Int,
+        graceMs: Long,
+        alive: () -> Boolean = { true },
+        abort: () -> Boolean = { false },
+    ): Boolean = awaitSocksHandshake(host, port, graceMs, alive, abort)
+
+    private suspend fun awaitSocksHandshake(
+        host: String,
+        port: Int,
+        handshakeGraceMs: Long,
+        alive: () -> Boolean,
+        abort: () -> Boolean,
+    ): Boolean {
+        if (NetProbe.checkSocksHandshake(host, port)) return true
+        if (handshakeGraceMs <= 0L) return false
+        DiagnosticsLog.i(
+            TAG,
+            "stage 1: $host:$port is listening but not answering yet - waiting up to " +
+                "${handshakeGraceMs / 1000}s for it (${TorBootstrap.describe()}).",
+        )
+        val deadline = System.currentTimeMillis() + handshakeGraceMs
+        while (System.currentTimeMillis() < deadline) {
+            if (!alive()) {
+                DiagnosticsLog.e(TAG, "stage 1: the engine exited while its proxy was still coming up.")
+                return false
+            }
+            if (abort()) {
+                DiagnosticsLog.e(TAG, "stage 1: giving up early - ${TorBootstrap.describe()}.")
+                return false
+            }
+            delay(HANDSHAKE_RETRY_DELAY_MS)
+            if (NetProbe.checkSocksHandshake(host, port)) {
+                DiagnosticsLog.i(TAG, "stage 1: proxy answered (${TorBootstrap.describe()}).")
+                return true
+            }
+        }
+        DiagnosticsLog.e(
+            TAG,
+            "stage 1: $host:$port never answered within ${handshakeGraceMs / 1000}s " +
+                "(${TorBootstrap.describe()}).",
+        )
+        return false
     }
 }

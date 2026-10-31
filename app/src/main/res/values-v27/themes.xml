@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      API 27+ variant of Theme.AetherMobile (1.3.1).
+
+      Identical to res/values/themes.xml plus
+      android:windowLayoutInDisplayCutoutMode, which exists only from API 27 and
+      is what lets the UI draw into a display cutout. On API 26 the base theme in
+      res/values applies and there is no cutout to draw into.
+
+      A qualified folder REPLACES the resource rather than merging into it, so the
+      three items above the cutout mode have to be repeated here. If you change
+      one of them, change it in both files.
+    -->
+    <style name="Theme.AetherMobile" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/aether_background</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+    </style>
+</resources>

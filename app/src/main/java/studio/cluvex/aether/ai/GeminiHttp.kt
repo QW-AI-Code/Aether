@@ -84,7 +84,12 @@ internal object GeminiHttp {
                     append(method).append(' ').append(path).append(" HTTP/1.1\r\n")
                     append("Host: ").append(HOST).append("\r\n")
                     append("x-goog-api-key: ").append(apiKey).append("\r\n")
-                    append("User-Agent: Aether-Android/1.2.9\r\n")
+                    // No app name, no version (F-5 follow-up). This request runs
+                    // inside TLS and through the tunnel, so the header was never
+                    // operator-visible - but it announced the app to Google, and it
+                    // still said "1.2.9" in a 1.3.0 build, so it was wrong as well
+                    // as unnecessary. Nothing in the Gemini API depends on it.
+                    append("User-Agent: Mozilla/5.0\r\n")
                     append("Accept: application/json\r\n")
                     // identity: we never want a compressed body, because this
                     // client does not implement gzip and a silently gzipped

@@ -1,7 +1,18 @@
-pub const API_URL: &str = "https://api.cloudflareclient.com";
+/// The name the calls to the WARP API go by unless --api-host or --api-sni names another: the one
+/// the Cloudflare One client calls since its 2026.6.0, on addresses of its own.
+pub const API_HOST: &str = "api.devices.cloudflare.com";
+/// The API's other name, on Cloudflare's shared addresses, which the WARP clients called before:
+/// an attempt API_HOST does not serve, with no answer or with a refusal of another server than the
+/// API, goes by this one next.
+pub const API_FALLBACK_HOST: &str = "api.cloudflareclient.com";
 pub const API_VERSION: &str = "v0a4471";
 
+pub const API_FRONT_ADDRESSES: [&str; 2] = ["104.24.4.6", "104.18.0.6"];
+
 pub const CONNECT_SNI: &str = "consumer-masque.cloudflareclient.com";
+/// The server name the MASQUE handshakes send unless --masque-sni names another, in place of
+/// CONNECT_SNI, the one the WARP client sends.
+pub const DEFAULT_MASQUE_SNI: &str = "www.cloudflare.com";
 pub const L4_CONNECT_SNI: &str = "consumer-masque-proxy.cloudflareclient.com";
 pub const CONNECT_URI: &str = "https://cloudflareaccess.com";
 
@@ -59,6 +70,7 @@ pub const MASQUE_PINS: &[&[u8]] = &[
     // masque.cloudflareclient.com — self-signed by Cloudflare (2024-02-27 Self-Signed Root)
     // Returned when SNI is empty or unrecognized
     b"\xeb\x59\x1b\x36\xab\x26\xba\x61\x7e\x98\x37\x19\x18\xc1\x0b\xcd\xea\xe3\x74\x2d\xb6\xe7\x65\x43\xf9\x4b\xe5\x24\xdc\xe1\xd5\x55",
+    b"\x2a\x38\xb6\x9b\x25\x66\x96\xc0\x9a\x11\xfb\xf1\x47\x4f\xe3\x90\x23\x63\x63\x3a\xb0\x0d\xd9\xc2\x97\xb2\xde\x64\x9b\x72\xd7\x2e",
     // cloudflareaccess.com — signed by Google Trust Services WE1
     // Returned when SNI=cloudflareaccess.com
     b"\x3f\xbb\x1d\x74\x52\xd3\x2b\x38\x81\xeb\x4b\x5d\x48\x42\x14\x45\xb6\xb9\xd8\xf5\x22\x59\x59\xf0\x33\x53\x2d\x50\x26\x37\xb0\x40",

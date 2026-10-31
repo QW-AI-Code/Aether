@@ -1,0 +1,81 @@
+Subject: [PATCH] engine: do not strand a session by discarding a working gateway
+
+APPLIES TO  native/aether/aether/src/lib.rs (engine core 2.0.0, as vendored here)
+APPLY WITH  git apply patches/0001-masque-quick-reconnect-budget-fallback.patch
+STATUS      NOT APPLIED to this tree, and NOT COMPILED. See docs/ENGINE_PATCH_1.3.1.md.
+
+Why this is a separate patch instead of an edit in the tree: building this crate
+needs Rust 1.98 plus a BoringSSL compile (quiche, feature
+"boringssl-boring-crate") and, for a release, the Android NDK. Neither was
+available where 1.3.1 was prepared, and every other change in 1.3.1 was compiled
+and tested. Shipping an unverified edit to the engine would have broken that
+property for the whole release, so it is here, reviewable, for a machine that can
+build it.
+
+--- a/native/aether/aether/src/lib.rs
++++ b/native/aether/aether/src/lib.rs
+@@ -1257,6 +1257,12 @@
+     let forced = std::env::var("AETHER_PEER").ok();
+ 
+     let mut quick_peer: Option<SocketAddr> = None;
++    // >>> AETHER-APP-PATCH quick-reconnect-budget-fallback (1.3.1)
++    // A cached gateway that VERIFIED but was over the quick-reconnect budget.
++    // Kept rather than forgotten: if the scan that replaces it finds nothing, a
++    // slow gateway that is known to work is better than no session at all.
++    let mut demoted_peer: Option<SocketAddr> = None;
++    // <<< AETHER-APP-PATCH quick-reconnect-budget-fallback
+ 
+     if forced.is_none() {
+         if let Some(assigned) = std::env::var("AETHER_TEAM_ENDPOINT")
+@@ -1288,7 +1294,19 @@
+                         quick_peer = Some(peer);
+                         // >>> AETHER-APP-PATCH quick-reconnect-rtt-budget
+                         if !cached_handshake_fast_enough(peer, quick_probe_started.elapsed()) {
+-                            quick_peer = None;
++                            // >>> AETHER-APP-PATCH quick-reconnect-budget-fallback (1.3.1)
++                            // `quick_peer = None` threw this away outright, and the
++                            // WireGuard path's rtt-floor equivalent does not exist
++                            // here - so a verified working gateway was discarded
++                            // with nothing remembering it. Field log: gateway
++                            // verified, rejected at handshake 2.778s over the 1.4s
++                            // budget, then `thorough` scanned 300s, found no
++                            // gateway, and the connect FAILED. take() keeps the
++                            // address and still clears quick_peer, so the scan runs
++                            // exactly as before - it just has somewhere to fall
++                            // back to now.
++                            demoted_peer = quick_peer.take();
++                            // <<< AETHER-APP-PATCH quick-reconnect-budget-fallback
+                         }
+                         // <<< AETHER-APP-PATCH quick-reconnect-rtt-budget
+                     } else {
+@@ -1340,13 +1358,23 @@
+                     },
+                     None => match hunt_masque_peer(&identity, &mode_str, ip).await {
+                         Ok(peer) => peer,
+-                        Err(e) => {
+-                            log::warn!(
+-                                "[-] no usable MASQUE gateway found: {e}; rescanning shortly"
+-                            );
+-                            tokio::time::sleep(masque_reconnect_delay()).await;
+-                            continue;
+-                        }
++                        // >>> AETHER-APP-PATCH quick-reconnect-budget-fallback (1.3.1)
++                        Err(e) => match demoted_peer.take() {
++                            Some(fallback) => {
++                                log::warn!(
++                                    "[-] no usable MASQUE gateway found: {e}; falling back to the cached gateway {fallback}, which verified as working but was over the quick-reconnect budget. A slow tunnel beats no tunnel."
++                                );
++                                fallback
++                            }
++                            None => {
++                                log::warn!(
++                                    "[-] no usable MASQUE gateway found: {e}; rescanning shortly"
++                                );
++                                tokio::time::sleep(masque_reconnect_delay()).await;
++                                continue;
++                            }
++                        },
++                        // <<< AETHER-APP-PATCH quick-reconnect-budget-fallback
+                     },
+                 },
+             }

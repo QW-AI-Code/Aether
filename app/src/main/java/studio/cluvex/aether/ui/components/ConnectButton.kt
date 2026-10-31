@@ -33,7 +33,16 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.R
 
 enum class ButtonMode { IDLE, BUSY, CONNECTED, ERROR }
 
@@ -68,6 +77,7 @@ fun ConnectButton(
     mode: ButtonMode,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    stateText: String? = null,
 ) {
     val connected = mode == ButtonMode.CONNECTED
     val busy = mode == ButtonMode.BUSY
@@ -79,23 +89,43 @@ fun ConnectButton(
     }
     val animatedAccent by animateColorAsState(accent, tween(600), label = "accent")
 
-    val haloPulse = if (connected) rememberHaloPulse() else null
-    val spin = if (busy) rememberSpin() else null
+    // The two effects are INDEPENDENT on purpose (1.6.0, same version):
+    //
+    //  * the blue halo (the glow around the disc, and its connected "breathing")
+    //    follows the user's "Home screen animations" switch;
+    //  * the busy spin (the arc and the arrows turning while connecting) is
+    //    functional feedback, not decoration. It follows ONLY whether the home
+    //    screen is on screen, so switching the animations off can never freeze
+    //    the connect button into looking hung.
+    val homeVisible = LocalHomeVisible.current
+    val glowEnabled = LocalHomeAnimationsEnabled.current
+    val haloPulse = if (connected && homeVisible && glowEnabled) rememberHaloPulse() else null
+    val spin = if (busy && homeVisible) rememberSpin() else null
 
     val interaction = remember { MutableInteractionSource() }
+    val actionLabel = stringResource(
+        when (mode) {
+            ButtonMode.CONNECTED -> R.string.a11y_disconnect
+            ButtonMode.BUSY -> R.string.a11y_cancel_connecting
+            ButtonMode.IDLE, ButtonMode.ERROR -> R.string.a11y_connect
+        },
+    )
 
     Box(contentAlignment = Alignment.Center, modifier = modifier.size(BUTTON_BOX)) {
-        // Soft glowing halo behind the button.
-        Canvas(modifier = Modifier.size(BUTTON_BOX)) {
-            val radius = size.minDimension / 2f * (haloPulse?.value ?: 1f)
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(animatedAccent.copy(alpha = 0.42f), Color.Transparent),
-                    center = Offset(size.width / 2f, size.height / 2f),
+        // Soft glowing halo behind the button. Drawn only while the home
+        // animations switch is on; the disc and its spin do not depend on it.
+        if (glowEnabled) {
+            Canvas(modifier = Modifier.size(BUTTON_BOX)) {
+                val radius = size.minDimension / 2f * (haloPulse?.value ?: 1f)
+                drawCircle(
+                    brush = Brush.radialGradient(
+                        colors = listOf(animatedAccent.copy(alpha = 0.42f), Color.Transparent),
+                        center = Offset(size.width / 2f, size.height / 2f),
+                        radius = radius,
+                    ),
                     radius = radius,
-                ),
-                radius = radius,
-            )
+                )
+            }
         }
 
         // Inner gradient disc.
@@ -115,8 +145,15 @@ fun ConnectButton(
                 .clickable(
                     interactionSource = interaction,
                     indication = null,
+                    role = Role.Button,
                     onClick = onClick,
-                ),
+                )
+                .semantics {
+                    contentDescription = actionLabel
+                    role = Role.Button
+                    if (stateText != null) stateDescription = stateText
+                    liveRegion = LiveRegionMode.Polite
+                },
         ) {
             // Progress sweep while busy.
             if (spin != null) {
@@ -156,7 +193,7 @@ fun ConnectButton(
                 // The brand mark, alive. Its own animations live in [AetherMark];
                 // this composable exists only in the connected state, so the idle
                 // and busy buttons still subscribe to nothing they did not before.
-                AetherMark(modifier = Modifier.size(MARK_SIZE))
+                AetherMark(modifier = Modifier.size(MARK_SIZE), animated = LocalHomeAnimationsEnabled.current)
             } else {
                 val icon = when (mode) {
                     ButtonMode.BUSY -> Icons.Rounded.Autorenew

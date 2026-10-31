@@ -64,6 +64,7 @@ object BuildProvenance {
         get() = enginePatchLevel?.let { it == apkPatchLevel } ?: false
 
     private val STAMP = Regex("AETHER-BUILD-STAMP:([0-9A-Za-z.\\-]+)")
+    private val MISSING_LIB = Regex("library \"([^\"]+)\" not found")
 
     /** Call on every connect, before the engine starts. */
     fun logApkIdentity() {
@@ -91,7 +92,24 @@ object BuildProvenance {
      * thousands of lines that are not the banner.
      */
     fun ingest(line: String) {
-        if (reported || !line.contains("AETHER-BUILD-STAMP:")) return
+        if (reported) return
+        // 1.5.0: an engine the dynamic linker refused to start never gets to print
+        // its stamp either, and the "STALE engine" verdict below then sent the
+        // diagnosis the wrong way. Name the real cause instead.
+        if (line.contains("CANNOT LINK EXECUTABLE")) {
+            reported = true
+            val missing = MISSING_LIB.find(line)?.groupValues?.get(1)
+            DiagnosticsLog.e(
+                "build",
+                "The engine could not be started by Android's dynamic linker" +
+                    (missing?.let { " (missing $it)" } ?: "") +
+                    ". This is a packaging fault in this APK, not a stale engine and not a " +
+                    "network problem: libaether.so needs a library the APK does not carry " +
+                    "or the engine cannot see. No connection mode can work until it is fixed.",
+            )
+            return
+        }
+        if (!line.contains("AETHER-BUILD-STAMP:")) return
         val found = STAMP.find(line)?.groupValues?.get(1) ?: return
         reported = true
         enginePatchLevel = found

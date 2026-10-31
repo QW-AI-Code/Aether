@@ -1,6 +1,6 @@
+use parking_lot::Mutex as StdMutex;
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
-use parking_lot::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
 use boringtun::noise::{Tunn, TunnResult};
@@ -14,10 +14,8 @@ use rand::RngExt;
 
 const TIMER_TICK: Duration = Duration::from_millis(250);
 const MAX_PACKET: usize = 65536;
-const VERIFY_RETRY_DELAYS: [Duration; 2] = [
-    Duration::from_millis(750),
-    Duration::from_millis(2_000),
-];
+const VERIFY_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(750), Duration::from_millis(2_000)];
 
 const WG_MSG_TYPE_MIN: u8 = 1;
 const WG_MSG_TYPE_MAX: u8 = 4;
@@ -87,6 +85,7 @@ pub struct WgConfig {
 pub struct WgTunnel {
     tunn: Arc<Mutex<Box<Tunn>>>,
     sock: Arc<UdpSocket>,
+    detour: crate::upstream::DetourGuard,
     peer: SocketAddr,
     inbound_tx: mpsc::Sender<Vec<u8>>,
     pub obf_sent: Arc<Mutex<bool>>,
@@ -98,23 +97,32 @@ pub struct WgTunnel {
 pub struct EstablishedSession {
     tunn: Arc<Mutex<Box<Tunn>>>,
     sock: Arc<UdpSocket>,
+    detour: crate::upstream::DetourGuard,
     peer: SocketAddr,
     client_id: [u8; 3],
 }
 
 impl WgTunnel {
     pub async fn new(cfg: WgConfig, inbound_tx: mpsc::Sender<Vec<u8>>) -> Result<Self> {
-        let (sock, _) = crate::upstream::bind_via_upstream(cfg.peer_endpoint).await?;
+        let (sock, _, detour) = crate::upstream::bind_via_upstream(cfg.peer_endpoint).await?;
 
         let local_secret = StaticSecret::from(cfg.local_private_key);
         let peer_public = PublicKey::from(cfg.peer_public_key);
         let preshared = cfg.preshared_key;
 
-        let tunn = Tunn::new(local_secret, peer_public, preshared, cfg.persistent_keepalive, 0, None);
+        let tunn = Tunn::new(
+            local_secret,
+            peer_public,
+            preshared,
+            cfg.persistent_keepalive,
+            0,
+            None,
+        );
 
         Ok(Self {
             tunn: Arc::new(Mutex::new(Box::new(tunn))),
             sock: Arc::new(sock),
+            detour,
             peer: cfg.peer_endpoint,
             inbound_tx,
             obf_sent: Arc::new(Mutex::new(false)),
@@ -133,6 +141,7 @@ impl WgTunnel {
         Self {
             tunn: session.tunn,
             sock: session.sock,
+            detour: session.detour,
             peer: session.peer,
             inbound_tx,
             obf_sent: Arc::new(Mutex::new(true)),
@@ -170,6 +179,7 @@ impl WgTunnel {
             let mut transient_errors = 0u32;
             loop {
                 match sock_r.recv(&mut buf).await {
+                    Ok(0) => {}
                     Ok(n) => {
                         transient_errors = 0;
                         strip_client_id(&mut buf[..n]);
@@ -188,7 +198,8 @@ impl WgTunnel {
                                 drop(tunn);
                                 let _ = sock_r.send(&pkt_vec).await;
                             }
-                            TunnResult::WriteToTunnelV4(pkt, _) | TunnResult::WriteToTunnelV6(pkt, _) => {
+                            TunnResult::WriteToTunnelV4(pkt, _)
+                            | TunnResult::WriteToTunnelV6(pkt, _) => {
                                 *last_valid_rx_r.lock() = Instant::now();
                                 let pkt_vec = pkt.to_vec();
                                 drop(tunn);
@@ -248,7 +259,8 @@ impl WgTunnel {
                         // Post-handshake junk once only — not on every data packet.
                         if aethernoize.jc_after_hs > 0 && !post_hs_junk_sent {
                             post_hs_junk_sent = true;
-                            aethernoize::send_post_handshake_junk(&sock_w, peer, &aethernoize).await;
+                            aethernoize::send_post_handshake_junk(&sock_w, peer, &aethernoize)
+                                .await;
                         }
                     }
                     TunnResult::WriteToTunnelV4(_, _) | TunnResult::WriteToTunnelV6(_, _) => {}
@@ -277,26 +289,27 @@ impl WgTunnel {
 
         let stale_timeout = wg_stale_timeout();
         let health_task = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(WG_HEALTHCHECK_INTERVAL);
-            let probe = build_dataplane_probe(local_ipv4);
             let mut out_buf = vec![0u8; MAX_PACKET];
             loop {
-                interval.tick().await;
+                tokio::time::sleep(health_check_pause()).await;
 
                 let idle = last_valid_rx_h.lock().elapsed();
                 if idle >= stale_timeout {
                     log::warn!(
                         "[wg] no valid data from peer {} in {:?}; tunnel considered dead",
-                        peer, idle
+                        peer,
+                        idle
                     );
                     return Err::<(), AetherError>(AetherError::Other(
                         "wireguard tunnel stale: no valid data from peer".into(),
                     ));
                 }
 
+                let probe = build_dataplane_probe(local_ipv4);
                 let mut tunn = tunn_h.lock().await;
                 if let Err(e) =
-                    send_dataplane_probe(&sock_h, &mut tunn, &client_id_h, &probe, &mut out_buf).await
+                    send_dataplane_probe(&sock_h, &mut tunn, &client_id_h, &probe, &mut out_buf)
+                        .await
                 {
                     log::trace!("[wg] health probe send failed: {e}");
                 }
@@ -337,12 +350,20 @@ impl WgTunnel {
 }
 
 const WG_HEALTHCHECK_INTERVAL: Duration = Duration::from_secs(3);
+const WG_HEALTHCHECK_JITTER: Duration = Duration::from_millis(500);
+
+fn health_check_pause() -> Duration {
+    let jitter = WG_HEALTHCHECK_JITTER.as_millis() as u64;
+    let offset = rand::rng().random_range(0..=jitter * 2);
+    WG_HEALTHCHECK_INTERVAL - WG_HEALTHCHECK_JITTER + Duration::from_millis(offset)
+}
 
 fn wg_stale_timeout() -> Duration {
     let secs = std::env::var("AETHER_WG_STALE_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
+        .map(|v| v.min(86_400))
         .unwrap_or(10);
     Duration::from_secs(secs)
 }
@@ -454,7 +475,8 @@ async fn verify_dataplane(
         if now >= deadline {
             log::debug!(
                 "[wg] dataplane verify timed out ({}/{} confirmations)",
-                successes, DATAPLANE_REQUIRED_SUCCESSES
+                successes,
+                DATAPLANE_REQUIRED_SUCCESSES
             );
             return Err(AetherError::Other("dataplane timeout".into()));
         }
@@ -536,9 +558,14 @@ pub async fn verify_endpoint_keep_session(
     keepalive: Option<u16>,
 ) -> Result<(Duration, EstablishedSession)> {
     let data_check = std::env::var("AETHER_WG_NO_DATA_CHECK").is_err();
-    log::trace!("[wg] verify {} obf={} data_check={}", peer, aethernoize.is_enabled(), data_check);
+    log::trace!(
+        "[wg] verify {} obf={} data_check={}",
+        peer,
+        aethernoize.is_enabled(),
+        data_check
+    );
 
-    let (sock, _) = crate::upstream::bind_via_upstream(peer).await?;
+    let (sock, _, detour) = crate::upstream::bind_via_upstream(peer).await?;
 
     let start = Instant::now();
     let deadline = start + timeout;
@@ -550,7 +577,14 @@ pub async fn verify_endpoint_keep_session(
     let local_secret = StaticSecret::from(private_key);
     let peer_pk = PublicKey::from(peer_public);
 
-    let mut tunn = Tunn::new(local_secret, peer_pk, None, Some(keepalive.unwrap_or(25)), 0, None);
+    let mut tunn = Tunn::new(
+        local_secret,
+        peer_pk,
+        None,
+        Some(keepalive.unwrap_or(25)),
+        0,
+        None,
+    );
 
     let mut out_buf = vec![0u8; MAX_PACKET];
     let mut recv_buf = vec![0u8; MAX_PACKET];
@@ -589,6 +623,9 @@ pub async fn verify_endpoint_keep_session(
             r = sock.recv(&mut recv_buf) => {
                 attempts += 1;
                 let n = r?;
+                if n == 0 {
+                    continue;
+                }
                 log::trace!("[wg] recv {} bytes (attempt {})", n, attempts);
                 strip_client_id(&mut recv_buf[..n]);
 
@@ -601,6 +638,7 @@ pub async fn verify_endpoint_keep_session(
                             return Ok((dp_elapsed, EstablishedSession {
                                 tunn: Arc::new(Mutex::new(Box::new(tunn))),
                                 sock: Arc::new(sock),
+                                detour,
                                 peer,
                                 client_id,
                             }));
@@ -608,6 +646,7 @@ pub async fn verify_endpoint_keep_session(
                         return Ok((elapsed, EstablishedSession {
                             tunn: Arc::new(Mutex::new(Box::new(tunn))),
                             sock: Arc::new(sock),
+                            detour,
                             peer,
                             client_id,
                         }));
@@ -624,6 +663,7 @@ pub async fn verify_endpoint_keep_session(
                             return Ok((dp_elapsed, EstablishedSession {
                                 tunn: Arc::new(Mutex::new(Box::new(tunn))),
                                 sock: Arc::new(sock),
+                                detour,
                                 peer,
                                 client_id,
                             }));
@@ -631,6 +671,7 @@ pub async fn verify_endpoint_keep_session(
                         return Ok((elapsed, EstablishedSession {
                             tunn: Arc::new(Mutex::new(Box::new(tunn))),
                             sock: Arc::new(sock),
+                            detour,
                             peer,
                             client_id,
                         }));
@@ -700,10 +741,10 @@ pub const WG_ZT_PREFIXES_V4: &[&str] = &["162.159.193.0/24"];
 pub const WG_ZT_PREFIXES_V6: &[&str] = &["2606:4700:100::/48"];
 
 pub const WG_PORTS: &[u16] = &[
-    2408, 500, 1701, 4500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939,
-    942, 943, 945, 946, 955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387,
-    1843, 2371, 2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 5279, 5956, 7103, 7152, 7156,
-    7281, 7559, 8319, 8742, 8854, 8886,
+    2408, 500, 1701, 4500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939, 942,
+    943, 945, 946, 955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074, 1180, 1387, 1843, 2371,
+    2506, 3138, 3476, 3581, 3854, 4177, 4198, 4233, 5279, 5956, 7103, 7152, 7156, 7281, 7559, 8319,
+    8742, 8854, 8886,
 ];
 
 pub const WG_SEEDS_V4: &[&str] = &[
@@ -714,7 +755,12 @@ pub const WG_SEEDS_V4: &[&str] = &[
     "162.159.193.1",
 ];
 
-pub const WG_SEEDS_V6: &[&str] = &["2606:4700:d0::a29f:c001", "2606:4700:d1::a29f:c001", "2606:4700:d0::a29f:c301", "2606:4700:d0::bc72:6001"];
+pub const WG_SEEDS_V6: &[&str] = &[
+    "2606:4700:d0::a29f:c001",
+    "2606:4700:d1::a29f:c001",
+    "2606:4700:d0::a29f:c301",
+    "2606:4700:d0::bc72:6001",
+];
 
 pub fn wg_prefixes_v4() -> Vec<&'static str> {
     crate::prober::prioritize(WG_PREFIXES_V4, WG_ZT_PREFIXES_V4)
@@ -813,6 +859,26 @@ mod tests {
                 "{kind:?} should be transient"
             );
         }
+    }
+
+    #[test]
+    fn health_probes_are_jittered_around_the_interval() {
+        for _ in 0..200 {
+            let pause = health_check_pause();
+            assert!(pause >= WG_HEALTHCHECK_INTERVAL - WG_HEALTHCHECK_JITTER);
+            assert!(pause <= WG_HEALTHCHECK_INTERVAL + WG_HEALTHCHECK_JITTER);
+        }
+    }
+
+    #[test]
+    fn every_health_probe_is_a_fresh_packet() {
+        let local = Ipv4Addr::new(172, 16, 0, 2);
+        let distinct: std::collections::HashSet<Vec<u8>> =
+            (0..16).map(|_| build_dataplane_probe(local)).collect();
+        assert!(
+            distinct.len() > 1,
+            "the probe must not repeat byte for byte"
+        );
     }
 
     #[test]

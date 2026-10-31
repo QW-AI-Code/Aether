@@ -469,6 +469,73 @@ const MAX_DEVICE_TX_HARD: usize = MAX_TX_RETAINED;
 const TCP_KEEPALIVE: smoltcp::time::Duration = smoltcp::time::Duration::from_secs(15);
 const TCP_DEAD_PEER_TIMEOUT: smoltcp::time::Duration = smoltcp::time::Duration::from_secs(90);
 
+// >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+// Core 2.0.0 gave the netstack three lifetimes this file never had: a bound on
+// how long a connect may stay unanswered, a keepalive/timeout pair that can be
+// tuned without a rebuild, and a linger after which an ORPHANED socket (the app
+// side is gone, the far end never closes) is reset instead of kept for the life
+// of the session. That last one is half of the file-descriptor exhaustion
+// upstream fixed in #101/#106: every orphan held a socket, a port and two
+// channels forever.
+//
+// The app's own defaults are kept as the defaults - 15 s keepalive / 90 s dead
+// peer, measured on Iranian mobile paths, not upstream's 60/180 - and only the
+// env override and the orphan linger are new. `AETHER_TCP_KEEPALIVE_SECS` and
+// `AETHER_TCP_CONNECT_SECS` behave exactly as core 2.0.0 documents them.
+
+/// How long a socket whose app side has gone away may wait for the far end to
+/// finish the shutdown before it is reset.
+const ORPHAN_LINGER: std::time::Duration = std::time::Duration::from_secs(10);
+
+fn env_secs(name: &str, default: u64) -> std::time::Duration {
+    let secs = std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&v| v > 0)
+        .map(|v| v.min(86_400))
+        .unwrap_or(default);
+    std::time::Duration::from_secs(secs)
+}
+
+pub(crate) fn tcp_keepalive() -> std::time::Duration {
+    env_secs("AETHER_TCP_KEEPALIVE_SECS", TCP_KEEPALIVE.secs())
+}
+
+fn tcp_dead_peer_timeout() -> std::time::Duration {
+    // Upstream derives its timeout as 3x the keepalive. Ours is 6x by
+    // measurement (15 s / 90 s), so the ratio is preserved when the keepalive
+    // is overridden rather than the absolute number.
+    tcp_keepalive().saturating_mul(6)
+}
+
+fn tcp_connect_timeout() -> std::time::Duration {
+    env_secs("AETHER_TCP_CONNECT_SECS", 30)
+}
+
+fn smol_duration(duration: std::time::Duration) -> smoltcp::time::Duration {
+    smoltcp::time::Duration::from_millis(duration.as_millis().min(u64::MAX as u128) as u64)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TcpLimits {
+    connect: std::time::Duration,
+    keepalive: std::time::Duration,
+    dead_peer: std::time::Duration,
+    orphan_linger: std::time::Duration,
+}
+
+impl TcpLimits {
+    fn from_env() -> Self {
+        Self {
+            connect: tcp_connect_timeout(),
+            keepalive: tcp_keepalive(),
+            dead_peer: tcp_dead_peer_timeout(),
+            orphan_linger: ORPHAN_LINGER,
+        }
+    }
+}
+// <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+
 fn max_tcp_pending() -> usize {
     tcp_buf().saturating_mul(2).max(64 * 1024)
 }
@@ -565,7 +632,7 @@ impl Device for StackDevice {
 }
 
 pub enum Cmd {
-    OpenTcp { dst: SocketAddr, resp: OpenTcpResp },
+    OpenTcp { dst: SocketAddr, resp: OpenTcpResp, carrier: bool },
     OpenUdp { resp: OpenUdpResp },
     SetAddrs {
         v4: Option<(Ipv4Addr, u8)>,
@@ -748,7 +815,20 @@ impl StackHandle {
     pub async fn open_tcp(&self, dst: SocketAddr) -> Result<TcpConn> {
         let (resp_tx, resp_rx) = oneshot::channel();
         self.cmd_tx
-            .send(Cmd::OpenTcp { dst, resp: resp_tx })
+            .send(Cmd::OpenTcp { dst, resp: resp_tx, carrier: false })
+            .await
+            .map_err(|_| AetherError::Other("netstack closed".into()))?;
+        resp_rx
+            .await
+            .map_err(|_| AetherError::Other("netstack dropped".into()))?
+            .map_err(AetherError::Other)
+    }
+
+    /// Like [open_tcp], for a flow that carries another tunnel. See `TcpState::carrier`.
+    pub async fn open_tcp_carrier(&self, dst: SocketAddr) -> Result<TcpConn> {
+        let (resp_tx, resp_rx) = oneshot::channel();
+        self.cmd_tx
+            .send(Cmd::OpenTcp { dst, resp: resp_tx, carrier: true })
             .await
             .map_err(|_| AetherError::Other("netstack closed".into()))?;
         resp_rx
@@ -789,6 +869,19 @@ struct TcpState {
     pending: Vec<u8>,
     established: bool,
     half_closed: bool,
+    // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+    /// When an unanswered connect gives up. See [TcpLimits::connect].
+    connect_deadline: std::time::Instant,
+    /// When the app side went away, for the orphan linger.
+    orphaned_at: Option<std::time::Instant>,
+    /// Set once this flow has been reset; the next service pass reaps it.
+    aborted: bool,
+    /// 1.4.0 MIM fix: this flow CARRIES another tunnel (the inner MASQUE hop of
+    /// masque-in-masque). Its liveness is owned by that tunnel's own h2
+    /// keepalive, so the drain-stall / flap reaper must never reset it: doing so
+    /// is what tore the whole MIM session down (issue #67).
+    carrier: bool,
+    // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
     /// Last time this flow actually swallowed some of its pending bytes. Used
     /// to tell "slow" from "wedged" (see [TCP_WEDGE_TIMEOUT]).
     ///
@@ -862,6 +955,9 @@ pub struct NetStack {
     next_id: usize,
     next_port: u16,
     data_in_tx: mpsc::Sender<DataIn>,
+    // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+    tcp_limits: TcpLimits,
+    // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
 }
 
 fn data_in_id(d: &DataIn) -> usize {
@@ -980,7 +1076,9 @@ fn reap_wedged(s: &mut NetStack, backlog: &mut Backlog) {
         .tcp_conns
         .iter()
         .filter(|(_, st)| {
-            st.send_queue_high > 0 && st.last_drain.elapsed() >= TCP_DRAIN_STALL_TIMEOUT
+            !st.carrier
+                && st.send_queue_high > 0
+                && st.last_drain.elapsed() >= TCP_DRAIN_STALL_TIMEOUT
         })
         .map(|(id, _)| *id)
         .collect();
@@ -1020,7 +1118,7 @@ fn reap_wedged(s: &mut NetStack, backlog: &mut Backlog) {
         .filter(|id| {
             s.tcp_conns
                 .get(id)
-                .map(|st| st.last_progress.elapsed() >= TCP_WEDGE_TIMEOUT)
+                .map(|st| !st.carrier && st.last_progress.elapsed() >= TCP_WEDGE_TIMEOUT)
                 .unwrap_or(true)
         })
         .collect();
@@ -1139,6 +1237,22 @@ fn apply_addrs(
     }
 }
 
+// >>> AETHER-CORE-PORT 2.0.0 addr-merge
+type AddrPair = (Option<(Ipv4Addr, u8)>, Option<(Ipv6Addr, u8)>);
+
+fn current_addrs(iface: &Interface) -> AddrPair {
+    let mut v4 = None;
+    let mut v6 = None;
+    for cidr in iface.ip_addrs() {
+        match cidr {
+            IpCidr::Ipv4(c) => v4 = Some((c.address(), c.prefix_len())),
+            IpCidr::Ipv6(c) => v6 = Some((c.address(), c.prefix_len())),
+        }
+    }
+    (v4, v6)
+}
+// <<< AETHER-CORE-PORT 2.0.0 addr-merge
+
 fn endpoint_to_socketaddr(ep: IpEndpoint) -> SocketAddr {
     let ip = match ep.addr {
         IpAddress::Ipv4(v4) => IpAddr::V4(v4.into()),
@@ -1154,6 +1268,28 @@ pub fn spawn(
     inbound_rx: mpsc::Receiver<Vec<u8>>,
     outbound_tx: mpsc::Sender<Vec<u8>>,
 ) -> Result<StackHandle> {
+    // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+    spawn_with_limits(
+        ipv4,
+        ipv6,
+        mtu,
+        inbound_rx,
+        outbound_tx,
+        TcpLimits::from_env(),
+    )
+}
+
+/// Same as [spawn], with the TCP lifetimes given explicitly. Core 2.0.0 added
+/// this so the timeouts can be driven from a test instead of from the clock.
+fn spawn_with_limits(
+    ipv4: &str,
+    ipv6: &str,
+    mtu: usize,
+    inbound_rx: mpsc::Receiver<Vec<u8>>,
+    outbound_tx: mpsc::Sender<Vec<u8>>,
+    tcp_limits: TcpLimits,
+) -> Result<StackHandle> {
+    // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
     let mut device = StackDevice::new(mtu);
 
     let config = Config::new(HardwareAddress::Ip);
@@ -1175,6 +1311,9 @@ pub fn spawn(
         next_id: 1,
         next_port: 49152,
         data_in_tx: data_in_tx.clone(),
+        // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+        tcp_limits,
+        // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
     };
 
     tokio::spawn(run(stack, cmd_rx, data_in_rx, inbound_rx, outbound_tx));
@@ -1649,7 +1788,7 @@ async fn sleep_opt(delay: Option<std::time::Duration>) {
 
 fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
     match cmd {
-        Cmd::OpenTcp { dst, resp } => {
+        Cmd::OpenTcp { dst, resp, carrier } => {
             let rx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_rx_buf()]);
             let tx_buf = tcp::SocketBuffer::new(vec![0u8; tcp_tx_buf()]);
             let mut socket = tcp::Socket::new(rx_buf, tx_buf);
@@ -1691,8 +1830,11 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
             // 1.2.8: without these a flow whose peer disappears mid-video stays
             // Established forever, retransmitting into nothing and holding its
             // buffers (and its slot in the backlog) for the whole session.
-            socket.set_keep_alive(Some(TCP_KEEPALIVE));
-            socket.set_timeout(Some(TCP_DEAD_PEER_TIMEOUT));
+            // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+            // Same numbers as before by default; overridable per device now.
+            socket.set_keep_alive(Some(smol_duration(s.tcp_limits.keepalive)));
+            socket.set_timeout(Some(smol_duration(s.tcp_limits.dead_peer)));
+            // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
 
             let local_port = alloc_port(&mut s.next_port);
             let remote = to_ip_endpoint(dst);
@@ -1718,6 +1860,12 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
                     pending: Vec::new(),
                     established: false,
                     half_closed: false,
+                    // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+                    connect_deadline: std::time::Instant::now() + s.tcp_limits.connect,
+                    orphaned_at: None,
+                    aborted: false,
+                    carrier,
+                    // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
                     last_progress: std::time::Instant::now(),
                     // >>> AETHER-APP-PATCH netstack-drain-liveness
                     send_queue_high: 0,
@@ -1770,7 +1918,14 @@ fn handle_cmd(s: &mut NetStack, cmd: Cmd) {
             let _ = resp.send(Ok(conn));
         }
         Cmd::SetAddrs { v4, v6 } => {
-            apply_addrs(&mut s.iface, v4, v6);
+            // >>> AETHER-CORE-PORT 2.0.0 addr-merge
+            // Core 2.0.0: an edge capsule that carries only one family used to
+            // WIPE the other, because apply_addrs() clears the list first. A
+            // v4-only capsule therefore took IPv6 off the interface mid-session.
+            // Each family is now replaced only when the capsule names it.
+            let (current_v4, current_v6) = current_addrs(&s.iface);
+            apply_addrs(&mut s.iface, v4.or(current_v4), v6.or(current_v6));
+            // <<< AETHER-CORE-PORT 2.0.0 addr-merge
             log::info!("netstack addresses synchronized from edge capsule");
         }
     }
@@ -1820,6 +1975,9 @@ fn try_handle_data(s: &mut NetStack, d: DataIn) -> Option<DataIn> {
 fn service_tcp(s: &mut NetStack) -> bool {
     let mut backpressured = false;
     let ids: Vec<usize> = s.tcp_conns.keys().copied().collect();
+    // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+    let now = std::time::Instant::now();
+    // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
 
     for id in ids {
         let handle = match s.tcp_conns.get(&id) {
@@ -1827,10 +1985,27 @@ fn service_tcp(s: &mut NetStack) -> bool {
             None => continue,
         };
 
+        // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+        // A flow reset last pass: drop the socket and the bookkeeping now, which
+        // is what actually returns the file descriptor and the port.
+        if s.tcp_conns[&id].aborted {
+            // >>> AETHER-APP-PATCH netstack-uplink-admission
+            s.tcp_conns[&id].credit.close();
+            // <<< AETHER-APP-PATCH netstack-uplink-admission
+            s.sockets.remove(handle);
+            s.tcp_conns.remove(&id);
+            continue;
+        }
+        // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+
         let state = s.sockets.get_mut::<tcp::Socket>(handle).state();
         let data_in_tx = s.data_in_tx.clone();
 
-        if !s.tcp_conns[&id].established && state == tcp::State::Established {
+        // AETHER-CORE-PORT 2.0.0: CloseWait counts as connected too, so a server
+        // that answers and immediately half-closes still yields a usable
+        // connection instead of one that times out with data waiting on it.
+        let connected = matches!(state, tcp::State::Established | tcp::State::CloseWait);
+        if !s.tcp_conns[&id].established && connected {
             if let Some(st) = s.tcp_conns.get_mut(&id) {
                 st.established = true;
                 if let (Some(resp), Some(rx)) = (st.connect_resp.take(), st.from_stack_rx.take()) {
@@ -1865,6 +2040,28 @@ fn service_tcp(s: &mut NetStack) -> bool {
             s.tcp_conns.remove(&id);
             continue;
         }
+
+        // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+        // A connect nobody ever answers used to sit in SynSent for the life of
+        // the session, holding a socket and a port, and the caller waited on a
+        // oneshot that was never going to be sent. Two exits now: the caller
+        // gave up (the response channel is closed), or the deadline passed.
+        if !s.tcp_conns[&id].established {
+            let st = s.tcp_conns.get_mut(&id).unwrap();
+            let abandoned = st.connect_resp.as_ref().is_none_or(|resp| resp.is_closed());
+            if abandoned || now >= st.connect_deadline {
+                if let Some(resp) = st.connect_resp.take() {
+                    let _ = resp.send(Err("connection timed out".into()));
+                }
+                // >>> AETHER-APP-PATCH netstack-uplink-admission
+                st.credit.close();
+                // <<< AETHER-APP-PATCH netstack-uplink-admission
+                s.sockets.remove(handle);
+                s.tcp_conns.remove(&id);
+            }
+            continue;
+        }
+        // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
 
         {
             let socket = s.sockets.get_mut::<tcp::Socket>(handle);
@@ -1941,7 +2138,7 @@ fn service_tcp(s: &mut NetStack) -> bool {
                 }
                 st.stall_mark = std::time::Instant::now();
                 st.stall_count = st.stall_count.saturating_add(1);
-                if st.stall_count >= STALL_FLAP_LIMIT {
+                if st.stall_count >= STALL_FLAP_LIMIT && !st.carrier {
                     flap_reset = true;
                 }
                 // <<< AETHER-APP-PATCH netstack-uplink-admission
@@ -2053,7 +2250,24 @@ fn service_tcp(s: &mut NetStack) -> bool {
         }
 
         if app_gone {
-            s.sockets.get_mut::<tcp::Socket>(handle).close();
+            // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+            // A plain close() only starts a shutdown; a far end that never
+            // answers it left the socket alive for the whole session. Half of
+            // upstream's #101/#106 descriptor exhaustion was exactly this. The
+            // socket gets ORPHAN_LINGER to finish, then it is reset - at once if
+            // it is still delivering data nobody is left to read.
+            let st = s.tcp_conns.get_mut(&id).unwrap();
+            let socket = s.sockets.get_mut::<tcp::Socket>(handle);
+            let orphaned_at = *st.orphaned_at.get_or_insert(now);
+            if socket.can_recv() || now.duration_since(orphaned_at) >= s.tcp_limits.orphan_linger {
+                if socket.state() != tcp::State::Closed {
+                    socket.abort();
+                }
+                st.aborted = true;
+                continue;
+            }
+            socket.close();
+            // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
         }
 
         let st_state = s.sockets.get_mut::<tcp::Socket>(handle).state();
@@ -2092,6 +2306,9 @@ fn service_udp(s: &mut NetStack) -> bool {
 
         let to_app = s.udp_conns[&id].to_app.clone();
         let mut delivered = 0;
+        // >>> AETHER-CORE-PORT 2.0.0 udp-orphan-reap
+        let mut app_gone = false;
+        // <<< AETHER-CORE-PORT 2.0.0 udp-orphan-reap
 
         while delivered < MAX_RECV_CHUNKS {
             let permit = match to_app.try_reserve() {
@@ -2100,7 +2317,12 @@ fn service_udp(s: &mut NetStack) -> bool {
                     backpressured = true;
                     break;
                 }
-                Err(mpsc::error::TrySendError::Closed(())) => break,
+                // >>> AETHER-CORE-PORT 2.0.0 udp-orphan-reap
+                Err(mpsc::error::TrySendError::Closed(())) => {
+                    app_gone = true;
+                    break;
+                }
+                // <<< AETHER-CORE-PORT 2.0.0 udp-orphan-reap
             };
 
             let socket = s.sockets.get_mut::<udp::Socket>(handle);
@@ -2115,6 +2337,17 @@ fn service_udp(s: &mut NetStack) -> bool {
                 Err(_) => break,
             }
         }
+
+        // >>> AETHER-CORE-PORT 2.0.0 udp-orphan-reap
+        // The UDP half of the descriptor leak: a closed app channel was merely
+        // `break`ed out of, so the socket stayed bound forever. Every DNS query
+        // in a long session is one of these.
+        if app_gone {
+            if let Some(st) = s.udp_conns.remove(&id) {
+                s.sockets.remove(st.handle);
+            }
+        }
+        // <<< AETHER-CORE-PORT 2.0.0 udp-orphan-reap
     }
 
     backpressured
@@ -2391,12 +2624,179 @@ assert!(
             next_id: 0,
             next_port: 40000,
             data_in_tx: mpsc::channel(1).0,
+            // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+            tcp_limits: TcpLimits::from_env(),
+            // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+        }
+    }
+
+    // >>> AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+    /// The lifetimes core 2.0.0's own tests use: short enough that a test can
+    /// wait them out, never read from the clock or the environment.
+    fn quick_limits() -> TcpLimits {
+        TcpLimits {
+            connect: StdDuration::from_millis(300),
+            keepalive: StdDuration::from_secs(60),
+            dead_peer: StdDuration::from_secs(360),
+            orphan_linger: StdDuration::from_millis(300),
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connect_nobody_answers_fails_instead_of_hanging() {
+        let (_inbound_tx, inbound_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (outbound_tx, _outbound_rx) = mpsc::channel::<Vec<u8>>(256);
+        let stack = spawn_with_limits(
+            "198.18.0.1",
+            "fc00::1",
+            1400,
+            inbound_rx,
+            outbound_tx,
+            quick_limits(),
+        )
+        .expect("netstack should start");
+
+        let dst: SocketAddr = "93.184.216.34:80".parse().unwrap();
+        let outcome = tokio::time::timeout(StdDuration::from_secs(5), stack.open_tcp(dst))
+            .await
+            .expect("a connect that is never answered must fail, not hang");
+
+        match outcome {
+            Ok(_) => panic!("nothing answered, so the connect cannot succeed"),
+            Err(error) => assert!(error.to_string().contains("timed out"), "{error}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_orphan_whose_far_end_never_closes_is_reset() {
+        let local = Ipv4Addr::new(198, 18, 0, 1);
+        let remote = Ipv4Addr::new(93, 184, 216, 34);
+        let remote_port = 80u16;
+
+        let (inbound_tx, inbound_rx) = mpsc::channel::<Vec<u8>>(64);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(256);
+        let stack = spawn_with_limits(
+            "198.18.0.1",
+            "fc00::1",
+            1400,
+            inbound_rx,
+            outbound_tx,
+            quick_limits(),
+        )
+        .expect("netstack should start");
+
+        let dst = SocketAddr::new(IpAddr::V4(remote), remote_port);
+        let connect = {
+            let stack = stack.clone();
+            tokio::spawn(async move { stack.open_tcp(dst).await })
+        };
+
+        let deadline = tokio::time::Instant::now() + StdDuration::from_secs(5);
+        let (client_port, client_seq) = loop {
+            let pkt = tokio::time::timeout_at(deadline, outbound_rx.recv())
+                .await
+                .expect("the netstack should emit a syn")
+                .expect("outbound channel stays open");
+            if let Some(seg) = parse_tcp(&pkt) {
+                if seg.dst_port == remote_port && seg.flags & 0x02 != 0 && seg.flags & 0x10 == 0 {
+                    break (seg.src_port, seg.seq);
+                }
+            }
+        };
+
+        let syn_ack = build_tcp(
+            (remote, remote_port),
+            (local, client_port),
+            5000,
+            client_seq.wrapping_add(1),
+            0x12,
+        );
+        inbound_tx
+            .send(syn_ack)
+            .await
+            .expect("inbound accepts the syn-ack");
+
+        let conn = tokio::time::timeout(StdDuration::from_secs(5), connect)
+            .await
+            .expect("the connect call should finish")
+            .expect("the connect task should not panic")
+            .expect("the connection should be established");
+        drop(conn);
+
+        // The app is gone, so the stack sends a FIN. The far end acknowledges it
+        // and then says nothing more, ever - the shape that used to keep the
+        // socket, its port and its two channels for the whole session.
+        let fin_seq = loop {
+            let pkt = tokio::time::timeout_at(deadline, outbound_rx.recv())
+                .await
+                .expect("the netstack should send a fin")
+                .expect("outbound channel stays open");
+            if let Some(seg) = parse_tcp(&pkt) {
+                if seg.flags & 0x01 != 0 {
+                    break seg.seq;
+                }
+            }
+        };
+        let ack = build_tcp(
+            (remote, remote_port),
+            (local, client_port),
+            5001,
+            fin_seq.wrapping_add(1),
+            0x10,
+        );
+        inbound_tx.send(ack).await.expect("inbound accepts the ack");
+
+        let mut saw_reset = false;
+        while let Ok(Some(pkt)) = tokio::time::timeout_at(deadline, outbound_rx.recv()).await {
+            if let Some(seg) = parse_tcp(&pkt) {
+                if seg.flags & 0x04 != 0 {
+                    saw_reset = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            saw_reset,
+            "an orphaned connection whose far end never closes must be reset, not kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_address_assigned_for_one_family_keeps_the_other() {
+        let mut stack = bare_stack();
+        apply_addrs(
+            &mut stack.iface,
+            Some(("172.16.0.2".parse().unwrap(), 32)),
+            Some(("2606:4700:110:8a36::1".parse().unwrap(), 128)),
+        );
+
+        handle_cmd(
+            &mut stack,
+            Cmd::SetAddrs {
+                v4: Some(("172.16.0.9".parse().unwrap(), 32)),
+                v6: None,
+            },
+        );
+        handle_cmd(
+            &mut stack,
+            Cmd::SetAddrs {
+                v4: None,
+                v6: Some(("2606:4700:110:8a36::9".parse().unwrap(), 128)),
+            },
+        );
+
+        let (v4, v6) = current_addrs(&stack.iface);
+        assert_eq!(v4.map(|(ip, _)| ip), Some("172.16.0.9".parse().unwrap()));
+        assert_eq!(
+            v6.map(|(ip, _)| ip),
+            Some("2606:4700:110:8a36::9".parse().unwrap())
+        );
+    }
+    // <<< AETHER-CORE-PORT 2.0.0 tcp-lifetimes
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn flush_tx_holds_a_burst_back_instead_of_shredding_it() {
-        let (outbound_tx, outbound_rx) = mpsc::channel::<Vec<u8>>(2);
+        let (outbound_tx, mut outbound_rx) = mpsc::channel::<Vec<u8>>(2);
         let mut stack = bare_stack();
 
         for _ in 0..10 {
@@ -2447,6 +2847,10 @@ assert!(
                     pending,
                     established: true,
                     half_closed: false,
+                    // >>> AETHER-APP-PATCH netstack-test-fixture-fields
+                    connect_deadline: std::time::Instant::now() + std::time::Duration::from_secs(12),
+                    orphaned_at: None, aborted: false, carrier: false,
+                    // <<< AETHER-APP-PATCH netstack-test-fixture-fields
                     last_progress: std::time::Instant::now(),
                     send_queue_high: 0,
                     accepted_total: 0,
@@ -2529,6 +2933,10 @@ assert!(
                 pending: Vec::new(),
                 established: true,
                 half_closed: false,
+                // >>> AETHER-APP-PATCH netstack-test-fixture-fields
+                connect_deadline: std::time::Instant::now() + std::time::Duration::from_secs(12),
+                orphaned_at: None, aborted: false, carrier: false,
+                // <<< AETHER-APP-PATCH netstack-test-fixture-fields
                 last_progress: std::time::Instant::now(),
                 send_queue_high: 0,
                 accepted_total: 0,

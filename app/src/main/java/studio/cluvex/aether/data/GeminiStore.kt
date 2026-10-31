@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import studio.cluvex.aether.ai.AiModelPolicy
 
 /**
  * Its own DataStore, deliberately not [ProfileStore]'s.
@@ -43,8 +44,21 @@ data class AiSettings(
      * right now".
      */
     val discoveredModels: List<String> = emptyList(),
-    /** Analyse the log and propose tuning on every connect. */
-    val autoOptimize: Boolean = true,
+    /**
+     * True when [model] was picked by the user in the model sheet, false when the
+     * app picked it. 1.4.0-r5: only an APP pick is replaced by the default
+     * (Gemini 3.1 Flash-Lite) when a key is entered or the list is refreshed; a
+     * deliberate user choice is never overridden while the key can still use it.
+     */
+    val modelUserPicked: Boolean = false,
+    /**
+     * Analyse the log on every connect - and, 1.4.0-r5, give the chat assistant a
+     * redacted excerpt of the current log with every question.
+     *
+     * 1.4.0-r5: default OFF. Sending the log to a remote model is opt-in: the user
+     * turns it on when they want it, and nothing leaves the device before that.
+     */
+    val autoOptimize: Boolean = false,
     /**
      * Write a proposal straight into the profile instead of waiting for a tap.
      *
@@ -58,9 +72,16 @@ data class AiSettings(
 ) {
     val hasKey: Boolean get() = apiKey.isNotBlank()
 
-    /** The model to actually call: the chosen one, or the first discovered one. */
+    /**
+     * The model to actually call: the chosen one, or - 1.4.0-r5 - the default
+     * (Gemini 3.1 Flash-Lite when the key can see it) rather than simply the
+     * first discovered id, which was the newest and lowest-allowance model.
+     */
     val effectiveModel: String
-        get() = model.ifBlank { discoveredModels.firstOrNull().orEmpty() }
+        get() = model.ifBlank {
+            AiModelPolicy.pickDefaultId(discoveredModels)
+                ?: discoveredModels.firstOrNull().orEmpty()
+        }
 }
 
 /** Persists [AiSettings]; the key itself goes to the Keystore-sealed vault. */
@@ -69,7 +90,12 @@ class GeminiStore(private val context: Context) {
     private object Keys {
         val model = stringPreferencesKey("model")
         val models = stringPreferencesKey("models")
-        val autoOptimize = booleanPreferencesKey("autoOptimize")
+        val modelUserPicked = booleanPreferencesKey("modelUserPicked")
+        // 1.4.0-r5: a NEW key name. The old "autoOptimize" key defaulted to ON, so
+        // every existing install has it stored as true without the user ever
+        // having chosen it. Reading a fresh key makes the new default (OFF) apply
+        // to everyone once; from then on the user's own choice is stored here.
+        val autoOptimize = booleanPreferencesKey("autoOptimize_v2")
         val autoApply = booleanPreferencesKey("autoApply")
         val showHints = booleanPreferencesKey("showHints")
     }
@@ -82,7 +108,8 @@ class GeminiStore(private val context: Context) {
             model = prefs[Keys.model] ?: "",
             discoveredModels = prefs[Keys.models]
                 ?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList(),
-            autoOptimize = prefs[Keys.autoOptimize] ?: true,
+            modelUserPicked = prefs[Keys.modelUserPicked] ?: false,
+            autoOptimize = prefs[Keys.autoOptimize] ?: false,
             autoApply = prefs[Keys.autoApply] ?: false,
             showHints = prefs[Keys.showHints] ?: true,
         )
@@ -96,14 +123,38 @@ class GeminiStore(private val context: Context) {
      * authentication with a 400 that says nothing useful about why.
      */
     suspend fun saveKey(key: String) {
-        secrets.write(SecretStore.GEMINI_KEY, key.trim())
+        val trimmed = key.trim()
+        val previous = secrets.read(SecretStore.GEMINI_KEY)
+        secrets.write(SecretStore.GEMINI_KEY, trimmed)
+        // 1.4.0-r5: a different key starts on the default model (3.1 Flash-Lite).
+        if (trimmed != previous) resetModelChoice()
         // Touch the store so the settings flow re-emits: the key lives outside
         // DataStore, so nothing else would tell a collector it changed.
         context.aiDataStore.edit { it[Keys.model] = it[Keys.model] ?: "" }
     }
 
-    suspend fun saveModel(model: String) {
-        context.aiDataStore.edit { it[Keys.model] = model }
+    /**
+     * @param byUser true when the user tapped the model in the picker; false for
+     *   the app's own default pick. See [AiSettings.modelUserPicked].
+     */
+    suspend fun saveModel(model: String, byUser: Boolean = true) {
+        context.aiDataStore.edit {
+            it[Keys.model] = model
+            it[Keys.modelUserPicked] = byUser && model.isNotBlank()
+        }
+    }
+
+    /**
+     * 1.4.0-r5: a newly entered key starts from the default model again. The
+     * previous key's choice (and its cached list) says nothing about what the new
+     * key may use, and a stale pick would skip the default the user was promised.
+     */
+    suspend fun resetModelChoice() {
+        context.aiDataStore.edit { prefs ->
+            prefs[Keys.model] = ""
+            prefs[Keys.models] = ""
+            prefs[Keys.modelUserPicked] = false
+        }
     }
 
     suspend fun saveDiscovered(models: List<String>) {
@@ -128,6 +179,7 @@ class GeminiStore(private val context: Context) {
         context.aiDataStore.edit { prefs ->
             prefs[Keys.model] = ""
             prefs[Keys.models] = ""
+            prefs[Keys.modelUserPicked] = false
         }
     }
 }

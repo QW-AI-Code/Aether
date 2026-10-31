@@ -3,6 +3,7 @@ package studio.cluvex.aether.core
 import java.io.DataInputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.security.SecureRandom
 
 /**
@@ -105,6 +106,93 @@ object EncryptedLogFile {
     }.getOrDefault(emptyList())
 
     /**
+     * The LAST [maxRecords] records of [file], oldest first — without decrypting
+     * the ones in front of them.
+     *
+     * ## Why this exists (1.3.1 startup fix)
+     *
+     * [readLines] decrypts EVERY record in the file, and each record costs one
+     * `Cipher.init` plus one `doFinal` against a non-exportable Android Keystore
+     * key — a binder round trip into keystore2 and an operation in the TEE, not
+     * an in-process AES call. The log writer seals one record per drained batch,
+     * so a session that trickles lines produces roughly one record PER LINE: at
+     * the [DiagnosticsLog] size cap of 512 KB that is thousands of records, and
+     * thousands of keystore operations back to back.
+     *
+     * `DiagnosticsLog.init` then threw all but the newest 800 lines away. The
+     * work for every record before those was pure waste, and it was waste paid
+     * on the main thread during `Application.onCreate` — which is what made a
+     * cold start take seconds and grow slower the longer the app had been used,
+     * until clearing app data (deleting this file) was the only way back.
+     *
+     * The record frame is length-prefixed, so the file can be WALKED without a
+     * key: read four bytes, skip that many, repeat. Only the tail is opened.
+     *
+     * Same forgiving contract as [readLines]: a truncated or unopenable record
+     * ends the readable log rather than raising.
+     */
+    fun readLastLines(
+        file: File,
+        maxLines: Int,
+        endOffset: Long = Long.MAX_VALUE,
+    ): List<String> = runCatching {
+        if (maxLines <= 0 || !looksSealed(file)) return emptyList()
+        RandomAccessFile(file, "r").use { raf ->
+            // r8: [endOffset] lets the startup restore stop at the byte where the
+            // PREVIOUS session ended. Records the writer thread appends after that
+            // belong to this session and are already in memory; reading them here
+            // too would restore them twice, once as "previous session".
+            val total = minOf(raf.length(), endOffset)
+            // Pass 1: the offset and length of every intact record. No crypto.
+            val offsets = ArrayList<Long>(512)
+            val lengths = ArrayList<Int>(512)
+            var cursor = MAGIC.size.toLong()
+            val head = ByteArray(4)
+            while (cursor + head.size <= total) {
+                raf.seek(cursor)
+                if (!raf.readFullyOrNull(head)) break
+                val length = ((head[0].toInt() and 0xFF) shl 24) or
+                    ((head[1].toInt() and 0xFF) shl 16) or
+                    ((head[2].toInt() and 0xFF) shl 8) or
+                    (head[3].toInt() and 0xFF)
+                if (length <= 0 || length > MAX_RECORD_BYTES) break
+                val blobAt = cursor + head.size
+                // A record whose declared length runs past the end of the file is
+                // the half-written tail of a process that died. Stop before it.
+                if (blobAt + length > total) break
+                offsets.add(blobAt)
+                lengths.add(length)
+                cursor = blobAt + length
+            }
+            // Pass 2: open records from the NEWEST backwards and stop as soon as
+            // [maxLines] lines are in hand.
+            //
+            // r8: this used to take the last `maxLines` RECORDS. One record is one
+            // writer batch and can hold up to 256 lines, so "the last 800" could
+            // mean decrypting hundreds of thousands of lines only for the caller
+            // to keep 800 of them - the very waste this function exists to avoid.
+            // Walking backwards bounds the keystore work by what is kept.
+            val chunks = ArrayDeque<List<String>>()
+            var lines = 0
+            for (index in offsets.indices.reversed()) {
+                val blob = ByteArray(lengths[index])
+                raf.seek(offsets[index])
+                if (!raf.readFullyOrNull(blob)) break
+                // An unopenable record ends the readable tail: everything older
+                // than it would be out of order with what is already collected.
+                val plain = KeyVault.open(blob) ?: break
+                val recordLines = String(plain, Charsets.UTF_8)
+                    .split('\n')
+                    .filter { it.isNotEmpty() }
+                chunks.addFirst(recordLines)
+                lines += recordLines.size
+                if (lines >= maxLines) break
+            }
+            chunks.flatten().takeLast(maxLines)
+        }
+    }.getOrDefault(emptyList())
+
+    /**
      * Replaces [file] with a single sealed record holding [lines].
      *
      * Used by the size cap and by "clear". Writes a sibling and renames, so a
@@ -193,6 +281,17 @@ object EncryptedLogFile {
      * of a log whose process was killed, not an error worth a stack trace.
      */
     private fun DataInputStream.readFullyOrNull(target: ByteArray): Boolean {
+        var done = 0
+        while (done < target.size) {
+            val read = read(target, done, target.size - done)
+            if (read < 0) return false
+            done += read
+        }
+        return true
+    }
+
+    /** [readFullyOrNull] for the random-access walk in [readLastLines]. */
+    private fun RandomAccessFile.readFullyOrNull(target: ByteArray): Boolean {
         var done = 0
         while (done < target.size) {
             val read = read(target, done, target.size - done)

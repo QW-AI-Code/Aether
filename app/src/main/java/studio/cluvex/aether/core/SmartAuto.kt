@@ -3,6 +3,8 @@ package studio.cluvex.aether.core
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.os.Build
+import android.telephony.SubscriptionManager
 import android.telephony.TelephonyManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -295,9 +297,29 @@ object SmartAuto {
         false
     }
 
-    /** Operator name + "is Iranian cellular" — no runtime permissions needed. */
+    /**
+     * Operator name + "is Iranian cellular" — no runtime permissions needed.
+     *
+     * ## Dual SIM (1.3.1, issue #7)
+     *
+     * `TelephonyManager.networkOperatorName` answers for the manager's OWN
+     * subscription, and a manager obtained from `getSystemService` carries the
+     * DEFAULT one — which on a dual-SIM phone is usually SIM 1 regardless of
+     * which SIM carries mobile data. A user with IR-TCI in slot 1 and Irancell
+     * as the data SIM was fingerprinted as `operator="IR-TCI"`, so Smart Auto
+     * built its strategy ladder for the wrong carrier.
+     *
+     * Fixed by asking for the manager bound to the subscription that is actually
+     * carrying data: `getActiveDataSubscriptionId()` on API 30+, falling back to
+     * `getDefaultDataSubscriptionId()` on 24+. Both are static on
+     * `SubscriptionManager` and neither needs a runtime permission — unlike the
+     * subscription LIST, which needs READ_PHONE_STATE and is deliberately not
+     * used here. If neither id is valid (no SIM, Wi-Fi only) the default manager
+     * is used exactly as before.
+     */
     private fun readOperator(context: Context): Pair<String, Boolean> = runCatching {
-        val tm = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        val default = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
+        val tm = default?.let { forActiveDataSim(it) } ?: default
         val name = tm?.networkOperatorName?.takeIf { it.isNotBlank() } ?: "unknown"
         val mcc = tm?.networkOperator?.take(3)
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
@@ -305,4 +327,28 @@ object SmartAuto {
         val cellular = caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
         name to (cellular && mcc == "432")
     }.getOrDefault("unknown" to false)
+
+    /**
+     * [TelephonyManager] for the subscription carrying mobile data, or null to
+     * keep the default one.
+     *
+     * Never throws: every call here is best-effort, and an OEM build that
+     * reports an unusable id must leave the fingerprint working rather than
+     * failing the whole connect.
+     */
+    private fun forActiveDataSim(default: TelephonyManager): TelephonyManager? = runCatching {
+        // minSdk is 26, so getDefaultDataSubscriptionId (API 24) is always
+        // available; getActiveDataSubscriptionId (API 30) is the better answer
+        // where it exists, because it follows a temporary data switch.
+        val subId = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            SubscriptionManager.getActiveDataSubscriptionId()
+        } else {
+            SubscriptionManager.getDefaultDataSubscriptionId()
+        }
+        if (subId == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            null
+        } else {
+            default.createForSubscriptionId(subId)
+        }
+    }.getOrNull()
 }

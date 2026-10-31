@@ -9,49 +9,150 @@ on:
 permissions:
   contents: write
 
+# ONE build at a time. Two pushes in quick succession used to start two runs that
+# both signed, both pushed commits back to the branch and both published to the
+# same release tag. Now the newer push cancels the older run on a branch, while a
+# tag build (v*) is never cancelled - it is a real release and has to finish.
+concurrency:
+  group: build-apk-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type == 'branch' }}
+
 jobs:
   build:
+    # Do not spend a full build + release on a dependency bump. Merging a
+    # Dependabot PR is a push to main, which would otherwise publish an APK
+    # nobody asked for. Such commits are skipped here; when you DO want to build
+    # one, open Actions -> Build APK -> "Run workflow" and it builds normally.
+    # A tag push (v*) is never skipped - pushing a version tag is always an
+    # explicit release, whatever the commit it points at happens to be called.
+    # (The workflow's own commits already carry [skip ci] and cannot retrigger it,
+    # because they are pushed with the default GITHUB_TOKEN.)
+    if: >-
+      github.event_name != 'push'
+      || github.ref_type != 'branch'
+      || !(contains(github.event.head_commit.message, 'dependabot')
+      || startsWith(github.event.head_commit.message, 'deps')
+      || startsWith(github.event.head_commit.message, 'ci:'))
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: "26.3.11579264"
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
+
+      # RELEASE TREE: the repository must hold exactly the uploaded release.
+      #
+      # A new version is published by uploading its files over the previous
+      # one. That overwrites everything the release ships but can never delete
+      # what it dropped (1.3.0 -> 1.4.0: the psiphontunnel AAR, its PROVENANCE
+      # file and transport/PsiphonHealth.kt), and a leftover source or library
+      # breaks the build or the app. scripts/enforce-release-tree.sh uses
+      # SOURCE_MANIFEST.sha256 as the list of the release's files: it first
+      # proves the upload is complete (every file present, every hash right -
+      # otherwise it stops and deletes nothing), then removes every tracked file
+      # that is not in the manifest, except CI-managed signing files and
+      # workflows. It runs once per release (marker .github/release-tree.applied)
+      # and FIRST, before any build step can see a stale file.
+      - name: Enforce release tree (remove files from older versions)
+        run: bash scripts/enforce-release-tree.sh
+
+      # Record the cleanup on the branch, so the repository itself shows only the
+      # new release. Best-effort: if the push fails the next build simply
+      # enforces again (the marker was not pushed either).
+      - name: Commit release-tree cleanup
+        if: github.ref_type == 'branch'
+        run: |
+          set -uo pipefail
+          if git diff --cached --quiet; then
+            echo "Nothing to commit - the release tree was already exact."
+            exit 0
+          fi
+          VERSION="$(sed -n 's/^version=//p' .github/release-tree.applied)"
+          REMOVED="$(sed -n 's/^removed=//p' .github/release-tree.applied)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "ci: keep only Aether ${VERSION} files (removed ${REMOVED} leftover file(s)) [skip ci]" || exit 0
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+          git push origin "HEAD:${GITHUB_REF_NAME}" \
+            || echo "::warning::Could not push the release-tree cleanup; the next build will enforce it again."
+
+      # 1.4.0: "No space left on device".
+      #
+      # A 1.4.0 build built, tested, signed and PUBLISHED all four APKs, and then the
+      # job went red in its very last post-step: setup-gradle's "Caching Gradle
+      # state" ran zstd into a full disk (`zstd: error 70 : Write error : cannot
+      # write block : No space left on device`). The culprit is 1.4.0's build
+      # volume: the Tor-enabled engine for three ABIs (~30 min of cargo, several GB
+      # of target/), plus the Go builds of Psiphon and lyrebird, plus Gradle, on a
+      # hosted runner that starts with only ~14 GB free. Two fixes, both needed:
+      #   1. free the preinstalled toolchains this build never uses, up front;
+      #   2. delete the native build intermediates once the .so files are
+      #      installed in jniLibs (next step after the engine build), and again
+      #      right before the post-job cache save.
+      # Nothing removed here is used by any later step.
+      - name: Free runner disk space
+        run: |
+          set -u
+          echo "Before:"; df -h / | tail -1
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /usr/local/.ghcup /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Ruby \
+            /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/julia* \
+            /usr/local/share/powershell \
+            /usr/local/share/chromium \
+            /usr/local/lib/node_modules \
+            /opt/microsoft /opt/google /opt/az \
+            "${AGENT_TOOLSDIRECTORY:-/nonexistent}/CodeQL" || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          echo "After:"; df -h / | tail -1
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
+      # ROOT FIX (2026-09-15): this step - not anything in the repository - is
+      # what killed the build 14 seconds in, before a single file of the
+      # checkout was read:
+      #
+      #   [command] .../cmdline-tools/16.0/bin/sdkmanager tools
+      #   Warning: Failed to find package 'tools'
+      #   Error: The process '.../sdkmanager' failed with exit code 1
+      #
+      # android-actions/setup-android's `packages` input DEFAULTS to
+      # "tools platform-tools", and the action hands those to sdkmanager one at
+      # a time. `tools` is the retired SDK Tools package (superseded years ago
+      # by cmdline-tools, which this same action installs through its own
+      # cmdline-tools-version input). Google stopped serving `tools` from the
+      # SDK repository, so sdkmanager cannot find it and exits 1, which the
+      # action turns into a job failure. Every repository using the action with
+      # no `packages` input broke at the same moment - which is why the same
+      # commit built fine in a scratch repository a day earlier and dies here.
+      #
+      # So we never rely on that default again: state EXACTLY what this build
+      # needs. That also removes the second dependency on luck - compileSdk 35
+      # and the build-tools used by the apksigner step were only ever there
+      # because the runner image happened to preinstall them, and the images
+      # drop old platforms over time.
+      #   platform-tools          - adb + the tooling Gradle expects to find
+      #   platforms;android-35    - compileSdk = 35 / targetSdk = 35
+      #   build-tools;35.0.0      - apksigner for "Verify release signature"
+      # `tools` is deliberately absent and must never be added back.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
-      - name: Install NDK
-        run: |
-          yes | sdkmanager "ndk;${NDK_VERSION}" > /dev/null
-          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
         with:
-          go-version: "1.22"
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
 
-      - name: Set up Rust (Android targets)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-linux-android,armv7-linux-androideabi
-
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk --locked
-
-      # This repo intentionally ships no gradle-wrapper.jar, so the build runs
-      # with the Gradle that is on PATH. Leaving that to the runner image is a
-      # time bomb: GitHub keeps bumping its preinstalled Gradle, and AGP 8.7.2
-      # only supports the 8.x line (Gradle 9 fails the build outright with an
-      # "unsupported" / plugin-compatibility error). Pin the exact version the
-      # wrapper descriptor already declares so the toolchain can never drift.
+      # 1.6.0 ships the complete, checksummed Gradle Wrapper. Pin the setup
+      # action to the same 8.9 version for its cache/toolchain integration;
+      # test and packaging tasks below run through ./gradlew, not runner defaults.
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
@@ -59,81 +160,27 @@ jobs:
 
       - name: Show build toolchain
         run: |
-          gradle --version
+          # GitHub web uploads may lose executable bits.
+          chmod +x gradlew
+          ./gradlew --version
           java -version 2>&1
 
-      # 1.2.2: the BUILD owns the engine version, not a human. Every build
-      # checks the official core repo and upgrades the vendored engine when a
-      # newer release exists, preserving this app's own engine patches. The
-      # script also appends the upgrade to the 1.2.2 changelog in both READMEs.
-      - name: Sync Aether core (auto-upgrade engine)
-        run: bash scripts/sync-core.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AETHER_REPO: CluvexStudio/Aether
-
-      - name: Fetch native sources
-        run: bash scripts/fetch-natives.sh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          AETHER_REF: ${{ github.event_name == 'workflow_dispatch' && '' || '' }}
-
-      - name: Build tunnel core (hev)
-        run: bash scripts/build-natives.sh hev
-
-      # The engine build is the one step an automatic core upgrade can break:
-      # upstream may add a struct field or a function parameter at any time and
-      # no textual merge can guarantee the result still compiles (core 1.4.0
-      # did exactly that: E0063 on H2TunnelConfig, E0061 on
-      # wireguard::verify_endpoint_keep_session). A convenience feature must
-      # never be able to fail a release, so this step is allowed to fail once:
-      # it rolls the core back to the version the repo already shipped, rebuilds
-      # and continues. Only a failure that is NOT caused by the auto-upgrade can
-      # stop the pipeline here.
-      - name: Build engine (Aether)
+      # ------------------------------------------------------------------ 1.3.1
+      # Bump engine dependencies that carry a KNOWN advisory, within the semver
+      # range their crate already allows.
+      #
+      # Sync replaces Cargo.lock. Reapply scoped fixes before fetching/compiling.
+      # build-natives also checks the actual working crate, including rollback cores.
+      # Fail closed if a required patch cannot be resolved; never ship a knowingly
+      # vulnerable binary just because the registry was unavailable.
+      - name: Test security CI handling
         run: |
-          set -uo pipefail
-          if bash scripts/build-natives.sh aether; then
-            exit 0
-          fi
-          echo "::warning::Engine build failed with the freshly synced core."
-          if [ ! -d native/.core-prev/aether ]; then
-            echo "::error::Engine build failed and there is no core upgrade to blame - this is a real build error."
-            exit 1
-          fi
-          bash scripts/core-rollback.sh
-          bash scripts/fetch-natives.sh
-          set -e
-          bash scripts/build-natives.sh aether
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # If the core moved AND the engine actually built with it, commit the new
-      # CORE_VERSION, the refreshed upstream baseline and the auto-written
-      # changelog lines back to the branch, so the repository always documents
-      # exactly which engine was shipped. Running this AFTER the build is what
-      # keeps the repo from recording an upgrade that does not compile.
-      # Never runs on tag builds.
-      - name: Commit core upgrade + README changelog
-        if: github.ref_type == 'branch'
-        run: |
-          set -euo pipefail
-          if [ ! -f native/.core-sync-state ]; then
-            echo "No core upgrade to record (already current, or it was rolled back)."
-            exit 0
-          fi
-          if [ -z "$(git status --porcelain native/aether README.md README.fa.md)" ]; then
-            echo "Core already up to date - nothing to commit."
-            exit 0
-          fi
-          CORE_V="$(tr -d '[:space:]' < native/aether/CORE_VERSION)"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add native/aether README.md README.fa.md
-          git commit -m "ci: auto-upgrade Aether core to v${CORE_V} + document in 1.2.2 changelog [skip ci]"
-          git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
-          git push origin "HEAD:${GITHUB_REF_NAME}" \
-            || echo "WARNING: could not push the core upgrade back to the branch."
+          python3 scripts/test-security-ci.py
+          python3 scripts/test-core-sync-disabled.py
+          python3 scripts/test-functional-wiring.py
+          python3 scripts/test-ai-settings-coverage.py
+          python3 scripts/test-auto-signing.py
+          python3 scripts/test-ci-preflight.py
 
       # Signing: ALWAYS sign with a STABLE key so users can update in place
       # (Android only installs an update when old and new APKs share the same
@@ -171,15 +218,14 @@ jobs:
             exit 0
           fi
 
-          # TEST KEY. No signing secrets in this repository, so we fall back to
-          # a throwaway CI certificate. APKs signed this way are for TESTING
-          # ONLY: they can never be installed over an app signed with the real
-          # key. Nothing about this key is pinned or enforced, so building the
-          # project in a scratch repository can NEVER poison the over-install
-          # guarantee of the real release repository.
-          echo "::warning::No signing secrets found - building with a TEST certificate."
-          echo "::warning::This APK cannot be installed over an existing 1.2.1 install."
-          echo "::warning::Add KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD to sign with the real 1.2.1 key."
+          # PUBLIC TEST KEY. With no Secrets, reuse the bundled historical CI
+          # key. Its fingerprint is still checked below; no key rotation and no
+          # disabled signer guard. This needs no repository-settings changes.
+          # It is public and provides test-build continuity, not authenticity.
+          # An APK signed with a different private key will NOT accept this as
+          # an in-place update. Private signing Secrets remain optional/preferred.
+          echo "::warning::Using the bundled PUBLIC TEST certificate; no signing Secrets are required for this test build."
+          echo "::warning::Use a private signing identity for authenticated production releases."
           echo "AETHER_SIGNING_MODE=test" >> "$GITHUB_ENV"
 
           KS="${RUNNER_TEMP}/ci-release.keystore"
@@ -210,8 +256,8 @@ jobs:
               git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
               git add .github/ci-keystore.jks.b64
               git commit -m "ci: persist auto-generated signing keystore [skip ci]"
-              # An earlier step in this same run may already have pushed the
-              # core upgrade, so rebase before pushing instead of racing it.
+              # Another CI cleanup or concurrent push may have changed the
+              # branch, so rebase before pushing instead of racing it.
               git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
               git push origin "HEAD:${GITHUB_REF_NAME}" \
                 || echo "WARNING: could not push the keystore back; the next build may sign with a different key."
@@ -251,40 +297,26 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "ci: remove sources deleted in 1.2.2 that were left over from 1.2.1 [skip ci]" || exit 0
+          git commit -m "ci: remove files left over from older versions (git rm) [skip ci]" || exit 0
           git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
           git push origin "HEAD:${GITHUB_REF_NAME}" \
             || echo "WARNING: could not push the purge commit; the next build will purge again."
 
-      # A release must never die because an artifact repository had a bad
-      # minute. The 1.2.6 build in the release repository failed with
-      # "Received status code 403 from server: Forbidden" from Maven Central on
-      # EVERY buildscript dependency, so the root project could not even be
-      # configured. settings.gradle.kts now has a mirror to fall through to,
-      # and this step retries a failure that is clearly a download problem
-      # (403/408/429/5xx, timeouts, "Could not resolve"). A real build error is
-      # never retried, so a genuine compile failure still fails fast.
-      # 1.2.7 removed the Tor backend, so there is no native Tor core to build
-      # here any more (scripts/build-tor.sh is gone with it). The Aether core and
-      # the Psiphon AAR are the only native inputs left.
-      # 1.2.9-r3: RUN THE TESTS. The 1.2.9 crash (AiRedaction "No group 1", which
-      # killed the app a minute after every connect) shipped past eight unit tests
-      # that would all have failed on it, because nothing ever executed them. The
-      # redaction rules and the new LAN-sharing access rules (LanGuardTest) are pure
-      # Kotlin by design precisely so this step can be cheap and mandatory.
-      #
-      # Retried on the same download-failure signatures as the build below, so an
-      # artifact repository having a bad minute cannot fail a release here either. A
-      # genuine test failure is never retried.
+      # Fail fast: execute BOTH real JVM/Compose suites before NDK/Go/Rust
+      # setup and native compilation. Signing is prepared first because Gradle
+      # also configures release test resources. No tests are skipped or ignored.
       - name: Run unit tests
         env:
+          AETHER_UI_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_REPAIR_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_TEST_REPORTS: ${{ runner.temp }}/aether-validation/test-reports
           GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8"
         run: |
           set -uo pipefail
           LOG="${RUNNER_TEMP:-/tmp}/gradle-unit-tests.log"
           for attempt in 1 2 3; do
             set +e
-            gradle :app:testReleaseUnitTest --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            ./gradlew :app:testDebugUnitTest :app:testReleaseUnitTest --no-daemon --stacktrace 2>&1 | tee "$LOG"
             status=${PIPESTATUS[0]}
             set -e
             if [ "$status" -eq 0 ]; then
@@ -302,6 +334,223 @@ jobs:
             sleep $((attempt * 30))
           done
 
+      # This step swallowed sdkmanager's output into /dev/null, so a package that
+      # is no longer served would fail here with nothing to read. Keep the log,
+      # and prove the NDK is on disk before exporting a path later steps use.
+      #
+      # DO NOT ADD `set -o pipefail` HERE, AND DO NOT PIPE INTO sdkmanager.
+      # Both were tried and both fail a build in which nothing is wrong:
+      # `yes | sdkmanager ...` ends with sdkmanager exiting first and `yes`
+      # getting EPIPE on its next write, so it prints "yes: standard output:
+      # Broken pipe" and exits non-zero. Without pipefail that status is
+      # discarded (only sdkmanager's counts, which is why the original line
+      # worked); with pipefail it becomes the step's exit code and the job dies
+      # AFTER the NDK was downloaded and unzipped successfully - exactly what
+      # happened in run 94592578298. The pipe is not needed at all: the SDK
+      # licences were already accepted by the previous step
+      # (accept-android-sdk-licenses), so sdkmanager does not prompt. Redirecting
+      # </dev/null makes that explicit and cannot break.
+      - name: Install NDK
+        run: |
+          set -eu
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:?Android SDK root is not set}}"
+          sdkmanager --install "ndk;${NDK_VERSION}" </dev/null
+          if [ ! -d "${SDK}/ndk/${NDK_VERSION}" ]; then
+            echo "::error::NDK ${NDK_VERSION} was not installed at ${SDK}/ndk/${NDK_VERSION}."
+            echo "NDKs present:"
+            ls -1 "${SDK}/ndk" 2>/dev/null || echo "  (none)"
+            exit 1
+          fi
+          echo "ANDROID_NDK_HOME=${SDK}/ndk/${NDK_VERSION}" >> "$GITHUB_ENV"
+
+      # Fail here, with a readable message, rather than three steps later inside
+      # a Gradle stacktrace or with `ls -d .../build-tools/*` expanding to a
+      # literal glob in the signature check. Written without pipefail and
+      # without `set -e` aborting a check mid-way, so every failure path here
+      # prints WHY it failed instead of ending the step silently.
+      - name: Verify Android SDK layout
+        run: |
+          set -u
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          echo "ANDROID_SDK_ROOT=${SDK}"
+          rc=0
+          for d in "platforms/android-35" "platform-tools" "ndk/${NDK_VERSION}"; do
+            if [ -d "${SDK}/${d}" ]; then
+              echo "  ok: ${d}"
+            else
+              echo "::error::missing SDK component: ${d}"
+              rc=1
+            fi
+          done
+          BT=""
+          for d in "${SDK}"/build-tools/*/; do
+            [ -x "${d}apksigner" ] && BT="$d"
+          done
+          if [ -n "$BT" ]; then
+            echo "  ok: build-tools with apksigner -> ${BT}"
+          else
+            echo "::error::no build-tools containing apksigner under ${SDK}/build-tools"
+            rc=1
+          fi
+          exit "$rc"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Set up Rust (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      # AUTOMATIC CORE UPDATES ARE DISABLED (1.6.0, same version).
+      #
+      # The vendored engine in native/aether (core 2.4.0, see CORE_VERSION) is
+      # the ONLY engine this build compiles. CI no longer asks GitHub for a newer
+      # CluvexStudio/Aether release, never swaps the vendored sources and never
+      # commits an engine upgrade back to the branch. A core upgrade is a
+      # deliberate, reviewed change to native/aether made by hand (with its UI),
+      # not something a workflow may do on its own. scripts/test-core-sync-disabled.py
+      # fails the build if any of that comes back.
+
+      - name: Patch known-vulnerable engine dependencies
+        run: python3 scripts/patch-engine-dependencies.py native/aether/aether
+
+      - name: Fetch native sources
+        run: bash scripts/fetch-natives.sh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build tunnel core (hev)
+        run: bash scripts/build-natives.sh hev
+
+      # Tor bridges only. Deliberately NOT allowed to fail the release: Tor works
+      # without it (directly and through the tunnel), so a lyrebird build broken
+      # by an upstream Go change must not hold back an APK in which everything
+      # else is fine. The app logs the absence at connect time.
+      - name: Build pluggable transport (lyrebird, for Tor bridges)
+        continue-on-error: true
+        run: bash scripts/build-natives.sh pt
+
+      # 1.4.0: Psiphon lives in the engine (core 2.1.0). The engine runs the
+      # psiphon-tunnel-core console client; on Android it ships as libpsiphon.so.
+      # NOT allowed to fail: both Psiphon modes need it.
+      - name: Build Psiphon (the engine's console client)
+        run: bash scripts/build-natives.sh psiphon
+
+      # 1.5.0: custom configs (V2Ray/Xray links, Xray JSON, NapsternetV .npvt)
+      # run in Xray-core, shipped as libxray.so. Official XTLS release binaries
+      # at a pinned version, verified against pinned SHA-256 sums (see
+      # build_xray in build-natives.sh). NOT allowed to fail: without it every
+      # custom-config chain would fail at connect time.
+      - name: Fetch Xray core (custom configs)
+        run: bash scripts/build-natives.sh xray
+
+      # 1.3.0: builds with `--features tor` (see AETHER_FEATURES in
+      # build-natives.sh) and refuses to install an engine that has no Tor in it.
+      # There is no rollback path any more: the engine is vendored and never
+      # auto-upgraded, so a failure here is always a real build error.
+      - name: Build engine (Aether, with Tor)
+        run: bash scripts/build-natives.sh aether
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 1.4.0: every native .so is now in app/src/main/jniLibs. The Rust
+      # target/ tree (several GB for three ABIs with Tor) and the Go build/module
+      # caches are dead weight from here on, and they are what filled the disk
+      # before the post-job Gradle cache save. Sources are kept: Gradle and the
+      # commit step below still read them.
+      - name: Reclaim disk space (native build intermediates)
+        if: always()
+        run: |
+          set -u
+          echo "Before:"; df -h / | tail -1
+          rm -rf .native/aether/target native/aether/target 2>/dev/null || true
+          go clean -cache -modcache 2>/dev/null || true
+          rm -rf "${HOME}/.cargo/registry/src" "${HOME}/.cache/go-build" 2>/dev/null || true
+          echo "After:"; df -h / | tail -1
+
+      # A release must never die because an artifact repository had a bad
+      # minute. The 1.2.6 build in the release repository failed with
+      # "Received status code 403 from server: Forbidden" from Maven Central on
+      # EVERY buildscript dependency, so the root project could not even be
+      # configured. settings.gradle.kts now has a mirror to fall through to,
+      # and this step retries a failure that is clearly a download problem
+      # (403/408/429/5xx, timeouts, "Could not resolve"). A real build error is
+      # never retried, so a genuine compile failure still fails fast.
+      # 1.2.7 removed the Tor backend, so there is no native Tor core to build
+      # here any more (scripts/build-tor.sh is gone with it). The Aether core and
+      # libpsiphon.so (1.4.0, replacing the Psiphon AAR) are the native inputs.
+      # 1.2.9-r3: RUN THE TESTS. The 1.2.9 crash (AiRedaction "No group 1", which
+      # killed the app a minute after every connect) shipped past eight unit tests
+      # that would all have failed on it, because nothing ever executed them. The
+      # redaction rules and the new LAN-sharing access rules (LanGuardTest) are pure
+      # Kotlin by design precisely so this step can be cheap and mandatory.
+      #
+      # Retried on the same download-failure signatures as the build below, so an
+      # artifact repository having a bad minute cannot fail a release here either. A
+      # genuine test failure is never retried.
+      # DEPENDENCY-VULNERABILITY SCAN (audit 1.3.0, F-7).
+      #
+      # Audit the successful build's captured lock, not an independently updated
+      # source lock. This remains accurate after an automatic core rollback.
+      #
+      # Capture cargo-audit's finding exit code without Bash -e aborting the
+      # report. Maintenance warnings remain visible; vulnerabilities block release.
+      # Installation, network and malformed-report failures are NOT a clean scan.
+      - name: Audit Rust dependencies (cargo audit)
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          python3 scripts/audit-rust.py --strict \
+            --crate "${RUNNER_TEMP}/aether-audit/built-engine" \
+            --report "${RUNNER_TEMP}/aether-audit/cargo-audit.json"
+
+      - name: Upload Rust audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-dependency-audit
+          path: ${{ runner.temp }}/aether-audit/
+          if-no-files-found: warn
+
+      # Retain the post-native gate as well: core sync may change build
+      # identity/source inputs. Force the Test tasks (not all compile tasks)
+      # to execute again before packaging; never trust an early cached result.
+      - name: Revalidate unit tests against built core
+        env:
+          AETHER_UI_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_REPAIR_ARTIFACTS: ${{ runner.temp }}/aether-validation/screenshots
+          AETHER_TEST_REPORTS: ${{ runner.temp }}/aether-validation/test-reports
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8"
+        run: |
+          set -uo pipefail
+          LOG="${RUNNER_TEMP:-/tmp}/gradle-unit-tests-final.log"
+          for attempt in 1 2 3; do
+            set +e
+            ./gradlew :app:testDebugUnitTest --rerun :app:testReleaseUnitTest --rerun --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            status=${PIPESTATUS[0]}
+            set -e
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if ! grep -qE 'Could not (resolve|GET|get resource|download)|Received status code (403|408|429|50[0-9])|Read timed out|Connection reset|Premature end of Content-Length' "$LOG"; then
+              echo "::error::Unit tests FAILED. Refusing to build a release from code that does not pass its own tests."
+              exit "$status"
+            fi
+            if [ "$attempt" -ge 3 ]; then
+              echo "::error::Dependency download kept failing after 3 attempts."
+              exit "$status"
+            fi
+            echo "::warning::Attempt ${attempt} failed while downloading dependencies - retrying in $((attempt * 30))s."
+            sleep $((attempt * 30))
+          done
+
+
       - name: Build release APKs
         env:
           # Kotlin/Compose compilation needs more heap than the 1 GB Gradle
@@ -312,7 +561,7 @@ jobs:
           LOG="${RUNNER_TEMP:-/tmp}/gradle-release-build.log"
           for attempt in 1 2 3; do
             set +e
-            gradle :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
+            ./gradlew :app:assembleRelease --no-daemon --stacktrace 2>&1 | tee "$LOG"
             status=${PIPESTATUS[0]}
             set -e
             if [ "$status" -eq 0 ]; then
@@ -515,10 +764,22 @@ jobs:
             mapfile -t abis < <(printf '%s\n' "$entries" | sed -n 's#^lib/\([^/]*\)/libaether\.so$#\1#p')
             [ "${#abis[@]}" -gt 0 ] || { echo "ERROR: no libaether.so in $apk"; exit 1; }
             for abi in "${abis[@]}"; do
-              printf '%s\n' "$entries" | grep -qx "lib/${abi}/libhev-socks5-tunnel.so" \
+              # NOT `printf ... | grep -qx`: this step runs under `set -o pipefail`,
+              # and `grep -q` exits the moment it matches. When the APK's entry
+              # list is larger than the 64 KiB pipe buffer (a release APK easily
+              # is) printf is still writing, gets EPIPE, and the pipeline returns
+              # 141 - so the check FAILS while the library it looked for is
+              # present. Measured: 162 KB list, match near the front -> exit 141.
+              # It only ever passed because the match happened to sit late enough
+              # in the listing. A here-string has no pipe and cannot do this.
+              grep -qx -- "lib/${abi}/libhev-socks5-tunnel.so" <<< "$entries" \
                 || { echo "ERROR: $apk lacks hev for $abi"; exit 1; }
-              printf '%s\n' "$entries" | grep -qx "lib/${abi}/libaethertun.so" \
+              grep -qx -- "lib/${abi}/libaethertun.so" <<< "$entries" \
                 || { echo "ERROR: $apk lacks the aethertun JNI bridge for $abi"; exit 1; }
+              grep -qx -- "lib/${abi}/libpsiphon.so" <<< "$entries" \
+                || { echo "ERROR: $apk lacks libpsiphon.so for $abi (Psiphon modes would not work)"; exit 1; }
+              grep -qx -- "lib/${abi}/libxray.so" <<< "$entries" \
+                || { echo "ERROR: $apk lacks libxray.so for $abi (custom configs would not work)"; exit 1; }
               # ---------------------------------------------------------- r5
               # THE GATE THAT WOULD HAVE SAVED THE r4 ROUND.
               # The engine inside the APK must carry THIS revision's build
@@ -534,6 +795,29 @@ jobs:
                 exit 1
               fi
               echo "  $abi engine stamp OK: AETHER-BUILD-STAMP:${PATCH_LEVEL}"
+              # ------------------------------------------------------- 1.5.0
+              # THE GATE THAT WOULD HAVE SAVED THE FIRST 1.5.0 BUILD.
+              # Core 2.3.0 (boring 5.2) links libc++_shared.so; the APK did not
+              # carry it and Android refused to start the engine in all six
+              # modes. Every DT_NEEDED of the shipped engine must be an Android
+              # system library or sit beside it in the same lib/<abi>/ folder.
+              READELF="$(ls "${ANDROID_NDK_HOME:-/nonexistent}"/toolchains/llvm/prebuilt/*/bin/llvm-readelf 2>/dev/null | head -n1 || true)"
+              [ -n "$READELF" ] || READELF="$(command -v readelf || true)"
+              [ -n "$READELF" ] || { echo "ERROR: no readelf to check engine dependencies"; exit 1; }
+              needed="$("$READELF" -d /tmp/libaether-check.so | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')"
+              [ -n "$needed" ] || { echo "ERROR: could not read the engine's dynamic section ($abi)"; exit 1; }
+              while IFS= read -r dep; do
+                [ -n "$dep" ] || continue
+                case "$dep" in
+                  libc.so|libdl.so|liblog.so|libm.so|libandroid.so|libz.so) ;;
+                  *)
+                    grep -qx -- "lib/${abi}/${dep}" <<< "$entries" \
+                      || { echo "ERROR: $apk: libaether.so ($abi) needs $dep, which the APK does not contain."; \
+                           echo "       The engine would die with CANNOT LINK EXECUTABLE in every mode."; exit 1; }
+                    echo "  $abi engine dependency packaged: $dep"
+                    ;;
+                esac
+              done <<< "$needed"
               rm -f /tmp/libaether-check.so
             done
             echo "Verified native cores in $apk (${abis[*]})"
@@ -553,6 +837,7 @@ jobs:
           declare -A MAP=(
             ["arm64-v8a"]="arm64-v8a"
             ["armeabi-v7a"]="armeabi-v7a"
+            ["x86_64"]="x86_64"
             ["universal"]="universal"
           )
           for key in "${!MAP[@]}"; do
@@ -606,3 +891,37 @@ jobs:
           files: artifacts/*.apk
           make_latest: true
           body_path: ${{ env.RELEASE_BODY }}
+
+      # 1.4.0: last step before the post-job hooks. setup-gradle packs the
+      # Gradle home into a zstd archive AFTER this step, and in an earlier 1.4.0 build that archive
+      # is what hit "No space left on device". The APKs are already in
+      # artifacts/ and published, so the Android build intermediates can go.
+      - name: Reclaim disk space before the Gradle cache save
+        if: always()
+        run: |
+          set -u
+          rm -rf app/build/intermediates app/build/tmp app/build/kotlin \
+                 .native/aether/target "${HOME}/.cargo/registry/src" 2>/dev/null || true
+          go clean -cache 2>/dev/null || true
+          df -h / | tail -1
+
+      - name: Package validation evidence
+        if: always()
+        run: |
+          mkdir -p "${RUNNER_TEMP}/aether-validation/logs"
+          for log in gradle-unit-tests.log gradle-unit-tests-final.log gradle-release-build.log; do
+            if [ -f "${RUNNER_TEMP}/$log" ]; then
+              cp "${RUNNER_TEMP}/$log" "${RUNNER_TEMP}/aether-validation/logs/"
+            fi
+          done
+          cd "${RUNNER_TEMP}"
+          zip -rq Validation_Evidence.zip aether-validation
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Validation-Evidence-1.6.0
+          path: ${{ runner.temp }}/Validation_Evidence.zip
+          if-no-files-found: warn
+

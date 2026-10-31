@@ -6,20 +6,18 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.LocalTextStyle
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDirection
-import androidx.compose.ui.unit.LayoutDirection
 
 /**
  * ROOT-CAUSE FIX for the "digits get shuffled while typing" bug in every
@@ -44,8 +42,26 @@ import androidx.compose.ui.unit.LayoutDirection
  *    digits, dots and colons as direction-NEUTRAL, so inside an RTL layout
  *    a value like `162.159.192.1:443` gets visually reordered around the
  *    RTL base direction while typing. ip:port / CIDR / URLs are inherently
- *    LTR, so this field pins BOTH the layout direction and the text
- *    direction to LTR.
+ *    LTR, so this field pins the TEXT direction and the alignment of the
+ *    value to LTR.
+ *
+ *    It does NOT pin the LAYOUT direction any more. Until 1.3.1-r2 the whole
+ *    field was wrapped in `CompositionLocalProvider(LocalLayoutDirection
+ *    provides Ltr)`, and that took the decorations with it: `label`,
+ *    `placeholder` and `supportingText` are Persian PROSE, and inside an LTR
+ *    paragraph the trailing full stop of a Persian sentence is a neutral
+ *    character that resolves to the paragraph direction — so it was rendered
+ *    at the RIGHT-hand end of the text and the whole block sat left-aligned
+ *    among right-aligned neighbours. That was reported on the MTU helper text
+ *    ("هر مقداری بین ۱۲۸۰ و ۹۰۰۰. … کمترش کنید.") and applied to every
+ *    technical field in the app.
+ *
+ *    The value itself is unaffected by that change: what governs the BiDi
+ *    reordering of the field's CONTENT is the paragraph direction of the text,
+ *    which is [TextDirection.Ltr] from the text style below, not the layout
+ *    direction of the box around it. [TextAlign.Left] keeps it visually where
+ *    it has always been — `TextAlign.Start` would flip to the right edge under
+ *    an RTL layout.
  *
  * Additionally, every character is normalized on input: Persian (۰-۹) and
  * Arabic-Indic (٠-٩) digits become ASCII 0-9, Arabic separators become '.'
@@ -66,47 +82,73 @@ fun LtrOutlinedTextField(
     label: @Composable (() -> Unit)? = null,
     placeholder: @Composable (() -> Unit)? = null,
     supportingText: @Composable (() -> Unit)? = null,
+    /**
+     * Added in 1.3.0: a technical field whose value the engine would silently
+     * reinterpret needs to be able to say so. The Tor reachability check is the
+     * first: the engine parses `host:port` and falls back to port 443 on a bad
+     * port, so a typo becomes a DIFFERENT target rather than an error - and that
+     * setting exists precisely to tell a working Tor from a broken one.
+     */
+    isError: Boolean = false,
     keyboardType: KeyboardType = KeyboardType.Ascii,
     // Added in 1.2.3: lets Zero Trust secrets be masked while still getting the
     // LTR/BiDi handling every technical field in this app needs.
     visualTransformation: VisualTransformation = VisualTransformation.None,
+    /**
+     * Bump this to push [value] into the field even while it has focus.
+     *
+     * The focus rule below is right for async echoes, but it also swallowed
+     * deliberate replacements made by the screen itself: "Paste from clipboard"
+     * in the config import dialog set the text while the field was focused (it
+     * is focused as soon as the dialog opens), so the pasted link never appeared
+     * and the import had nothing visible to work with. A caller that replaces
+     * the value on purpose increments this counter; nothing else can.
+     */
+    replaceKey: Int = 0,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isFocused by interactionSource.collectIsFocusedAsState()
 
     // Local, synchronous source of truth while the user is typing.
     var fieldValue by remember { mutableStateOf(TextFieldValue(normalizeTechnicalText(value))) }
+    var appliedReplaceKey by remember { mutableIntStateOf(replaceKey) }
 
-    // Accept external value changes (initial profile load, reset-to-defaults)
-    // ONLY while the field is not focused. While focused, keystrokes rule —
-    // a stale async echo of an older value can never overwrite them.
-    if (!isFocused && fieldValue.text != value) {
+    if (replaceKey != appliedReplaceKey) {
+        // An explicit replacement by the caller: applied whatever the focus.
+        appliedReplaceKey = replaceKey
+        val replaced = normalizeTechnicalText(value)
+        fieldValue = TextFieldValue(replaced, TextRange(replaced.length))
+    } else if (!isFocused && fieldValue.text != value) {
+        // Accept external value changes (initial profile load, reset-to-defaults)
+        // ONLY while the field is not focused. While focused, keystrokes rule -
+        // a stale async echo of an older value can never overwrite them.
         fieldValue = TextFieldValue(value, TextRange(value.length))
     }
 
-    CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-        OutlinedTextField(
-            value = fieldValue,
-            onValueChange = { raw ->
-                val normalized = normalizeTechnicalValue(raw)
-                fieldValue = normalized
-                if (normalized.text != value) onValueChange(normalized.text)
-            },
-            modifier = modifier,
-            enabled = enabled,
-            singleLine = singleLine,
-            label = label,
-            placeholder = placeholder,
-            supportingText = supportingText,
-            interactionSource = interactionSource,
-            visualTransformation = visualTransformation,
-            keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-            textStyle = LocalTextStyle.current.copy(
-                textDirection = TextDirection.Ltr,
-                textAlign = TextAlign.Start,
-            ),
-        )
-    }
+    OutlinedTextField(
+        value = fieldValue,
+        onValueChange = { raw ->
+            val normalized = normalizeTechnicalValue(raw)
+            fieldValue = normalized
+            if (normalized.text != value) onValueChange(normalized.text)
+        },
+        modifier = modifier,
+        enabled = enabled,
+        singleLine = singleLine,
+        label = label,
+        placeholder = placeholder,
+        supportingText = supportingText,
+        isError = isError,
+        interactionSource = interactionSource,
+        visualTransformation = visualTransformation,
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        textStyle = LocalTextStyle.current.copy(
+            textDirection = TextDirection.Ltr,
+            // Left, not Start: the box now follows the app's layout direction, so
+            // Start would put an ip:port at the right edge in Persian.
+            textAlign = TextAlign.Left,
+        ),
+    )
 }
 
 /** Maps localized digits/separators to their ASCII equivalents. */

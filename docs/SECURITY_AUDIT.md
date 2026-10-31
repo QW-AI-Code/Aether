@@ -1,3 +1,5 @@
+> **Latest audit: [SECURITY_AUDIT_1.5.0.md](SECURITY_AUDIT_1.5.0.md) — 92 / 100 (English + فارسی).** This file is the original 1.2.1 audit, kept for history.
+
 # گزارش ممیزی امنیتی — AetherMobile v1.2.1
 
 ممیزی کامل سورس‌کد (Kotlin/Compose + پیکربندی Gradle/Manifest + اسکریپت‌های CI) انجام شد.

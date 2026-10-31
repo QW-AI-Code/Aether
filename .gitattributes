@@ -1,0 +1,4 @@
+# SOURCE_MANIFEST.sha256 checks the exact shipped bytes, including CRLF in
+# gradlew.bat. Do not let core.autocrlf/text=auto rewrite files on add/checkout.
+# This disables text normalization, NOT diffs, tests, or hash verification.
+* -text

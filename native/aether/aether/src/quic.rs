@@ -14,25 +14,34 @@ use crate::noize::{self, NoizeConfig};
 use crate::tls::{self, TlsParams};
 use crate::{consts, error::AetherError, error::Result};
 
-const MAX_DATAGRAM_SIZE: usize = 1350;
+pub const MAX_DATAGRAM_SIZE: usize = 1350;
+pub const MIN_DATAGRAM_SIZE: usize = 1200;
 
 fn net_queue() -> usize {
     crate::sysprofile::channel_capacity()
 }
 
 async fn bind_udp_fast(bind_addr: SocketAddr) -> Result<UdpSocket> {
-    use socket2::{Socket, Domain, Type};
-    let domain = if bind_addr.is_ipv4() { Domain::IPV4 } else { Domain::IPV6 };
+    use socket2::{Domain, Socket, Type};
+    let domain = if bind_addr.is_ipv4() {
+        Domain::IPV4
+    } else {
+        Domain::IPV6
+    };
     let sock = Socket::new(domain, Type::DGRAM, None).map_err(AetherError::Io)?;
     sock.set_nonblocking(true).map_err(AetherError::Io)?;
-    
+
     // >>> AETHER-APP-PATCH udp-socket-buffer-asymmetry
     // 1.2.8-r6: rcv and snd are separate budgets. See upstream::tune_udp_buffers
     // for why one figure for both was the root cause of the live-stream stall.
     let _ = sock.set_recv_buffer_size(crate::sysprofile::udp_socket_rcv_buf_bytes());
     let _ = sock.set_send_buffer_size(crate::sysprofile::udp_socket_snd_buf_bytes());
     // <<< AETHER-APP-PATCH udp-socket-buffer-asymmetry
-    
+    // AETHER-CORE-PORT 2.0.0: the QUIC/MASQUE socket carries the firewall mark
+    // too, so a Linux router can route the engine's own traffic without it
+    // looping back through the tunnel.
+    crate::egress::apply(socket2::SockRef::from(&sock)).map_err(AetherError::Io)?;
+
     sock.bind(&bind_addr.into()).map_err(AetherError::Io)?;
     UdpSocket::from_std(sock.into()).map_err(AetherError::Io)
 }
@@ -61,6 +70,15 @@ pub struct TunnelConfig {
     pub noize: NoizeConfig,
     pub local_ipv4: Ipv4Addr,
     pub quiet: bool,
+    pub max_datagram: usize,
+    pub version_bait: bool,
+}
+
+impl TunnelConfig {
+    pub fn datagram_budget(&self) -> usize {
+        self.max_datagram
+            .clamp(MIN_DATAGRAM_SIZE, MAX_DATAGRAM_SIZE)
+    }
 }
 
 fn validation_timeout() -> Duration {
@@ -68,6 +86,7 @@ fn validation_timeout() -> Duration {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&v| v > 0)
+        .map(|v| v.min(86_400))
         .unwrap_or(10);
     Duration::from_secs(secs)
 }
@@ -137,9 +156,110 @@ fn random_scid() -> [u8; 16] {
     scid
 }
 
+/// A QUIC connection to `peer`, named `sni` in its ClientHello, ready for its first packet: on it
+/// what the fingerprint sets on each connection (see `tls::prepare_quic`), and the ECH key `ech`
+/// when there is one. A key that cannot be set fails the connection.
+fn connect(
+    sni: &str,
+    local: SocketAddr,
+    peer: SocketAddr,
+    config: &mut quiche::Config,
+    ech: Option<&[u8]>,
+) -> Result<quiche::Connection> {
+    let scid_bytes = random_scid();
+    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
+    let mut conn = quiche::connect(Some(sni), &scid, local, peer, config)?;
+    tls::prepare_quic(&mut conn)?;
+    if let Some(ech) = ech {
+        tls::inject_ech(&mut conn, ech)?;
+    }
+    Ok(conn)
+}
+
+const QUIC_V2_VERSION: u32 = 0x6b33_43cf;
+const QUIC_V2_BAIT_WAIT: Duration = Duration::from_millis(600);
+const QUIC_V2_BAIT_LEN: usize = 1200;
+
+pub(crate) fn quic_v2_bait_enabled() -> bool {
+    !matches!(
+        std::env::var("AETHER_QUIC_V2").as_deref(),
+        Ok("0") | Ok("off") | Ok("false") | Ok("no")
+    )
+}
+
+fn quic_varint2(value: u64) -> [u8; 2] {
+    (((value & 0x3fff) as u16) | 0x4000).to_be_bytes()
+}
+
+fn build_version_bait() -> Vec<u8> {
+    let mut rng = rand::rng();
+    let mut dcid = [0u8; 8];
+    let mut scid = [0u8; 8];
+    rng.fill_bytes(&mut dcid);
+    rng.fill_bytes(&mut scid);
+
+    let mut pkt = Vec::with_capacity(QUIC_V2_BAIT_LEN);
+    pkt.push(0xc3);
+    pkt.extend_from_slice(&QUIC_V2_VERSION.to_be_bytes());
+    pkt.push(dcid.len() as u8);
+    pkt.extend_from_slice(&dcid);
+    pkt.push(scid.len() as u8);
+    pkt.extend_from_slice(&scid);
+    pkt.push(0x00);
+
+    let remaining = QUIC_V2_BAIT_LEN - pkt.len() - 2;
+    pkt.extend_from_slice(&quic_varint2(remaining as u64));
+    let mut pn = [0u8; 4];
+    rng.fill_bytes(&mut pn);
+    pkt.extend_from_slice(&pn);
+    pkt.resize(QUIC_V2_BAIT_LEN, 0);
+    pkt
+}
+
+async fn send_version_bait(sock: &UdpSocket, target: SocketAddr, wait: Duration, tries: usize) {
+    let bait = build_version_bait();
+    let connected = sock.peer_addr().is_ok();
+    let mut buf = [0u8; 2048];
+
+    for attempt in 0..tries.max(1) {
+        let sent = if connected {
+            sock.send(&bait).await
+        } else {
+            sock.send_to(&bait, target).await
+        };
+        if sent.is_err() {
+            return;
+        }
+
+        let answered = tokio::time::timeout(wait, async {
+            if connected {
+                sock.recv(&mut buf).await
+            } else {
+                sock.recv_from(&mut buf).await.map(|(n, _)| n)
+            }
+        })
+        .await;
+
+        match answered {
+            Ok(Ok(n)) => {
+                log::debug!(
+                    "[quic] version-negotiation bait answered with {n} bytes; the path is open for v1"
+                );
+                return;
+            }
+            Ok(Err(_)) => return,
+            Err(_) => log::trace!(
+                "[quic] version-negotiation bait attempt {} went unanswered",
+                attempt + 1
+            ),
+        }
+    }
+}
+
 #[derive(Default)]
 struct ReaderGuard {
     handles: Vec<tokio::task::JoinHandle<()>>,
+    detours: Vec<crate::upstream::DetourGuard>,
 }
 
 impl ReaderGuard {
@@ -156,7 +276,11 @@ impl Drop for ReaderGuard {
     }
 }
 
-fn spawn_reader(sock: Arc<UdpSocket>, local: SocketAddr, tx: mpsc::Sender<NetPacket>) -> tokio::task::JoinHandle<()> {
+fn spawn_reader(
+    sock: Arc<UdpSocket>,
+    local: SocketAddr,
+    tx: mpsc::Sender<NetPacket>,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut buf = vec![0u8; 65535];
         loop {
@@ -167,7 +291,7 @@ fn spawn_reader(sock: Arc<UdpSocket>, local: SocketAddr, tx: mpsc::Sender<NetPac
                     if tx.send((local, from, buf[..n].to_vec())).await.is_err() {
                         break;
                     }
-                },
+                }
                 Err(e) => {
                     log::debug!("recv error: {e}");
                     break;
@@ -193,9 +317,14 @@ pub async fn run(
     let mut validate_successes: u32 = 0;
 
     let init_sock = bind_udp_fast(bind_addr_for(&peer)).await?;
-    crate::upstream::attach_detour(&init_sock, peer).await?;
+    let _init_detour = crate::upstream::attach_detour(&init_sock, peer).await?;
     let local = init_sock.local_addr()?;
     let init_sock = Arc::new(init_sock);
+
+    if cfg.version_bait && quic_v2_bait_enabled() {
+        let target = crate::upstream::relay_target(local, peer);
+        send_version_bait(&init_sock, target, QUIC_V2_BAIT_WAIT, 2).await;
+    }
 
     let (net_tx, mut net_rx) = mpsc::channel::<NetPacket>(net_queue());
 
@@ -211,15 +340,14 @@ pub async fn run(
         expected_pins: consts::MASQUE_PINS,
     })?;
 
+    let datagram = cfg.datagram_budget();
+    config.set_max_send_udp_payload_size(datagram);
+    config.set_max_recv_udp_payload_size(datagram);
+
     let mut current_ech = cfg.ech_config_list.clone();
 
-    let scid_bytes = random_scid();
-    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-
-    let mut conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
-
+    let mut conn = connect(&cfg.sni, local, peer, &mut config, current_ech.as_deref())?;
     if let Some(ref ech) = current_ech {
-        tls::inject_ech(&mut conn, ech)?;
         log::info!("ech config injected ({} bytes)", ech.len());
     }
 
@@ -234,7 +362,7 @@ pub async fn run(
         noize::pre_handshake(sock.as_ref(), peer, &cfg.noize).await;
     }
 
-    flush(&mut conn, &sockets).await?;
+    flush(&mut conn, &sockets, datagram).await?;
 
     let mut out_buf = vec![0u8; 65535];
     let mut keepalive_interval = tokio::time::interval(Duration::from_secs(20));
@@ -265,7 +393,7 @@ pub async fn run(
 
         tokio::select! {
             biased;
-            
+
             _ = keepalive_interval.tick() => {
                 if conn.is_established() {
                     if let Err(e) = conn.send_ack_eliciting() {
@@ -343,11 +471,18 @@ pub async fn run(
         }
 
         if conn.is_established() && h3_conn.is_none() {
+            // Nothing goes over a handshake that went without the key it was given.
+            if current_ech.is_some() && !tls::ech_accepted(&mut conn) {
+                return Err(AetherError::Ech("the handshake went without ECH".into()));
+            }
             established_ever = true;
-            log_or_debug(quiet, format!(
-                "quic handshake established; alpn={}",
-                String::from_utf8_lossy(conn.application_proto())
-            ));
+            log_or_debug(
+                quiet,
+                format!(
+                    "quic handshake established; alpn={}",
+                    String::from_utf8_lossy(conn.application_proto())
+                ),
+            );
             let mut h3c = h3::Connection::with_transport(&mut conn, &h3_config)?;
             let headers = masque::connect_ip_request(&cfg.authority, &cfg.path);
             let sid = h3c.send_request(&mut conn, &headers, false)?;
@@ -357,7 +492,10 @@ pub async fn run(
 
             if data_check {
                 validate_deadline = Some(Instant::now() + validation_timeout());
-                log_or_debug(quiet, "[*] validating masque data-plane before exposing socks5".to_string());
+                log_or_debug(
+                    quiet,
+                    "[*] validating masque data-plane before exposing socks5".to_string(),
+                );
             } else if !ready_fired {
                 ready_fired = true;
                 if let Some(tx) = ready_tx.take() {
@@ -370,14 +508,14 @@ pub async fn run(
             poll_h3(&mut conn, h3c, sid, &mut capsules, &addr_tx, quiet)?;
         }
 
-        let got_data =
-            drain_datagrams(&mut conn, req_stream, &internals.inbound_tx, &mut out_buf);
+        let got_data = drain_datagrams(&mut conn, req_stream, &internals.inbound_tx, &mut out_buf);
 
         if got_data && !ready_fired {
             validate_successes += 1;
             log::debug!(
                 "[*] masque data-plane round-trip {}/{} confirmed",
-                validate_successes, DATA_PROBE_REQUIRED_SUCCESSES
+                validate_successes,
+                DATA_PROBE_REQUIRED_SUCCESSES
             );
             if validate_successes >= DATA_PROBE_REQUIRED_SUCCESSES {
                 ready_fired = true;
@@ -385,53 +523,67 @@ pub async fn run(
                 if let Some(tx) = ready_tx.take() {
                     let _ = tx.send(());
                 }
-                log_or_debug(quiet, "[+] masque tunnel validated (end-to-end data confirmed); exposing socks5".to_string());
+                log_or_debug(
+                    quiet,
+                    "[+] masque tunnel validated (end-to-end data confirmed); exposing socks5"
+                        .to_string(),
+                );
             }
         }
 
-        flush(&mut conn, &sockets).await?;
+        flush(&mut conn, &sockets, datagram).await?;
+
+        // A handshake turned down for its ECH key is made again at once: the alert that
+        // says so is final as soon as it is sent, and the connection need not drain first.
+        if (conn.is_draining() || conn.is_closed())
+            && !established_ever
+            && !ech_retried
+            && current_ech.is_some()
+            && tls::ech_rejected(&conn)
+        {
+            if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
+                log::warn!(
+                    "ech_required: retrying handshake with server retry_configs ({} bytes)",
+                    retry.len()
+                );
+                // Later handshakes of the session offer it as well, on either carrier.
+                tls::adopt_ech_retry(&retry);
+                ech_retried = true;
+                current_ech = Some(retry);
+
+                conn = connect(&cfg.sni, local, peer, &mut config, current_ech.as_deref())?;
+
+                h3_conn = None;
+                req_stream = None;
+                capsules = CapsuleParser::new();
+                flush(&mut conn, &sockets, datagram).await?;
+                continue;
+            }
+        }
 
         if conn.is_closed() {
-            if !established_ever && !ech_retried && current_ech.is_some() {
-                if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
-                    log::warn!(
-                        "ech_required: retrying handshake with server retry_configs ({} bytes)",
-                        retry.len()
-                    );
-                    ech_retried = true;
-                    current_ech = Some(retry);
-
-                    let scid_bytes = random_scid();
-                    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-                    conn = quiche::connect(Some(&cfg.sni), &scid, local, peer, &mut config)?;
-                    if let Some(ref ech) = current_ech {
-                        tls::inject_ech(&mut conn, ech)?;
-                    }
-
-                    h3_conn = None;
-                    req_stream = None;
-                    capsules = CapsuleParser::new();
-                    flush(&mut conn, &sockets).await?;
-                    continue;
-                }
-            }
-
             log_or_debug(quiet, format!("connection closed: {:?}", conn.stats()));
             if let Some(e) = conn.peer_error() {
-                log_or_debug(quiet, format!(
-                    "peer closed: code=0x{:x} app={} reason={}",
-                    e.error_code,
-                    e.is_app,
-                    String::from_utf8_lossy(&e.reason)
-                ));
+                log_or_debug(
+                    quiet,
+                    format!(
+                        "peer closed: code=0x{:x} app={} reason={}",
+                        e.error_code,
+                        e.is_app,
+                        String::from_utf8_lossy(&e.reason)
+                    ),
+                );
             }
             if let Some(e) = conn.local_error() {
-                log_or_debug(quiet, format!(
-                    "local closed: code=0x{:x} app={} reason={}",
-                    e.error_code,
-                    e.is_app,
-                    String::from_utf8_lossy(&e.reason)
-                ));
+                log_or_debug(
+                    quiet,
+                    format!(
+                        "local closed: code=0x{:x} app={} reason={}",
+                        e.error_code,
+                        e.is_app,
+                        String::from_utf8_lossy(&e.reason)
+                    ),
+                );
             }
             return Ok(());
         }
@@ -465,10 +617,16 @@ fn poll_h3(
 
     loop {
         match h3c.poll(conn) {
-            Ok((_stream_id, h3::Event::Headers { list, .. })) => {
+            Ok((stream_id, h3::Event::Headers { list, .. })) => {
                 for h in &list {
                     if h.name() == b":status" {
-                        log_or_debug(quiet, format!("connect-ip status: {}", String::from_utf8_lossy(h.value())));
+                        let status = String::from_utf8_lossy(h.value()).to_string();
+                        log_or_debug(quiet, format!("connect-ip status: {status}"));
+                        if stream_id == req_stream && !status.starts_with('2') {
+                            return Err(AetherError::Masque(format!(
+                                "the edge refused connect-ip with status {status}"
+                            )));
+                        }
                     }
                 }
             }
@@ -486,8 +644,16 @@ fn poll_h3(
                 drain_capsules(capsules, addr_tx);
             }
 
-            Ok((_stream_id, h3::Event::Finished)) => {}
-            Ok((_stream_id, h3::Event::Reset(_))) => {}
+            Ok((stream_id, h3::Event::Finished)) if stream_id == req_stream => {
+                return Err(AetherError::Masque(
+                    "the edge closed the connect-ip stream".into(),
+                ));
+            }
+            Ok((stream_id, h3::Event::Reset(code))) if stream_id == req_stream => {
+                return Err(AetherError::Masque(format!(
+                    "the edge reset the connect-ip stream (code 0x{code:x})"
+                )));
+            }
             Ok(_) => {}
 
             Err(h3::Error::Done) => break,
@@ -529,9 +695,7 @@ fn drain_capsules(capsules: &mut CapsuleParser, addr_tx: &Option<mpsc::Sender<As
 
 fn bytes_to_ip(version: u8, bytes: &[u8]) -> Option<IpAddr> {
     match version {
-        4 if bytes.len() == 4 => {
-            Some(IpAddr::V4([bytes[0], bytes[1], bytes[2], bytes[3]].into()))
-        }
+        4 if bytes.len() == 4 => Some(IpAddr::V4([bytes[0], bytes[1], bytes[2], bytes[3]].into())),
         6 if bytes.len() == 16 => {
             let mut b = [0u8; 16];
             b.copy_from_slice(bytes);
@@ -582,8 +746,9 @@ fn drain_datagrams(
 async fn flush(
     conn: &mut quiche::Connection,
     sockets: &HashMap<SocketAddr, Arc<UdpSocket>>,
+    datagram: usize,
 ) -> Result<()> {
-    let mut out = vec![0u8; MAX_DATAGRAM_SIZE];
+    let mut out = vec![0u8; datagram];
 
     loop {
         match conn.send(&mut out) {
@@ -616,7 +781,9 @@ async fn do_migrate(
     }
 
     let new_sock = bind_udp_fast(bind_addr_for(&peer)).await?;
-    crate::upstream::attach_detour(&new_sock, peer).await?;
+    readers
+        .detours
+        .push(crate::upstream::attach_detour(&new_sock, peer).await?);
     let new_local = new_sock.local_addr()?;
     let new_sock = Arc::new(new_sock);
 
@@ -638,8 +805,34 @@ pub fn default_path() -> &'static str {
     "/"
 }
 
+/// The server name the MASQUE handshakes send without --masque-sni.
 pub fn default_sni() -> &'static str {
-    consts::CONNECT_SNI
+    consts::DEFAULT_MASQUE_SNI
+}
+
+/// The server name the MASQUE handshakes put in their ClientHello, over HTTP/3 and HTTP/2:
+/// that of --masque-sni (AETHER_MASQUE_SNI), see `masque_sni_of`. Only the TLS name changes;
+/// the HTTP host, the :authority of the CONNECT request, stays `default_authority`.
+pub fn masque_sni() -> Result<String> {
+    masque_sni_of(&std::env::var("AETHER_MASQUE_SNI").unwrap_or_default())
+}
+
+/// The server name `value`, given to --masque-sni, makes the MASQUE handshakes send: none
+/// given, `default_sni`; else that domain name, without a trailing dot, as SNI has it
+/// (RFC 6066). An address or anything else that is no domain name is refused, rather than
+/// have the handshakes send the default name in its place.
+pub fn masque_sni_of(value: &str) -> Result<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(default_sni().to_string());
+    }
+    let name = value.strip_suffix('.').unwrap_or(value);
+    if name.ends_with('.') || name.parse::<IpAddr>().is_ok() || !crate::dns::valid_domain(name) {
+        return Err(AetherError::Tls(format!(
+            "--masque-sni: {value} is no domain name"
+        )));
+    }
+    Ok(name.to_string())
 }
 
 #[derive(Clone)]
@@ -657,11 +850,16 @@ pub struct VerifyParams {
 }
 
 pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
-    let bind: SocketAddr = if p.peer.is_ipv4() { "0.0.0.0:0".parse().unwrap() } else { "[::]:0".parse().unwrap() };
+    let bind: SocketAddr = if p.peer.is_ipv4() {
+        "0.0.0.0:0".parse().unwrap()
+    } else {
+        "[::]:0".parse().unwrap()
+    };
     let sock = bind_udp_fast(bind).await?;
-    crate::upstream::attach_detour(&sock, p.peer).await?;
+    let _detour = crate::upstream::attach_detour(&sock, p.peer).await?;
     let local = sock.local_addr()?;
-    sock.connect(crate::upstream::relay_target(local, p.peer)).await?;
+    sock.connect(crate::upstream::relay_target(local, p.peer))
+        .await?;
 
     let mut config = tls::build_config(&TlsParams {
         cert_pem: &p.cert_pem,
@@ -670,13 +868,15 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
         expected_pins: consts::MASQUE_PINS,
     })?;
 
-    let scid_bytes = random_scid();
-    let scid = quiche::ConnectionId::from_ref(&scid_bytes);
-    let mut conn = quiche::connect(Some(&p.sni), &scid, local, p.peer, &mut config)?;
-
-    if let Some(ref ech) = p.ech_config_list {
-        let _ = tls::inject_ech(&mut conn, ech);
-    }
+    // A key that cannot be set fails the check: left aside, the name would go in the clear.
+    let mut conn = connect(
+        &p.sni,
+        local,
+        p.peer,
+        &mut config,
+        p.ech_config_list.as_deref(),
+    )?;
+    let mut ech_retried = false;
 
     let h3_config = h3::Config::new()?;
     let mut h3_conn: Option<h3::Connection> = None;
@@ -691,6 +891,10 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
 
     let start = Instant::now();
     let deadline = start + p.timeout;
+
+    if quic_v2_bait_enabled() {
+        send_version_bait(&sock, p.peer, Duration::from_millis(500), 1).await;
+    }
 
     noize::pre_handshake(&sock, p.peer, &p.noize).await;
 
@@ -735,6 +939,10 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
         }
 
         if conn.is_established() && h3_conn.is_none() {
+            // As in the tunnel: nothing goes over a handshake that went without its key.
+            if p.ech_config_list.is_some() && !tls::ech_accepted(&mut conn) {
+                return Err(AetherError::Ech("the handshake went without ECH".into()));
+            }
             let mut h3c = h3::Connection::with_transport(&mut conn, &h3_config)?;
             let headers = masque::connect_ip_request(&p.authority, &p.path);
             let sid = h3c.send_request(&mut conn, &headers, false)?;
@@ -811,8 +1019,29 @@ pub async fn verify_masque(p: &VerifyParams) -> Result<Duration> {
 
         flush_connected(&mut conn, &sock).await?;
 
+        // As the tunnel does: once more, at once, with the ECHConfigList the server handed
+        // back as it turned the session's down, which later handshakes offer as well.
+        if (conn.is_draining() || conn.is_closed()) && !ech_retried && tls::ech_rejected(&conn) {
+            if let Some(retry) = tls::extract_ech_retry_configs(&mut conn) {
+                log::debug!(
+                    "ech_required: verifying {} again with the server's retry_configs ({} bytes)",
+                    p.peer,
+                    retry.len()
+                );
+                tls::adopt_ech_retry(&retry);
+                ech_retried = true;
+                conn = connect(&p.sni, local, p.peer, &mut config, Some(retry.as_slice()))?;
+                h3_conn = None;
+                req_stream = None;
+                flush_connected(&mut conn, &sock).await?;
+                continue;
+            }
+        }
+
         if conn.is_closed() {
-            return Err(AetherError::Other("closed before data-plane confirmation".into()));
+            return Err(AetherError::Other(
+                "closed before data-plane confirmation".into(),
+            ));
         }
     }
 }
@@ -833,4 +1062,141 @@ async fn flush_connected(conn: &mut quiche::Connection, sock: &UdpSocket) -> Res
         }
     }
     Ok(())
+}
+
+/// Whether a QUIC v1 Initial, the packet that carries a ClientHello, reaches `peer` within
+/// `wait`. The version bait (QUIC v2) and the junk of the obfuscation are no Initial.
+#[cfg(test)]
+pub(crate) async fn hears_a_client_hello(peer: &UdpSocket, wait: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + wait;
+    let mut packet = [0u8; 2048];
+    while let Ok(Ok((read, _))) =
+        tokio::time::timeout_at(deadline, peer.recv_from(&mut packet)).await
+    {
+        // A long header of the Initial type, and version 1.
+        if read > 5 && packet[0] & 0xf0 == 0xc0 && packet[1..5] == [0, 0, 0, 1] {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod v2_bait_tests {
+    use super::*;
+
+    #[test]
+    fn the_bait_is_a_v2_versioned_long_header_of_the_minimum_size() {
+        let pkt = build_version_bait();
+        assert_eq!(pkt.len(), QUIC_V2_BAIT_LEN);
+        assert_eq!(pkt[0] & 0x80, 0x80, "long header form bit must be set");
+        assert_eq!(pkt[0] & 0x40, 0x40, "fixed bit must be set");
+        assert_eq!(
+            u32::from_be_bytes([pkt[1], pkt[2], pkt[3], pkt[4]]),
+            QUIC_V2_VERSION,
+            "the version field must be QUIC v2 so the filter treats the flow as v2"
+        );
+        assert_eq!(pkt[5], 8, "destination connection id length");
+        assert_eq!(pkt[14], 8, "source connection id length");
+    }
+
+    #[test]
+    fn two_baits_do_not_share_connection_ids() {
+        let a = build_version_bait();
+        let b = build_version_bait();
+        assert_ne!(a[6..14], b[6..14], "each bait must use a fresh dcid");
+    }
+
+    #[test]
+    fn the_bait_is_on_unless_it_is_turned_off() {
+        std::env::remove_var("AETHER_QUIC_V2");
+        assert!(quic_v2_bait_enabled());
+        std::env::set_var("AETHER_QUIC_V2", "0");
+        assert!(!quic_v2_bait_enabled());
+        std::env::set_var("AETHER_QUIC_V2", "off");
+        assert!(!quic_v2_bait_enabled());
+        std::env::set_var("AETHER_QUIC_V2", "1");
+        assert!(quic_v2_bait_enabled());
+        std::env::remove_var("AETHER_QUIC_V2");
+    }
+
+    #[tokio::test]
+    async fn the_bait_triggers_a_version_negotiation_from_a_v1_only_server() {
+        let server = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let server_addr = server.local_addr().unwrap();
+
+        let responder = tokio::spawn(async move {
+            let mut buf = [0u8; 2048];
+            let (n, from) = server.recv_from(&mut buf).await.unwrap();
+            assert_eq!(n, QUIC_V2_BAIT_LEN);
+            let dcid = buf[6..14].to_vec();
+            let scid = buf[15..23].to_vec();
+            let mut vn = vec![0xc0, 0x00, 0x00, 0x00, 0x00];
+            vn.push(scid.len() as u8);
+            vn.extend_from_slice(&scid);
+            vn.push(dcid.len() as u8);
+            vn.extend_from_slice(&dcid);
+            vn.extend_from_slice(&1u32.to_be_bytes());
+            server.send_to(&vn, from).await.unwrap();
+        });
+
+        let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        client.connect(server_addr).await.unwrap();
+        send_version_bait(&client, server_addr, Duration::from_secs(2), 1).await;
+        responder.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod masque_sni_tests {
+    use super::*;
+
+    #[test]
+    fn the_masque_sni_is_a_domain_name_or_the_default() {
+        for (given, sent) in [
+            // None given: www.cloudflare.com.
+            ("", "www.cloudflare.com"),
+            ("  ", "www.cloudflare.com"),
+            // The name the WARP client sends.
+            (consts::CONNECT_SNI, consts::CONNECT_SNI),
+            (" front.example.test ", "front.example.test"),
+            // SNI has no trailing dot (RFC 6066).
+            ("front.example.test.", "front.example.test"),
+            ("localhost", "localhost"),
+        ] {
+            assert_eq!(
+                masque_sni_of(given).ok().as_deref(),
+                Some(sent),
+                "{given:?}"
+            );
+        }
+        for refused in [
+            "1.1.1.1",
+            "1.1.1.1.",
+            "2606:4700:4700::1111",
+            "[2606:4700:4700::1111]",
+            "www..cloudflare.com",
+            "www.cloudflare.com..",
+            ".",
+            "www cloudflare com",
+            "www.cloudflare.com:443",
+            "https://www.cloudflare.com",
+        ] {
+            let error = masque_sni_of(refused).expect_err(refused);
+            assert_eq!(
+                error.to_string(),
+                format!("tls: --masque-sni: {refused} is no domain name")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_masque_sni_is_that_of_its_variable() {
+        let _options = tls::hold_options().await;
+        assert_eq!(masque_sni().ok().as_deref(), Some("www.cloudflare.com"));
+        std::env::set_var("AETHER_MASQUE_SNI", consts::CONNECT_SNI);
+        assert_eq!(masque_sni().ok().as_deref(), Some(consts::CONNECT_SNI));
+        std::env::set_var("AETHER_MASQUE_SNI", "1.1.1.1");
+        assert!(masque_sni().is_err());
+    }
 }

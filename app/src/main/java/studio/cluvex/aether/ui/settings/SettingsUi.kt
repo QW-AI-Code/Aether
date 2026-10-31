@@ -1,11 +1,15 @@
 package studio.cluvex.aether.ui.settings
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,6 +27,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -46,16 +52,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.R
 import studio.cluvex.aether.ui.ai.AiTopicIcon
 import studio.cluvex.aether.ui.theme.Navy700
 import studio.cluvex.aether.ui.theme.Navy750
@@ -108,6 +121,14 @@ private val PagePadding = 16.dp
 private val GroupRadius = 22.dp
 
 /**
+ * Corner radius of one option card inside a choice sheet.
+ *
+ * Smaller than [GroupRadius]: these cards are one row tall, and a 22dp radius on
+ * a 54dp box reads as a pill rather than as a card.
+ */
+private val SheetItemRadius = 16.dp
+
+/**
  * A settings page: large collapsing title, back arrow, and a lazily composed body.
  *
  * @param content the page body, as [LazyColumn] items. Use [settingsSection] and
@@ -144,7 +165,7 @@ fun SettingsScaffold(
                             // AutoMirrored: the arrow has to point the other way
                             // in Persian, and a hand-picked ArrowBack does not.
                             imageVector = Icons.AutoMirrored.Rounded.ArrowBack,
-                            contentDescription = null,
+                            contentDescription = stringResource(R.string.a11y_back),
                         )
                     }
                 },
@@ -320,14 +341,52 @@ private fun BaseRow(
      * so the row metrics with hints off are byte-identical to 1.2.8's.
      */
     aiTopic: AiTopic? = null,
+    stateRole: Role? = null,
+    stateValue: Boolean = false,
     trailing: @Composable () -> Unit = {},
 ) {
     val alpha = if (enabled) 1f else 0.45f
-    Row(
+    val summaryText = summary?.takeIf { it.isNotBlank() }
+    val summaryStyle = MaterialTheme.typography.bodySmall
+    val textMeasurer = rememberTextMeasurer()
+
+    // ---- r4: the summary goes UNDER the row when the row has no room for it --
+    //
+    // The report (Connection → Exit country): the description sat in the narrow
+    // column left between the title's start and a wide trailing slot - AI mark +
+    // "🌐 Automatic" + chevron - so a two-sentence explanation was broken into
+    // seven ragged lines of three words each, and the row grew to three times
+    // its height. Persian makes it worse (longer words, same width).
+    //
+    // The row is now laid out by hand. It measures the trailing slot first, then
+    // asks the text measurer how many lines the summary would take in the space
+    // that is left. When that is three lines or more AND giving it the full width
+    // would actually shorten it, the summary is placed below the header line,
+    // aligned with the title and running to the row's end edge (under the value
+    // and chevron). Otherwise the row keeps the classic two-line layout exactly
+    // as before, so short summaries next to a switch do not move at all.
+    //
+    // Everything is placed with placeRelative, so the layout mirrors itself in
+    // Persian: icon on the right, value and chevron on the left.
+    Layout(
         modifier = Modifier
             .fillMaxWidth()
             .then(
-                if (onClick != null && enabled) {
+                if (stateRole == Role.RadioButton && onClick != null) {
+                    Modifier.selectable(
+                        selected = stateValue,
+                        enabled = enabled,
+                        role = stateRole,
+                        onClick = onClick,
+                    )
+                } else if (stateRole != null && onClick != null) {
+                    Modifier.toggleable(
+                        value = stateValue,
+                        enabled = enabled,
+                        role = stateRole,
+                        onValueChange = { onClick() },
+                    )
+                } else if (onClick != null && enabled) {
                     Modifier.clickable(onClick = onClick)
                 } else {
                     Modifier
@@ -335,33 +394,96 @@ private fun BaseRow(
             )
             .heightIn(min = 60.dp)
             .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) {
-            RowIcon(icon = icon, enabled = enabled, tint = iconTint)
-            Spacer(Modifier.width(12.dp))
-        }
-        Column(modifier = Modifier.weight(1f)) {
+        content = {
+            // 0: leading icon (an empty Box keeps the slot indices fixed)
+            Box {
+                if (icon != null) RowIcon(icon = icon, enabled = enabled, tint = iconTint)
+            }
+            // 1: title
             Text(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge,
                 color = (titleColor ?: OnDark).copy(alpha = alpha),
             )
-            if (!summary.isNullOrBlank()) {
+            // 2: trailing slot - AI mark, then the row's own control
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (aiTopic != null) {
+                    AiTopicIcon(aiTopic)
+                    Spacer(Modifier.width(8.dp))
+                }
+                trailing()
+            }
+            // 3: summary
+            if (summaryText != null) {
                 Text(
-                    text = summary,
-                    style = MaterialTheme.typography.bodySmall,
+                    text = summaryText,
+                    style = summaryStyle,
                     color = OnDarkMuted.copy(alpha = alpha),
-                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
+        },
+    ) { measurables, constraints ->
+        val width = if (constraints.hasBoundedWidth) constraints.maxWidth else 360.dp.roundToPx()
+        val loose = Constraints(maxWidth = width)
+
+        val iconP = measurables[0].measure(loose)
+        val iconGap = if (iconP.width > 0) 12.dp.roundToPx() else 0
+        val trailP = measurables[2].measure(Constraints(maxWidth = (width * 0.62f).toInt()))
+        val trailGap = if (trailP.width > 0) 10.dp.roundToPx() else 0
+
+        val textStart = iconP.width + iconGap
+        val narrow = (width - textStart - trailP.width - trailGap).coerceAtLeast(1)
+        val wide = (width - textStart).coerceAtLeast(1)
+
+        val stacked = if (summaryText != null && narrow < wide) {
+            val narrowLines = textMeasurer.measure(
+                text = summaryText,
+                style = summaryStyle,
+                constraints = Constraints(maxWidth = narrow),
+                layoutDirection = layoutDirection,
+                density = this,
+            ).lineCount
+            val wideLines = textMeasurer.measure(
+                text = summaryText,
+                style = summaryStyle,
+                constraints = Constraints(maxWidth = wide),
+                layoutDirection = layoutDirection,
+                density = this,
+            ).lineCount
+            narrowLines >= 3 && wideLines < narrowLines
+        } else {
+            false
         }
-        Spacer(Modifier.width(10.dp))
-        if (aiTopic != null) {
-            AiTopicIcon(aiTopic)
-            Spacer(Modifier.width(8.dp))
+
+        val titleP = measurables[1].measure(Constraints(maxWidth = narrow))
+        val summaryP = if (summaryText != null) {
+            measurables[3].measure(Constraints(maxWidth = if (stacked) wide else narrow))
+        } else {
+            null
         }
-        trailing()
+        val lineGap = 2.dp.roundToPx()
+
+        if (!stacked) {
+            val textH = titleP.height + (summaryP?.let { it.height + lineGap } ?: 0)
+            val h = maxOf(constraints.minHeight, iconP.height, textH, trailP.height)
+            layout(width, h) {
+                iconP.placeRelative(0, (h - iconP.height) / 2)
+                val top = (h - textH) / 2
+                titleP.placeRelative(textStart, top)
+                summaryP?.placeRelative(textStart, top + titleP.height + lineGap)
+                trailP.placeRelative(width - trailP.width, (h - trailP.height) / 2)
+            }
+        } else {
+            val headH = maxOf(iconP.height, titleP.height, trailP.height)
+            val summaryTop = headH + 4.dp.roundToPx()
+            val h = maxOf(constraints.minHeight, summaryTop + (summaryP?.height ?: 0))
+            layout(width, h) {
+                iconP.placeRelative(0, (headH - iconP.height) / 2)
+                titleP.placeRelative(textStart, (headH - titleP.height) / 2)
+                trailP.placeRelative(width - trailP.width, (headH - trailP.height) / 2)
+                summaryP?.placeRelative(textStart, summaryTop)
+            }
+        }
     }
 }
 
@@ -398,7 +520,7 @@ fun SettingsNavRow(
         Icon(
             // AutoMirrored so the chevron points left in Persian.
             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
-            contentDescription = null,
+                        contentDescription = null,
             tint = OnDarkDim,
             modifier = Modifier.size(20.dp),
         )
@@ -422,10 +544,12 @@ fun SettingsSwitchRow(
     enabled = enabled,
     onClick = { onCheckedChange(!checked) },
     aiTopic = aiTopic,
+    stateRole = Role.Switch,
+    stateValue = checked,
 ) {
     Switch(
         checked = checked,
-        onCheckedChange = onCheckedChange,
+        onCheckedChange = null,
         enabled = enabled,
         colors = SwitchDefaults.colors(
             checkedThumbColor = Color.White,
@@ -459,6 +583,15 @@ fun <T> SettingsChoiceRow(
     enabled: Boolean = true,
     sheetTitle: String = title,
     aiTopic: AiTopic? = null,
+    /**
+     * 1.4.0-r5: optional second line under an option in the sheet (e.g. what a
+     * Gemini model trades). Null / blank = single-line card, exactly as before,
+     * so every existing caller renders unchanged.
+     */
+    optionDescription: (@Composable (T) -> String?)? = null,
+    /** Shows a search field above the option list (used by the 56-row exit-country picker). */
+    searchable: Boolean = false,
+    searchPlaceholder: String = "",
 ) {
     var open by remember { mutableStateOf(false) }
     BaseRow(
@@ -504,39 +637,123 @@ fun <T> SettingsChoiceRow(
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = OnDark,
-                modifier = Modifier.padding(start = 24.dp, end = 24.dp, bottom = 8.dp),
+                modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 12.dp),
             )
+            // 1.3.1-r2: every option gets its own card, the way every other list in
+            // this app presents a set of choices. The sheet used to stack bare rows
+            // on the sheet's own background with nothing between them, which read as
+            // one block of text rather than a set of separate, tappable things -
+            // reported on the obfuscation picker, and true of all of them.
+            //
             // Lazily composed: the exit-country picker is 56 rows and only about
             // eight of them are ever on screen.
+            var query by remember { mutableStateOf("") }
+            val shownOptions: List<T> = if (searchable && query.isNotBlank()) {
+                val needle = query.trim()
+                options.filter { label(it).contains(needle, ignoreCase = true) }
+            } else {
+                options
+            }
+            if (searchable) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    placeholder = { Text(searchPlaceholder, color = OnDarkMuted) },
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Rounded.Search,
+                            contentDescription = null,
+                            tint = OnDarkDim,
+                        )
+                    },
+                    trailingIcon = {
+                        if (query.isNotEmpty()) {
+                            androidx.compose.material3.IconButton(onClick = { query = "" }) {
+                                Icon(
+                                    imageVector = Icons.Rounded.Close,
+                                    contentDescription = null,
+                                    tint = OnDarkDim,
+                                )
+                            }
+                        }
+                    },
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        textDirection = androidx.compose.ui.text.style.TextDirection.Ltr,
+                    ),
+                    shape = RoundedCornerShape(SheetItemRadius),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 16.dp, bottom = 8.dp)
+                        .testTag("sheet-search"),
+                )
+            }
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .navigationBarsPadding(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(options.size) { index ->
-                    val option = options[index]
+                items(shownOptions.size) { index ->
+                    val option = shownOptions[index]
                     val isSelected = option == selected
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                onSelect(option)
-                                open = false
-                            }
-                            .padding(horizontal = 24.dp, vertical = 15.dp),
+                            .clip(RoundedCornerShape(SheetItemRadius))
+                            // The selected card is tinted and outlined rather than
+                            // only carrying a tick, so the current value is visible
+                            // from the shape of the list and not just from one glyph.
+                            .background(
+                                if (isSelected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                } else {
+                                    Navy850
+                                },
+                            )
+                            .border(
+                                width = if (isSelected) 1.dp else 0.5.dp,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                                } else {
+                                    Navy700
+                                },
+                                shape = RoundedCornerShape(SheetItemRadius),
+                            )
+                            .selectable(
+                                selected = isSelected,
+                                role = Role.RadioButton,
+                                onClick = {
+                                    onSelect(option)
+                                    open = false
+                                },
+                            )
+                            .heightIn(min = 54.dp)
+                            .padding(horizontal = 16.dp, vertical = 14.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = label(option),
-                            style = MaterialTheme.typography.bodyLarge,
-                            color = if (isSelected) {
-                                MaterialTheme.colorScheme.primary
-                            } else {
-                                OnDark
-                            },
-                            modifier = Modifier.weight(1f),
-                        )
+                        val detail = optionDescription?.invoke(option)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = label(option),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                                color = if (isSelected) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    OnDark
+                                },
+                            )
+                            if (!detail.isNullOrBlank()) {
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    text = detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = OnDarkMuted,
+                                )
+                            }
+                        }
                         if (isSelected) {
                             Icon(
                                 imageVector = Icons.Rounded.Check,
@@ -680,10 +897,12 @@ fun SettingsRadioRow(
     enabled = enabled,
     onClick = onSelect,
     aiTopic = aiTopic,
+    stateRole = Role.RadioButton,
+    stateValue = selected,
 ) {
     RadioButton(
         selected = selected,
-        onClick = onSelect,
+        onClick = null,
         enabled = enabled,
         colors = RadioButtonDefaults.colors(
             selectedColor = MaterialTheme.colorScheme.primary,

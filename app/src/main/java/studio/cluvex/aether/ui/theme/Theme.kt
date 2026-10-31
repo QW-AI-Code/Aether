@@ -4,7 +4,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
-import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
@@ -124,8 +124,9 @@ fun AetherTheme(content: @Composable () -> Unit) {
     val persian = remember(configuration) { LanguagePrefs.isPersian(context) }
 
     if (!view.isInEditMode) {
-        SideEffect {
-            val activity = LanguagePrefs.findActivity(view.context) ?: return@SideEffect
+        DisposableEffect(view, rtl) {
+            val activity = LanguagePrefs.findActivity(view.context)
+            if (activity != null) {
             val window = activity.window
             WindowCompat.setDecorFitsSystemWindows(window, false)
             val controller = WindowCompat.getInsetsController(window, view)
@@ -137,7 +138,11 @@ fun AetherTheme(content: @Composable () -> Unit) {
             // Keep the view world in step with the composition. Without this the
             // two disagree, and anything that is NOT a Compose node - dialog
             // windows, popup anchoring, selection handles - mirrors the wrong way.
-            LanguagePrefs.applyLayoutDirection(activity)
+            val direction = if (rtl) android.view.View.LAYOUT_DIRECTION_RTL else android.view.View.LAYOUT_DIRECTION_LTR
+            window.decorView.layoutDirection = direction
+            view.layoutDirection = direction
+            }
+            onDispose { }
         }
     }
 

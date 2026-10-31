@@ -39,16 +39,17 @@ KEEP=0
 BIN=""
 
 die() { printf '\n%s\n' "$*" >&2; exit 1; }
+need() { [ $# -ge 2 ] || die "$1 needs a value (try --help)"; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --mode)    MODE="${2:-}"; shift 2 ;;
-        --peer)    PEER="${2:-}"; shift 2 ;;
-        --scan)    SCAN="${2:-}"; shift 2 ;;
-        --size)    SIZE_MB="${2:-}"; shift 2 ;;
-        --url)     URL="${2:-}"; shift 2 ;;
-        --port)    PORT="${2:-}"; shift 2 ;;
-        --startup) STARTUP="${2:-}"; shift 2 ;;
+        --mode)    need "$@"; MODE="$2"; shift 2 ;;
+        --peer)    need "$@"; PEER="$2"; shift 2 ;;
+        --scan)    need "$@"; SCAN="$2"; shift 2 ;;
+        --size)    need "$@"; SIZE_MB="$2"; shift 2 ;;
+        --url)     need "$@"; URL="$2"; shift 2 ;;
+        --port)    need "$@"; PORT="$2"; shift 2 ;;
+        --startup) need "$@"; STARTUP="$2"; shift 2 ;;
         --keep)    KEEP=1; shift ;;
         -h|--help) awk 'NR>1 { if (!/^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
         -*)        die "unknown option $1 (try --help)" ;;
@@ -140,7 +141,7 @@ fi
 
 printf 'tunnel up after %ss\n' "$waited"
 grep -m1 -oE "flow control: .*" "$LOG" | sed 's/^/h2 window  /'
-grep -m1 -oE "netstack tcp buffers [^,]*" "$LOG" | sed 's/^/netstack   /'
+grep -m1 -oE "netstack tcp buffers=[^,]*" "$LOG" | sed 's/^/netstack   /'
 grep -m1 -oE "(selected MASQUE gateway|using cloudflare edge|MASQUE transport:) .*" "$LOG" | sed 's/^/edge       /'
 grep -m1 -oE "inner mtu [0-9]+" "$LOG" | sed 's/^/mtu        /'
 
@@ -167,7 +168,7 @@ fi
 
 # ---------------------------------------------------------------- the report
 H2_WINDOW_KB=$(grep -m1 -oE "stream window [0-9]+KB" "$LOG" | grep -oE "[0-9]+")
-TCP_WINDOW_KB=$(grep -m1 -oE "netstack tcp buffers [0-9]+KB rx" "$LOG" | grep -oE "[0-9]+")
+TCP_WINDOW_KB=$(grep -m1 -oE "netstack tcp buffers=[0-9]+KB rx" "$LOG" | grep -oE "[0-9]+")
 [ -n "$H2_WINDOW_KB" ] || H2_WINDOW_KB=0
 [ -n "$TCP_WINDOW_KB" ] || TCP_WINDOW_KB=0
 

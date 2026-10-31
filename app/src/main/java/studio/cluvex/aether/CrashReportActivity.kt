@@ -23,11 +23,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import studio.cluvex.aether.ui.components.copySensitive
 import studio.cluvex.aether.ui.theme.AetherTheme
 import java.io.File
 
@@ -58,6 +58,11 @@ class CrashReportActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // AUDIT F-3: a crash dump names classes, endpoints and whatever the engine
+        // was doing when it died. Set on the window itself rather than through
+        // SecureSurface, because this Activity has exactly one screen and it is
+        // sensitive from the first frame.
+        window.addFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE)
         studio.cluvex.aether.data.LanguagePrefs.applyLayoutDirection(this)
         val crashFile = File(filesDir, "last_crash.txt")
         val details = runCatching { crashFile.readText() }.getOrDefault("")
@@ -104,12 +109,14 @@ class CrashReportActivity : ComponentActivity() {
                                     .padding(16.dp),
                             )
                         }
-                        val clipboard = LocalClipboardManager.current
+                        val context = LocalContext.current
                         var copied by remember { mutableStateOf(false) }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             OutlinedButton(
                                 onClick = {
-                                    clipboard.setText(AnnotatedString(details))
+                                    // AUDIT F-4: flagged sensitive, so the dump does
+                                    // not show up in the clipboard preview.
+                                    copySensitive(context, details, "aether-crash")
                                     copied = true
                                 },
                                 modifier = Modifier.weight(1f),

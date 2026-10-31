@@ -1,8 +1,11 @@
 [package]
 name = "aether"
-version = "1.9.0"
+version = "2.3.0"
 edition = "2021"
-rust-version = "1.91"
+rust-version = "1.98"
+authors = ["CluvexStudio"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/CluvexStudio/aether"
 
 [lib]
 name = "aether"
@@ -15,11 +18,11 @@ path = "src/main.rs"
 
 [dependencies]
 quiche = { path = "../quiche/quiche", default-features = false, features = ["boringssl-boring-crate", "qlog"] }
-boring = "4.22"
+boring = "5.2"
 foreign-types-shared = "0.3"
 libc = "0.2"
-tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "io-std", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "io-std", "signal", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "socks", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
@@ -42,11 +45,21 @@ chacha20poly1305 = "0.10"
 regex = "1"
 ipnet = "2"
 parking_lot = "0.12"
-socket2 = "0.6.4"
+socket2 = { version = "0.6.4", features = ["all"] }
 h2 = "0.4.15"
 http = "1"
 bytes = "1"
-tokio-boring = "4.22"
+tokio-boring = "5.2"
+arti-client = { version = "0.46", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite", "bridge-client", "pt-client"], optional = true }
+tor-chanmgr = { version = "0.46", optional = true }
+tor-rtcompat = { version = "0.46", default-features = false, features = ["tokio", "rustls"], optional = true }
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
+liblzma = { version = "0.4", features = ["static"], optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"], optional = true }
+
+[features]
+default = []
+tor = ["dep:arti-client", "dep:tor-chanmgr", "dep:tor-rtcompat", "dep:tokio-util", "dep:liblzma", "dep:tracing-subscriber"]
 
 [profile.release]
 opt-level = 3

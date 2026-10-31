@@ -42,6 +42,15 @@ pub const MASQUE_SEEDS: &[&str] = &[
     "162.159.193.1",
 ];
 
+pub const MASQUE_VERIFIED_GATEWAYS: &[&str] = &[
+    "162.159.199.1",
+    "162.159.199.2",
+    "162.159.198.2",
+    "162.159.198.1",
+];
+
+pub const MASQUE_ALT_PORTS: &[u16] = &[1701, 8095, 500, 4500];
+
 pub const MASQUE_PORTS: &[u16] = &[443, 500, 1701, 4500, 4443, 8443, 8095];
 
 pub const MASQUE_CIDRS_V6: &[&str] = &[
@@ -87,7 +96,12 @@ pub fn masque_cidrs_v6() -> Vec<&'static str> {
     prioritize(MASQUE_CIDRS_V6, MASQUE_ZT_CIDRS_V6)
 }
 
-pub const MASQUE_SEEDS_V6: &[&str] = &["2606:4700:d0::a29f:c602", "2606:4700:d1::a29f:c602", "2606:4700:d0::a29f:c601", "2606:4700:d0::a29f:c001"];
+pub const MASQUE_SEEDS_V6: &[&str] = &[
+    "2606:4700:d0::a29f:c602",
+    "2606:4700:d1::a29f:c602",
+    "2606:4700:d0::a29f:c601",
+    "2606:4700:d0::a29f:c001",
+];
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProbeResult {
@@ -134,7 +148,7 @@ pub enum ScanMode {
     Turbo,
     Balanced,
     Thorough,
-    Stealth,
+    Verified,
     Ironclad,
 }
 
@@ -143,7 +157,7 @@ impl ScanMode {
         match s.trim().to_lowercase().as_str() {
             "turbo" | "fast" => ScanMode::Turbo,
             "thorough" | "deep" | "pro" => ScanMode::Thorough,
-            "stealth" | "quiet" => ScanMode::Stealth,
+            "verified" | "proven" | "stealth" | "quiet" => ScanMode::Verified,
             "ironclad" | "real" | "verify" | "guaranteed" => ScanMode::Ironclad,
             _ => ScanMode::Balanced,
         }
@@ -154,7 +168,7 @@ impl ScanMode {
             ScanMode::Turbo => "turbo",
             ScanMode::Balanced => "balanced",
             ScanMode::Thorough => "thorough",
-            ScanMode::Stealth => "stealth",
+            ScanMode::Verified => "verified",
             ScanMode::Ironclad => "ironclad",
         }
     }
@@ -191,15 +205,15 @@ impl ScanMode {
                 full_subnet: true,
                 sample_per_cidr: 0,
             },
-            ScanMode::Stealth => Strategy {
-                concurrency: 3,
-                per_probe_timeout: Duration::from_millis(12000),
-                overall_deadline: Duration::from_secs(180),
-                quiet_after_first: Duration::from_secs(25),
+            ScanMode::Verified => Strategy {
+                concurrency: 16,
+                per_probe_timeout: Duration::from_millis(5000),
+                overall_deadline: Duration::from_secs(60),
+                quiet_after_first: Duration::from_secs(8),
                 target_successes: 4,
                 early_exit_first: false,
                 full_subnet: false,
-                sample_per_cidr: 64,
+                sample_per_cidr: 48,
             },
             ScanMode::Ironclad => Strategy {
                 concurrency: 4,
@@ -243,7 +257,7 @@ pub struct MasqueProbe {
 }
 
 pub async fn host_has_ipv6() -> bool {
-    match tokio::net::UdpSocket::bind("[::]:0").await {
+    match crate::egress::udp_bind("[::]:0".parse().expect("a wildcard address")) {
         Ok(sock) => sock.connect("[2606:4700:d0::a29f:c001]:443").await.is_ok(),
         Err(_) => false,
     }
@@ -325,7 +339,7 @@ pub async fn hunt_best_gateway(probe: &MasqueProbe, mode: ScanMode) -> Result<Pr
                             _ => pr,
                         });
                         found += 1;
-                        
+
                         if st.target_successes > 0 && found >= st.target_successes && quiet_until.is_none() {
                             log::info!("[+] reached target of {} gateways, selecting best", st.target_successes);
                             if !st.quiet_after_first.is_zero() {
@@ -376,6 +390,7 @@ async fn verify_one(
             path: probe.path.clone(),
             cert_pem: probe.cert_pem.to_vec(),
             key_pem: probe.key_pem.to_vec(),
+            ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
             noize: probe.noize.clone(),
             local_ipv4: probe.local_ipv4,
             local_ipv4_str: probe.local_ipv4.to_string(),
@@ -383,7 +398,10 @@ async fn verify_one(
         };
         return match crate::tunnelping::masque_http_ping(&params, IRONCLAD_TCPING_TIMEOUT).await {
             Ok(rtt) => {
-                log::info!("[+] ironclad verified {ip}:{port} real http round trip rtt={:?}", rtt);
+                log::info!(
+                    "[+] ironclad verified {ip}:{port} real http round trip rtt={:?}",
+                    rtt
+                );
                 Some(ProbeResult { ip, port, rtt })
             }
             Err(e) => {
@@ -404,7 +422,11 @@ async fn verify_one(
             local_ipv4: probe.local_ipv4,
             quiet: true,
             pin_endpoint: true,
-            expected_pins: crate::consts::MASQUE_PINS.iter().map(|p| p.to_vec()).collect(),
+            expected_pins: crate::consts::MASQUE_PINS
+                .iter()
+                .map(|p| p.to_vec())
+                .collect(),
+            ech_config_list: probe.ech_config_list.as_ref().map(|a| a.to_vec()),
         };
         return match crate::masque_h2::verify_h2(&cfg, timeout).await {
             Ok(rtt) => Some(ProbeResult { ip, port, rtt }),
@@ -443,7 +465,10 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
     let mut seen: HashSet<(IpAddr, u16)> = HashSet::new();
 
     let seeds: Vec<Ipv4Addr> = MASQUE_SEEDS.iter().filter_map(|s| s.parse().ok()).collect();
-    let seeds6: Vec<Ipv6Addr> = MASQUE_SEEDS_V6.iter().filter_map(|s| s.parse().ok()).collect();
+    let seeds6: Vec<Ipv6Addr> = MASQUE_SEEDS_V6
+        .iter()
+        .filter_map(|s| s.parse().ok())
+        .collect();
 
     if ip.want_v4() {
         for a in &seeds {
@@ -479,7 +504,11 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
                 out.push((IpAddr::V6(*a), primary));
             }
         }
-        let per = if st.sample_per_cidr == 0 { 96 } else { st.sample_per_cidr };
+        let per = if st.sample_per_cidr == 0 {
+            96
+        } else {
+            st.sample_per_cidr
+        };
         let cidr6: Vec<Vec<Ipv6Addr>> = masque_cidrs_v6()
             .iter()
             .map(|c| sample_cidr_v6(c, per, MASQUE_CIDRS_V4))
@@ -520,7 +549,10 @@ fn build_candidates(st: &Strategy, ports: &[u16], ip: IpScan) -> Vec<(IpAddr, u1
 
 fn parse_cidr_v4(cidr: &str) -> Option<(u32, u8)> {
     let (ip, prefix) = cidr.split_once('/')?;
-    Some((u32::from(ip.parse::<Ipv4Addr>().ok()?), prefix.parse().ok()?))
+    Some((
+        u32::from(ip.parse::<Ipv4Addr>().ok()?),
+        prefix.parse().ok()?,
+    ))
 }
 
 fn enumerate_cidr_v4(cidr: &str) -> Vec<Ipv4Addr> {
@@ -547,7 +579,11 @@ fn sample_cidr_v4(cidr: &str, n: usize) -> Vec<Ipv4Addr> {
         None => return Vec::new(),
     };
     let host_bits = 32u32.saturating_sub(prefix as u32);
-    let size = if host_bits >= 32 { u32::MAX } else { 1u32 << host_bits };
+    let size = if host_bits >= 32 {
+        u32::MAX
+    } else {
+        1u32 << host_bits
+    };
     if size <= 2 {
         return vec![Ipv4Addr::from(base)];
     }
@@ -570,7 +606,10 @@ fn sample_cidr_v4(cidr: &str, n: usize) -> Vec<Ipv4Addr> {
 
 fn parse_cidr_v6(cidr: &str) -> Option<(u128, u8)> {
     let (ip, prefix) = cidr.split_once('/')?;
-    Some((u128::from(ip.parse::<Ipv6Addr>().ok()?), prefix.parse().ok()?))
+    Some((
+        u128::from(ip.parse::<Ipv6Addr>().ok()?),
+        prefix.parse().ok()?,
+    ))
 }
 
 fn sample_cidr_v6(cidr: &str, n: usize, v4_cidrs: &[&str]) -> Vec<Ipv6Addr> {
@@ -634,7 +673,10 @@ mod tests {
     #[test]
     fn without_a_team_the_range_order_is_left_alone() {
         std::env::remove_var("AETHER_TEAM");
-        assert_eq!(prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4), MASQUE_CIDRS_V4.to_vec());
+        assert_eq!(
+            prioritize(MASQUE_CIDRS_V4, MASQUE_ZT_CIDRS_V4),
+            MASQUE_CIDRS_V4.to_vec()
+        );
     }
 
     #[test]
@@ -664,7 +706,11 @@ mod tests {
     }
 
     async fn quic_answers(peer: SocketAddr, timeout: Duration) -> Option<Duration> {
-        let bind = if peer.is_ipv4() { "0.0.0.0:0" } else { "[::]:0" };
+        let bind = if peer.is_ipv4() {
+            "0.0.0.0:0"
+        } else {
+            "[::]:0"
+        };
         let sock = tokio::net::UdpSocket::bind(bind).await.ok()?;
         sock.connect(peer).await.ok()?;
         let local = sock.local_addr().ok()?;
@@ -900,5 +946,43 @@ mod tests {
         for seed in MASQUE_SEEDS_V6 {
             assert!(seed.parse::<Ipv6Addr>().is_ok(), "{seed}");
         }
+    }
+
+    #[tokio::test]
+    async fn the_ironclad_check_offers_the_ech_key_of_its_scan() {
+        let _setting = crate::upstream::hold_setting().await;
+        // The check builds its TLS with the fingerprint the options give.
+        let _options = crate::tls::hold_options().await;
+        let identity = crate::account::handshake_identity();
+        let peer = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = peer.local_addr().unwrap();
+        let probe = |ech: Option<Vec<u8>>| MasqueProbe {
+            sni: crate::consts::CONNECT_SNI.to_string(),
+            authority: quic::default_authority().to_string(),
+            path: quic::default_path().to_string(),
+            cert_pem: Arc::from(identity.cert_pem.clone()),
+            key_pem: Arc::from(identity.key_pem.clone()),
+            ech_config_list: ech.map(Arc::from),
+            noize: crate::noize::from_profile("off"),
+            ports: vec![address.port()],
+            ip: IpScan::V4,
+            local_ipv4: Ipv4Addr::new(172, 16, 0, 2),
+        };
+        let timeout = Duration::from_secs(5);
+
+        // Given a key BoringSSL offers nothing from (its one config is of another version), the
+        // check sends no ClientHello; the version bait may go out before it.
+        let unusable = probe(Some(vec![0, 6, 0xfe, 0x0c, 0, 2, 0, 0]));
+        let checked = verify_one(&unusable, address.ip(), address.port(), timeout, true).await;
+        assert!(checked.is_none());
+        assert!(!quic::hears_a_client_hello(&peer, Duration::from_millis(300)).await);
+
+        // Without a key, the same check does send one, with the server name in the clear.
+        let plain = probe(None);
+        let check = tokio::spawn(async move {
+            verify_one(&plain, address.ip(), address.port(), timeout, true).await
+        });
+        assert!(quic::hears_a_client_hello(&peer, Duration::from_secs(4)).await);
+        check.abort();
     }
 }

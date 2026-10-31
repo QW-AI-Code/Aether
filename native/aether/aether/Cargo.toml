@@ -1,8 +1,10 @@
 [package]
 name = "aether"
-version = "1.9.0"
+version = "2.4.0"
 edition = "2021"
-rust-version = "1.91"
+authors = ["CluvexStudio"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/CluvexStudio/aether"
 # >>> AETHER-APP-PATCH build-provenance
 # Stamps the APP patch level into the binary. See build.rs for the full reason;
 # short version: r2/r3/r4 were byte-indistinguishable from the outside and a
@@ -21,11 +23,11 @@ path = "src/main.rs"
 
 [dependencies]
 quiche = { path = "../quiche/quiche", default-features = false, features = ["boringssl-boring-crate", "qlog"] }
-boring = "4.22"
+boring = "5.3"
 foreign-types-shared = "0.3"
 libc = "0.2"
-tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "io-std", "signal"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies"] }
+tokio = { version = "1.52", features = ["rt-multi-thread", "macros", "net", "time", "sync", "io-util", "io-std", "signal", "process"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "cookies", "socks", "http2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
@@ -105,11 +107,26 @@ chacha20poly1305 = "0.10"
 regex = "1"
 ipnet = "2"
 parking_lot = "0.12"
-socket2 = "0.6.4"
+socket2 = { version = "0.6.4", features = ["all"] }
 h2 = "0.4.15"
 http = "1"
 bytes = "1"
-tokio-boring = "4.22"
+tokio-boring = "5.3"
+# What --tls-cert-compression offers: certificates a server sends compressed with zlib, brotli
+# or zstd, decompressed.
+flate2 = "1.1"
+brotli-decompressor = "5.0.0"
+zstd = { version = "0.14", default-features = false }
+arti-client = { version = "0.46", default-features = false, features = ["tokio", "rustls", "compression", "static-sqlite", "bridge-client", "pt-client"], optional = true }
+tor-chanmgr = { version = "0.46", optional = true }
+tor-rtcompat = { version = "0.46", default-features = false, features = ["tokio", "rustls"], optional = true }
+tokio-util = { version = "0.7", features = ["compat"], optional = true }
+liblzma = { version = "0.4", features = ["static"], optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"], optional = true }
+
+[features]
+default = []
+tor = ["dep:arti-client", "dep:tor-chanmgr", "dep:tor-rtcompat", "dep:tokio-util", "dep:liblzma", "dep:tracing-subscriber"]
 
 [profile.release]
 opt-level = 3
@@ -117,3 +134,16 @@ lto = "fat"
 codegen-units = 1
 panic = "unwind"
 strip = true
+# >>> AETHER-APP-PATCH tor-slow-chain
+
+# Two arti crates carry app patches for Tor dialled through a proxy chain
+# (`Config -> Tor`), kept in native/aether/vendor/ so a core sync never
+# replaces them. Each patched spot is marked AETHER-VENDOR-PATCH.
+#  * tor-chanmgr: no SNI in the relay TLS handshake when AETHER_TOR_LINK_SNI=off
+#    (a sniffing V2Ray/Xray server rewrites the relay address to the fake SNI).
+#  * tor-dirclient: directory bodies get an inactivity timeout instead of a
+#    fixed 10 s for the whole body, which a slow chain can never meet.
+[patch.crates-io]
+tor-chanmgr = { path = "../vendor/tor-chanmgr" }
+tor-dirclient = { path = "../vendor/tor-dirclient" }
+# <<< AETHER-APP-PATCH tor-slow-chain

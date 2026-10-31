@@ -7,10 +7,12 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.GoolMode
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
@@ -41,7 +43,13 @@ object AetherController {
     val ipLoading: StateFlow<Boolean> = _ipLoading.asStateFlow()
 
     /** Called by the service to broadcast state changes. */
-    fun setState(newState: ConnectionState) {
+    @Synchronized fun setState(newState: ConnectionState) {
+        ConnectionSounds.onState(newState)
+        if (newState !is ConnectionState.Connected) _ipLoading.value = false
+        if (newState is ConnectionState.Launching || newState is ConnectionState.Selecting ||
+            newState is ConnectionState.Connecting || newState is ConnectionState.Reconnecting) {
+            _ipInfo.value = null
+        }
         _state.value = newState
         when (newState) {
             is ConnectionState.Connected ->
@@ -62,8 +70,15 @@ object AetherController {
      * tunnel IP for this session.
      */
     fun offerTunnelIpInfo(info: IpEndpoint) {
-        if (_ipInfo.value?.viaTunnel == true) return
-        _ipInfo.value = info
+        _ipInfo.update { current ->
+            when {
+                current?.viaTunnel != true -> info
+                current.ip != info.ip -> current
+                else -> current.copy(
+                    countryCode = NetProbe.normalizeCountryCode(info.countryCode) ?: current.countryCode,
+                    alternateIp = info.alternateIp ?: current.alternateIp)
+            }
+        }
     }
 
     fun setIpLoading(loading: Boolean) {
@@ -77,18 +92,29 @@ object AetherController {
     fun prepare(context: Context): Intent? = VpnService.prepare(context)
 
     fun connect(context: Context, profile: ConnectionProfile) {
+        setIpInfo(null)
+        setIpLoading(false)
+        setState(ConnectionState.Launching)
+        try {
         val intent = Intent(context, AetherVpnService::class.java).apply {
             action = AetherVpnService.ACTION_CONNECT
             putExtra(AetherVpnService.EXTRA_PROFILE, ProfileCodec.encode(profile))
         }
         ContextCompat.startForegroundService(context, intent)
+        } catch (e: Exception) { setState(ConnectionState.Error(e.message ?: "Unable to start VPN")) }
     }
 
     fun disconnect(context: Context) {
         val intent = Intent(context, AetherVpnService::class.java).apply {
             action = AetherVpnService.ACTION_DISCONNECT
         }
-        ContextCompat.startForegroundService(context, intent)
+        try { ContextCompat.startForegroundService(context, intent) }
+        catch (e: Exception) {
+            DiagnosticsLog.e("AetherController", "disconnect start failed: ${e.javaClass.simpleName}")
+            runCatching { context.startService(intent) }.onFailure {
+                DiagnosticsLog.e("AetherController", "disconnect fallback failed: ${it.javaClass.simpleName}")
+            }
+        }
     }
 }
 
@@ -106,6 +132,7 @@ object ProfileCodec {
         add("scan=${p.scanMode.name}")
         add("ip=${p.ipVersion.name}")
         add("quick=${p.quickReconnect}")
+        add("verifyConnection=${p.verifyConnection}")
         add("h2=${p.masqueHttp2}")
         add("share=${p.lanShare}")
         add("noize=${p.noize.name}")
@@ -115,6 +142,7 @@ object ProfileCodec {
         add("keepalive=${p.keepalive}")
         add("fragment=${p.fragment}")
         add("ech=${p.ech}")
+        add("echConfig=${p.echConfig}")
         add("mtu=${p.mtu}")
         add("proxy=${p.proxyMode}")
         add("split=${p.splitMode.name}")
@@ -129,6 +157,29 @@ object ProfileCodec {
         add("fDelay=${p.fragmentDelay}")
         add("noDataCheck=${p.noDataCheck}")
         add("tlsGroups=${p.tlsGroups}")
+        // Added in 1.5.0 (engine core 2.3.0)
+        add("tlsCiphers=${p.tlsCiphers}")
+        add("noGrease=${p.disableGrease}")
+        add("tlsVerify=${p.tlsVerify}")
+        add("apiAddr=${p.apiAddress}")
+        // Core 2.4.0 TLS / API options
+        add("masqueSni=${p.masqueSni}")
+        add("apiSni=${p.apiSni}")
+        add("apiHost=${p.apiHost}")
+        add("tls13=${p.tls13Ciphers}")
+        add("keyShares=${p.tlsKeyShares}")
+        add("sigalgs=${p.tlsSigalgs}")
+        add("certComp=${p.tlsCertCompression}")
+        add("alps=${p.tlsAlps}")
+        add("trustAnch=${p.tlsTrustAnchors}")
+        add("srvPad=${p.tlsServerPadding}")
+        add("grSig=${p.enableGreaseSigalgs}")
+        add("echGrease=${p.enableEchGrease}")
+        add("noOcsp=${p.disableOcspStapling}")
+        add("noSct=${p.disableSct}")
+        add("noTicket=${p.disableSessionTicket}")
+        add("noPerm=${p.disableExtensionPermutation}")
+        add("goolMode=${p.goolMode.name}")
         add("valSecs=${p.validateSecs}")
         add("recSecs=${p.reconnectSecs}")
         add("noProfRetry=${p.noProfileRetry}")
@@ -151,8 +202,12 @@ object ProfileCodec {
         // travels inside an Intent.
         // ---------------------------------------------------------------
         add("dns=${p.dnsServers}")
+        add("gameMode=${p.gameMode}")
+        add("gameDns=${p.gameDnsServers.replace('\r', ',').replace('\n', ',')}")
         add("routeBlock=${p.routeBlock}")
         add("routeDirect=${p.routeDirect}")
+        add("bypassIran=${p.bypassIran}")
+        add("blockAds=${p.blockAds}")
         add("sniff=${p.routeSniff}")
         add("sniffMs=${p.routeSniffMs}")
         add("upstream=${p.upstreamProxy}")
@@ -163,7 +218,16 @@ object ProfileCodec {
         add("accessId=${p.accessClientId}")
         add("accessEmail=${p.accessEmail}")
         add("gateway=${p.gateway}")
-    }.joinToString("\n")
+    }.map { escapeLineBreaks(it) }.joinToString("\n")
+
+    // Multi-line values (route rules, DNS lists, ECH config...) must survive the
+    // line-based key=value format. LINE/PARAGRAPH SEPARATOR are never produced by
+    // String.lines()/lineSequence(), so they are safe stand-ins for \n and \r.
+    private fun escapeLineBreaks(s: String): String =
+        s.replace('\r', '\u2029').replace('\n', '\u2028')
+
+    private fun unescapeLineBreaks(s: String): String =
+        s.replace('\u2029', '\r').replace('\u2028', '\n')
 
     fun decode(raw: String?): ConnectionProfile {
         if (raw.isNullOrBlank()) return ConnectionProfile()
@@ -174,7 +238,7 @@ object ProfileCodec {
         val map = raw.lineSequence()
             .mapNotNull { line ->
                 val idx = line.indexOf('=')
-                if (idx <= 0) null else line.substring(0, idx) to line.substring(idx + 1)
+                if (idx <= 0) null else line.substring(0, idx) to unescapeLineBreaks(line.substring(idx + 1))
             }
             .toMap()
         val d = ConnectionProfile()
@@ -190,6 +254,7 @@ object ProfileCodec {
                 scanMode = map["scan"]?.let { enumOr<ScanMode>(it) } ?: d.scanMode,
                 ipVersion = map["ip"]?.let { enumOr<IpVersion>(it) } ?: d.ipVersion,
                 quickReconnect = map["quick"]?.toBooleanStrictOrNull() ?: d.quickReconnect,
+                verifyConnection = map["verifyConnection"]?.toBooleanStrictOrNull() ?: true,
                 masqueHttp2 = map["h2"]?.toBooleanStrictOrNull() ?: d.masqueHttp2,
                 lanShare = map["share"]?.toBooleanStrictOrNull() ?: d.lanShare,
                 noize = map["noize"]?.let { enumOr<Noize>(it) } ?: d.noize,
@@ -199,7 +264,10 @@ object ProfileCodec {
                 keepalive = map["keepalive"]?.toIntOrNull() ?: d.keepalive,
                 fragment = map["fragment"]?.toBooleanStrictOrNull() ?: d.fragment,
                 ech = map["ech"]?.toBooleanStrictOrNull() ?: d.ech,
-                mtu = map["mtu"]?.toIntOrNull() ?: d.mtu,
+                echConfig = map["echConfig"] ?: d.echConfig,
+                mtu = map["mtu"]?.toIntOrNull()
+                    ?.coerceIn(ConnectionProfile.MTU_MIN, ConnectionProfile.MTU_MAX)
+                    ?: d.mtu,
                 proxyMode = map["proxy"]?.toBooleanStrictOrNull() ?: d.proxyMode,
                 splitMode = map["split"]?.let { enumOr<SplitMode>(it) } ?: d.splitMode,
                 splitApps = map["splitApps"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() }
@@ -213,6 +281,27 @@ object ProfileCodec {
                 fragmentDelay = map["fDelay"] ?: d.fragmentDelay,
                 noDataCheck = map["noDataCheck"]?.toBooleanStrictOrNull() ?: d.noDataCheck,
                 tlsGroups = map["tlsGroups"] ?: d.tlsGroups,
+                tlsCiphers = map["tlsCiphers"] ?: d.tlsCiphers,
+                disableGrease = map["noGrease"]?.toBooleanStrictOrNull() ?: d.disableGrease,
+                tlsVerify = map["tlsVerify"]?.toBooleanStrictOrNull() ?: d.tlsVerify,
+                apiAddress = map["apiAddr"] ?: d.apiAddress,
+                masqueSni = map["masqueSni"] ?: d.masqueSni,
+                apiSni = map["apiSni"] ?: d.apiSni,
+                apiHost = map["apiHost"] ?: d.apiHost,
+                tls13Ciphers = map["tls13"] ?: d.tls13Ciphers,
+                tlsKeyShares = map["keyShares"] ?: d.tlsKeyShares,
+                tlsSigalgs = map["sigalgs"] ?: d.tlsSigalgs,
+                tlsCertCompression = map["certComp"] ?: d.tlsCertCompression,
+                tlsAlps = map["alps"] ?: d.tlsAlps,
+                tlsTrustAnchors = map["trustAnch"] ?: d.tlsTrustAnchors,
+                tlsServerPadding = map["srvPad"] ?: d.tlsServerPadding,
+                enableGreaseSigalgs = map["grSig"]?.toBooleanStrictOrNull() ?: d.enableGreaseSigalgs,
+                enableEchGrease = map["echGrease"]?.toBooleanStrictOrNull() ?: d.enableEchGrease,
+                disableOcspStapling = map["noOcsp"]?.toBooleanStrictOrNull() ?: d.disableOcspStapling,
+                disableSct = map["noSct"]?.toBooleanStrictOrNull() ?: d.disableSct,
+                disableSessionTicket = map["noTicket"]?.toBooleanStrictOrNull() ?: d.disableSessionTicket,
+                disableExtensionPermutation = map["noPerm"]?.toBooleanStrictOrNull() ?: d.disableExtensionPermutation,
+                goolMode = map["goolMode"]?.let { enumOr<GoolMode>(it) } ?: d.goolMode,
                 validateSecs = map["valSecs"]?.toIntOrNull() ?: d.validateSecs,
                 reconnectSecs = map["recSecs"]?.toIntOrNull() ?: d.reconnectSecs,
                 noProfileRetry = map["noProfRetry"]?.toBooleanStrictOrNull() ?: d.noProfileRetry,
@@ -221,8 +310,12 @@ object ProfileCodec {
                     ?: d.blockedApps,
                 // See the note in encode(): these used to be dropped here.
                 dnsServers = map["dns"] ?: d.dnsServers,
+                gameMode = map["gameMode"]?.toBooleanStrictOrNull() ?: d.gameMode,
+                gameDnsServers = map["gameDns"] ?: d.gameDnsServers,
                 routeBlock = map["routeBlock"] ?: d.routeBlock,
                 routeDirect = map["routeDirect"] ?: d.routeDirect,
+                bypassIran = map["bypassIran"]?.toBooleanStrictOrNull() ?: d.bypassIran,
+                blockAds = map["blockAds"]?.toBooleanStrictOrNull() ?: d.blockAds,
                 routeSniff = map["sniff"]?.toBooleanStrictOrNull() ?: d.routeSniff,
                 routeSniffMs = map["sniffMs"]?.toIntOrNull() ?: d.routeSniffMs,
                 upstreamProxy = map["upstream"] ?: d.upstreamProxy,

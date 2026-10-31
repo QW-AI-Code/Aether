@@ -1,0 +1,53 @@
+# Automated dependency surveillance (audit 1.3.0, F-7).
+#
+# The 1.3.0 audit found that nothing in this repository watches its dependencies:
+# the set was reviewed BY HAND for that audit, in a sandbox with no network access
+# to the advisory databases, which is not a substitute for a check that runs on
+# its own. Dependabot is the part of that fix which needs no runner time and no
+# third-party action - it reads the manifests server-side and opens a PR.
+#
+# DELIBERATELY MINIMAL. The first version of this file listed three ecosystems
+# (gradle, cargo, github-actions) on a weekly schedule with a limit of five PRs
+# each. GitHub starts one "Dependabot Updates" run per ecosystem entry, so simply
+# adding the file produced a burst of runs in the Actions tab and would have kept
+# producing up to fifteen open PRs a month - noise, for a repository maintained by
+# one person. What is left is ONE entry, monthly, grouped into ONE pull request:
+#
+#   gradle  - AndroidX/Compose and everything else in app/build.gradle.kts. The
+#             audit noted this set is roughly a year behind (BOM 2024.10.01), so
+#             this is the ecosystem where surveillance actually pays off. All
+#             updates land in a single PR ("all-gradle") that either builds or
+#             does not, instead of five PRs that have to be reviewed separately.
+#
+# What was dropped, and why it is not a loss:
+#   cargo           - the engine's lockfile (native/aether/aether/Cargo.lock) is
+#                     re-synced from upstream by scripts/sync-core.sh on EVERY CI
+#                     run, so a PR here is overwritten by the next build. The real
+#                     fix belongs upstream in CluvexStudio/Aether; watching it here
+#                     only generated PRs that could not survive.
+#   github-actions  - action versions are now reviewed by hand together with the
+#                     still-open F-9 item (pinning each action to a commit SHA),
+#                     which is manual work anyway.
+#   quiche          - native/aether/quiche is a vendored upstream checkout with no
+#                     lockfile of its own; patching it locally would be undone by
+#                     the next fetch-natives.sh run.
+#
+# Merging the PR this file opens does NOT publish a release: the Build APK
+# workflow skips dependency commits on purpose (see .github/workflows/build.yml,
+# "Only one build" guard). Build such a change deliberately with "Run workflow".
+version: 2
+updates:
+  - package-ecosystem: gradle
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 1
+    groups:
+      all-gradle:
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - dependencies
+      - android

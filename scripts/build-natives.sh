@@ -10,11 +10,21 @@
 #                    Java_* symbols TProxyService.kt declares. Runs the tunnel
 #                    IN-PROCESS (the VpnService TUN fd is per-process) on a
 #                    native pthread the bridge creates itself.
-#   libaether.so  <- the Aether engine, cross-compiled from Rust with cargo-ndk.
+#   libaether.so  <- the Aether engine, cross-compiled from Rust with cargo-ndk,
+#                    with the `tor` cargo feature ON (see AETHER_FEATURES).
+#   libpsiphon.so <- 1.4.0: psiphon-tunnel-core, the console client the ENGINE
+#                    runs for --psiphon (core 2.1.0), built by the engine's own
+#                    psiphon-build.sh as a static linux ELF (upstream's Android
+#                    recipe). Required: the app's two Psiphon modes need it.
+#   libpt-lyrebird.so <- the obfs4/meek_lite/webtunnel pluggable transport, only
+#                    needed for Tor BRIDGES. Optional: skipped with a warning when
+#                    no Go toolchain is present, and the app degrades to Tor
+#                    without bridges (it says so in the log).
 #
-# Usage:  build-natives.sh [hev|aether|all]   (default: all)
+# Usage:  build-natives.sh [hev|aether|pt|psiphon|all]   (default: all)
 #
 # Requires: ANDROID_NDK_HOME, rustup android targets, cargo-ndk.
+#           `pt` additionally needs Go >= 1.21.
 # Run scripts/fetch-natives.sh first.
 set -euo pipefail
 
@@ -28,7 +38,37 @@ AETHER_SRC="${NATIVE_DIR}/aether"
 JNI_DIR="${PROJECT_DIR}/app/src/main/jniLibs"
 
 API="${ANDROID_API:-26}"
-ABIS=("arm64-v8a" "armeabi-v7a")
+# 1.3.1, issue #8: x86_64 joins the two ARM ABIs, so Chromebooks and emulators
+# get a native engine instead of ARM translation or a refused install. The
+# engine, hev and the pluggable transports are all built for it below.
+ABIS=("arm64-v8a" "armeabi-v7a" "x86_64")
+
+# ============================================================================
+# 1.3.0: THE ENGINE MUST BE BUILT WITH `--features tor`.
+#
+# Core 2.0.0's Cargo.toml declares `default = []` and puts every Tor dependency
+# (arti-client, tor-chanmgr, tor-rtcompat, tokio-util, liblzma) behind an opt-in
+# `tor` feature. A build without it is not a build with Tor switched off - it is
+# a binary in which the Tor code does not exist. `--tor`, `--tor-only` and
+# `--tor-bind` are then unknown arguments, and the app's three Tor modes fail at
+# connect time with an engine that exits immediately.
+#
+# That failure is indistinguishable, from the app's side, from a blocked network:
+# the engine dies before it opens its port, which is exactly what a censored
+# connection looks like. So it would be diagnosed as a network problem, on a
+# device, by someone who cannot see this file. Hence: not a default the caller may
+# forget, but a variable with the feature already in it.
+#
+# Cost of the feature: roughly 6-8 MB per ABI and a noticeably longer build. That
+# is the price of shipping Tor and it is paid deliberately.
+# ============================================================================
+AETHER_FEATURES="${AETHER_FEATURES:-tor}"
+
+# Where the pluggable transport comes from. Pinned by commit, not by tag: a tag
+# can be moved, and this binary is one of the things standing between a user and
+# a network that watches them.
+LYREBIRD_REPO="${LYREBIRD_REPO:-https://gitlab.torproject.org/tpo/anti-censorship/pluggable-transports/lyrebird.git}"
+LYREBIRD_REF="${LYREBIRD_REF:-lyrebird-0.6.1}"
 
 if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "${ANDROID_NDK_HOME}" ]; then
   echo "ERROR: ANDROID_NDK_HOME is not set or does not exist." >&2
@@ -53,6 +93,7 @@ clang_for_abi() {
   case "$1" in
     arm64-v8a)   echo "${NDK_TOOLCHAIN}/aarch64-linux-android${API}-clang" ;;
     armeabi-v7a) echo "${NDK_TOOLCHAIN}/armv7a-linux-androideabi${API}-clang" ;;
+    x86_64)      echo "${NDK_TOOLCHAIN}/x86_64-linux-android${API}-clang" ;;
     *) echo "" ;;
   esac
 }
@@ -146,7 +187,7 @@ build_hev() {
     # been stable across hev releases for years.
     dynsyms="$("${NDK_TOOLCHAIN}/llvm-nm" --dynamic --defined-only "${out}" 2>/dev/null || true)"
     for sym in hev_socks5_tunnel_main hev_socks5_tunnel_quit hev_socks5_tunnel_stats; do
-      if ! echo "${dynsyms}" | grep -qw "${sym}"; then
+      if ! grep -qw "${sym}" <<<"${dynsyms}"; then
         echo "ERROR: [${abi}] libhev-socks5-tunnel.so lacks ${sym}." >&2
         exit 1
       fi
@@ -154,7 +195,7 @@ build_hev() {
     # hev-jni.c was stripped above; if JNI_OnLoad is STILL exported, the strip
     # failed (upstream moved/renamed the file) and its RegisterNatives would
     # run again via the dlsym() dependency search. Never ship that.
-    if echo "${dynsyms}" | grep -qw 'JNI_OnLoad'; then
+    if grep -qw 'JNI_OnLoad' <<<"${dynsyms}"; then
       echo "ERROR: [${abi}] libhev-socks5-tunnel.so still exports JNI_OnLoad — hev-jni.c was not stripped." >&2
       echo "       Update the strip logic in build_hev for the new upstream layout." >&2
       exit 1
@@ -201,7 +242,7 @@ build_hev() {
       Java_studio_cluvex_aether_core_TProxyService_TProxyStartService \
       Java_studio_cluvex_aether_core_TProxyService_TProxyStopService \
       Java_studio_cluvex_aether_core_TProxyService_TProxyGetStats; do
-      if ! echo "${bridgesyms}" | grep -qw "${sym}"; then
+      if ! grep -qw "${sym}" <<<"${bridgesyms}"; then
         echo "ERROR: [${abi}] libaethertun.so lacks ${sym} — Kotlin externals would not resolve." >&2
         exit 1
       fi
@@ -306,6 +347,77 @@ verify_patch_stamp() {
   echo "    [${abi}] build stamp verified: ${PATCH_STAMP}"
 }
 
+# ---------------------------------------------------------------------------
+# 1.5.0 ROOT-CAUSE FIX: the engine's runtime dependencies.
+#
+# FIELD LOG (all six modes, every lane, every attempt):
+#   CANNOT LINK EXECUTABLE ".../lib/arm64/libaether.so":
+#     library "libc++_shared.so" not found: needed by main executable
+#
+# Core 2.3.0 moved from `boring` 4.22 to `boring` 5.2. Recent BoringSSL contains
+# C++ and boring-sys 5 builds it with CMAKE_ANDROID_STL_TYPE=c++_shared and
+# links the engine against the NDK's SHARED C++ runtime. libc++ is not an
+# Android system library, so the APK must carry it - and 1.5.0 did not. The
+# dynamic linker refused to start the engine before main(), so no tunnel of any
+# kind could come up (1.4.0 used boring 4.22, which had no C++ dependency).
+#
+# The fix is deliberately the boring one: whatever the engine says it NEEDS is
+# either an Android system library or shipped next to it in jniLibs. The app
+# starts the engine with LD_LIBRARY_PATH=nativeLibraryDir (AetherProcess.kt),
+# which is how an executable - unlike a dlopen()ed library - finds a packaged
+# dependency. Anything else that is unresolved fails the build HERE, instead of
+# reaching a phone as "the core stopped unexpectedly".
+# ---------------------------------------------------------------------------
+ndk_sysroot_triple() {
+  case "$1" in
+    arm64-v8a)   echo "aarch64-linux-android" ;;
+    armeabi-v7a) echo "arm-linux-androideabi" ;;
+    x86_64)      echo "x86_64-linux-android" ;;
+    x86)         echo "i686-linux-android" ;;
+    *) return 1 ;;
+  esac
+}
+
+# package_engine_runtime_deps <abi> <so>
+package_engine_runtime_deps() {
+  local abi="$1" so="$2" needed dep triple src
+  needed="$("${NDK_TOOLCHAIN}/llvm-readelf" -d "${so}" 2>/dev/null \
+    | sed -n 's/.*Shared library: \[\([^]]*\)\].*/\1/p')"
+  if [ -z "${needed}" ]; then
+    echo "ERROR: [${abi}] could not read the dynamic section of libaether.so." >&2
+    exit 1
+  fi
+  while IFS= read -r dep; do
+    [ -n "${dep}" ] || continue
+    case "${dep}" in
+      libc.so|libdl.so|liblog.so|libm.so|libandroid.so|libz.so) ;;
+      libc++_shared.so)
+        triple="$(ndk_sysroot_triple "${abi}")" || {
+          echo "ERROR: [${abi}] no NDK sysroot triple known for this ABI." >&2; exit 1; }
+        src="${NDK_TOOLCHAIN}/../sysroot/usr/lib/${triple}/libc++_shared.so"
+        if [ ! -f "${src}" ]; then
+          echo "ERROR: [${abi}] libaether.so needs libc++_shared.so but the NDK has none at ${src}" >&2
+          exit 1
+        fi
+        cp "${src}" "${JNI_DIR}/${abi}/libc++_shared.so"
+        chmod 644 "${JNI_DIR}/${abi}/libc++_shared.so"
+        echo "    [${abi}] packaged engine dependency: libc++_shared.so (from the NDK that linked it)"
+        ;;
+      *)
+        if [ -f "${JNI_DIR}/${abi}/${dep}" ]; then
+          echo "    [${abi}] engine dependency already packaged: ${dep}"
+        else
+          echo "ERROR: [${abi}] libaether.so needs ${dep}, which is neither an Android system" >&2
+          echo "       library nor packaged in jniLibs. The engine would fail on every phone with" >&2
+          echo "       'CANNOT LINK EXECUTABLE'. Refusing to ship it." >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done <<< "${needed}"
+  echo "    [${abi}] libaether.so runtime dependencies resolved:" $(printf '%s ' ${needed})
+}
+
 build_aether() {
   local crate
   crate="$(detect_aether_crate || true)"
@@ -316,6 +428,7 @@ build_aether() {
     exit 1
   fi
   echo "==> [aether] binary crate: ${crate}"
+  python3 "${SCRIPT_DIR}/patch-engine-dependencies.py" "${crate}"
 
   export CARGO_TARGET_DIR="${AETHER_SRC}/target"
 
@@ -325,7 +438,7 @@ build_aether() {
   # situation on a local build.
   local abi
   for abi in "${ABIS[@]}"; do
-    rm -f "${JNI_DIR}/${abi}/libaether.so"
+    rm -f "${JNI_DIR}/${abi}/libaether.so" "${JNI_DIR}/${abi}/libc++_shared.so"
   done
 
   local bin_name
@@ -336,7 +449,16 @@ build_aether() {
   build_aether_abi() {
     local abi="$1" triple="$2"
     echo "==> [aether] building for ${abi} (${triple}, API ${API})"
-    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release )
+    local feature_args=()
+    if [ -n "${AETHER_FEATURES}" ]; then
+      feature_args=(--features "${AETHER_FEATURES}")
+      echo "    cargo features: ${AETHER_FEATURES}"
+    else
+      # Reachable only when a caller sets AETHER_FEATURES="" on purpose. Loud,
+      # because the resulting APK looks complete and has no Tor in it.
+      echo "    WARNING: building WITHOUT cargo features - the app's Tor modes will NOT work." >&2
+    fi
+    ( cd "${crate}" && ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}" cargo ndk -t "${abi}" --platform "${API}" build --release --locked "${feature_args[@]}" )
 
     local reldir="${CARGO_TARGET_DIR}/${triple}/release"
     local artifact=""
@@ -358,18 +480,213 @@ build_aether() {
     "${NDK_TOOLCHAIN}/llvm-strip" "${JNI_DIR}/${abi}/libaether.so" 2>/dev/null || true
     # Checked AFTER stripping, because stripping is what the shipped file gets.
     verify_patch_stamp "${abi}" "${JNI_DIR}/${abi}/libaether.so"
+    package_engine_runtime_deps "${abi}" "${JNI_DIR}/${abi}/libaether.so"
     echo "    installed libaether.so for ${abi}"
   }
 
   build_aether_abi "arm64-v8a"   "aarch64-linux-android"
   build_aether_abi "armeabi-v7a" "armv7-linux-androideabi"
+  build_aether_abi "x86_64"      "x86_64-linux-android"
+
+  # Prove Tor is IN the binary rather than trusting that the flag was honoured.
+  # `--tor-bind` is a string the Tor module owns, so it is absent from a build
+  # made without the feature - and grepping for it is the only check here that
+  # cannot be satisfied by a stale artifact.
+  if [ -n "${AETHER_FEATURES}" ] && [[ "${AETHER_FEATURES}" == *tor* ]]; then
+    local abi
+    for abi in "${ABIS[@]}"; do
+      # NOT `grep -q` (1.3.1, issue #48). This script runs under `set -euo
+      # pipefail`. `grep -q` exits as soon as it matches, which closes the pipe
+      # under `strings`; `strings` then dies of SIGPIPE, that non-zero status
+      # becomes the status of the whole pipeline because of `pipefail`, and the
+      # build fails claiming the Tor feature is missing from a binary that in
+      # fact contains it. The report is a FALSE NEGATIVE and it is timing
+      # dependent, so it fires on some runners and not others.
+      #
+      # Letting grep read to the end and throwing its output away keeps the exit
+      # status meaningful with no early close. (The upstream patch this came from
+      # wrote `grep -- '--tor-bind' />/dev/null`, which the shell splits into an
+      # argument `/` plus the redirection - that greps the root DIRECTORY and
+      # never looks at the binary at all.)
+      if strings -a "${JNI_DIR}/${abi}/libaether.so" 2>/dev/null | grep -- '--tor-bind' >/dev/null; then
+        echo "    [${abi}] tor feature verified in the binary."
+      else
+        echo "ERROR: ${abi}/libaether.so contains no Tor support although --features ${AETHER_FEATURES}" >&2
+        echo "       was requested. Refusing to ship an APK whose Tor modes cannot work." >&2
+        exit 1
+      fi
+    done
+  fi
+  # Audit the dependency tree that actually produced the binaries, even after
+  # a failed upstream upgrade triggered a rollback. Keep it across disk cleanup.
+  if [ -n "${RUNNER_TEMP:-}" ]; then
+    mkdir -p "${RUNNER_TEMP}/aether-audit/built-engine"
+    cp "${crate}/Cargo.lock" "${RUNNER_TEMP}/aether-audit/built-engine/Cargo.lock"
+  fi
+}
+
+# ============================================================================
+# build_pt: the pluggable transport for Tor bridges.
+#
+# Only bridges need this. Plain Tor and `Aether -> Tor` work without it, which is
+# why a missing Go toolchain is a warning and not an error - and why the app logs
+# the absence instead of hiding it.
+#
+# Two Android-specific details decide the whole recipe:
+#
+#  * The file MUST be named `lib*.so` and live in jniLibs. Android extracts only
+#    those from an APK onto a path that permits execution; anything else lands in
+#    the asset area, which is mounted noexec on modern Android. A correctly built
+#    transport under any other name is a file the engine cannot start.
+#  * It must be a position-independent executable (`-buildmode=pie`). It is
+#    spawned as a process, not dlopen'd, and since API 21 the loader refuses a
+#    non-PIE executable.
+# ============================================================================
+build_pt() {
+  if ! command -v go >/dev/null 2>&1; then
+    echo "==> [pt] Go toolchain not found - SKIPPING lyrebird." >&2
+    echo "    Tor still works (directly and through the tunnel). Tor BRIDGES will not:" >&2
+    echo "    the app logs 'no libpt-lyrebird.so in this APK' and carries on." >&2
+    return 0
+  fi
+
+  local src="${NATIVE_DIR}/lyrebird"
+  if [ ! -d "${src}/.git" ]; then
+    echo "==> [pt] cloning lyrebird ${LYREBIRD_REF}"
+    rm -rf "${src}"
+    git clone --quiet --depth 1 --branch "${LYREBIRD_REF}" "${LYREBIRD_REPO}" "${src}"
+  fi
+  echo "    lyrebird revision: $(cd "${src}" && git rev-parse --short HEAD)"
+
+  build_pt_abi() {
+    local abi="$1" goarch="$2" cc_prefix="$3"
+    local cc="${NDK_TOOLCHAIN}/${cc_prefix}${API}-clang"
+    if [ ! -x "${cc}" ]; then
+      echo "ERROR: no NDK compiler at ${cc}" >&2
+      exit 1
+    fi
+    echo "==> [pt] building lyrebird for ${abi} (${goarch})"
+    mkdir -p "${JNI_DIR}/${abi}"
+    (
+      cd "${src}"
+      CGO_ENABLED=1 GOOS=android GOARCH="${goarch}" CC="${cc}" \
+        go build -trimpath -buildmode=pie \
+          -ldflags "-s -w" \
+          -o "${JNI_DIR}/${abi}/libpt-lyrebird.so" \
+          ./cmd/lyrebird
+    )
+    echo "    installed libpt-lyrebird.so for ${abi}"
+  }
+
+  build_pt_abi "arm64-v8a"   "arm64" "aarch64-linux-android"
+  build_pt_abi "armeabi-v7a" "arm"   "armv7a-linux-androideabi"
+  build_pt_abi "x86_64"      "amd64" "x86_64-linux-android"
+}
+
+# ============================================================================
+# build_psiphon (1.4.0): the Psiphon the ENGINE runs.
+#
+# Core 2.1.0 moved Psiphon into the engine: `--psiphon` spawns psiphon-tunnel-core
+# (CluvexStudio's fork, pinned in native/aether/psiphon-build.sh). Built exactly
+# the way upstream builds its Android archives - GOOS=linux, CGO_ENABLED=0, a
+# static ELF that runs as-is on Android - and installed as `libpsiphon.so`,
+# because only lib*.so files in jniLibs land on an executable path. The app
+# points the engine at it with AETHER_PSIPHON_BIN.
+# ============================================================================
+build_psiphon() {
+  local script="${AETHER_SRC}/psiphon-build.sh"
+  [ -f "${script}" ] || script="${PROJECT_DIR}/native/aether/psiphon-build.sh"
+  if [ ! -f "${script}" ]; then
+    echo "ERROR: psiphon-build.sh not found (is the vendored core 2.1.0 or newer?)." >&2
+    exit 1
+  fi
+  if ! command -v go >/dev/null 2>&1; then
+    if [ "${AETHER_ALLOW_NO_PSIPHON:-}" = "1" ]; then
+      echo "==> [psiphon] no Go toolchain - SKIPPED on request; Psiphon modes will not work." >&2
+      return 0
+    fi
+    echo "ERROR: building libpsiphon.so needs Go (set AETHER_ALLOW_NO_PSIPHON=1 to skip)." >&2
+    exit 1
+  fi
+  build_psiphon_abi() {
+    local abi="$1" goarch="$2" goarm="$3" tmp
+    tmp="$(mktemp -d)"
+    echo "==> [psiphon] building psiphon-tunnel-core for ${abi} (linux/${goarch}${goarm:+ v${goarm}})"
+    bash "${script}" linux "${goarch}" "${tmp}" "${goarm}"
+    mkdir -p "${JNI_DIR}/${abi}"
+    cp "${tmp}/psiphon-tunnel-core" "${JNI_DIR}/${abi}/libpsiphon.so"
+    chmod 755 "${JNI_DIR}/${abi}/libpsiphon.so"
+    rm -rf "${tmp}"
+    echo "    installed libpsiphon.so for ${abi}"
+  }
+  build_psiphon_abi "arm64-v8a"   "arm64" ""
+  build_psiphon_abi "armeabi-v7a" "arm"   "7"
+  build_psiphon_abi "x86_64"      "amd64" ""
+}
+
+# ============================================================================
+# Xray core (1.5.0, custom configs)
+#
+# The user's own V2Ray/Xray and NapsternetV configs run in Xray-core, as a
+# separate process exactly like the engine and Psiphon: installed as
+# `libxray.so` so it lands on the executable native-library path.
+#
+# Not built from source: the official, reproducible XTLS release binaries are
+# fetched at a PINNED version and checked against PINNED SHA-256 sums, so a
+# changed or tampered download fails the build instead of shipping.
+#
+# v25.12.8 on purpose: newer cores refuse `allowInsecure` and the mKCP `seed`,
+# both of which real-world share links and NapsternetV files still carry.
+# ============================================================================
+XRAY_VERSION="${XRAY_VERSION:-v25.12.8}"
+
+build_xray() {
+  local base="https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}"
+  fetch_xray_abi() {
+    local abi="$1" asset="$2" sum="$3" tmp zip ok=0 i
+    tmp="$(mktemp -d)"
+    zip="${tmp}/xray.zip"
+    echo "==> [xray] ${XRAY_VERSION} ${asset} -> ${abi}"
+    for i in 1 2 3 4 5; do
+      if curl -fsSL --retry 3 --connect-timeout 30 -o "${zip}" "${base}/Xray-${asset}.zip"; then
+        ok=1
+        break
+      fi
+      echo "    download attempt ${i} failed, retrying..." >&2
+      sleep $((i * 5))
+    done
+    if [ "${ok}" != "1" ]; then
+      echo "ERROR: could not download Xray-${asset}.zip" >&2
+      exit 1
+    fi
+    if [ "${XRAY_VERSION}" = "v25.12.8" ]; then
+      echo "${sum}  ${zip}" | sha256sum -c - >/dev/null || {
+        echo "ERROR: Xray-${asset}.zip does not match its pinned SHA-256" >&2
+        exit 1
+      }
+    else
+      echo "    WARNING: XRAY_VERSION overridden - no pinned checksum for ${XRAY_VERSION}" >&2
+    fi
+    unzip -q -o "${zip}" xray -d "${tmp}"
+    mkdir -p "${JNI_DIR}/${abi}"
+    cp "${tmp}/xray" "${JNI_DIR}/${abi}/libxray.so"
+    chmod 755 "${JNI_DIR}/${abi}/libxray.so"
+    rm -rf "${tmp}"
+    echo "    installed libxray.so for ${abi}"
+  }
+  fetch_xray_abi "arm64-v8a"   "android-arm64-v8a" "670dd5c114b0e1e61d32623b7df8009ef9e5f965b3efa7a8c89a0289420e5b77"
+  fetch_xray_abi "x86_64"      "android-amd64"     "2f83265ed8d688f3e42e006b06cda856f390706e8fca37b1123b5127fbac7922"
+  fetch_xray_abi "armeabi-v7a" "linux-arm32-v7a"   "ffa5450bdc9fbc964ad00d1aed075960efdee7fcefb854055068d9fa1d9ddfe1"
 }
 
 case "${TARGET}" in
   hev)    build_hev ;;
   aether) build_aether ;;
-  all)    build_hev; build_aether ;;
-  *) echo "Usage: build-natives.sh [hev|aether|all]" >&2; exit 2 ;;
+  pt)     build_pt ;;
+  psiphon) build_psiphon ;;
+  xray)   build_xray; bash "${SCRIPT_DIR}/build-xray-pinned.sh" ;;
+  all)    build_hev; build_aether; build_pt; build_psiphon; build_xray; bash "${SCRIPT_DIR}/build-xray-pinned.sh" ;;
+  *) echo "Usage: build-natives.sh [hev|aether|pt|psiphon|xray|all]" >&2; exit 2 ;;
 esac
 
 echo "==> Done (${TARGET}). Installed libs:"

@@ -7,11 +7,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.rounded.Cloud
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Apps
 import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.Block
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.BugReport
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Dns
@@ -22,7 +24,9 @@ import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.Lock
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.RestartAlt
+import androidx.compose.material.icons.rounded.Route
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Timer
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.VpnKey
 import androidx.compose.material.icons.rounded.Wifi
@@ -34,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -43,20 +48,35 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import android.content.Intent
+import android.os.PowerManager
+import android.provider.Settings
+import androidx.compose.material.icons.rounded.BatteryAlert
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import studio.cluvex.aether.R
+import studio.cluvex.aether.ui.announcements.AnnouncementsPage
 import studio.cluvex.aether.ai.AiSession
 import studio.cluvex.aether.ai.AiTopic
+import studio.cluvex.aether.core.AccessToken
 import studio.cluvex.aether.core.ShareBridge
+import studio.cluvex.aether.core.SmartPlusPlan
 import studio.cluvex.aether.data.AppLanguage
 import studio.cluvex.aether.data.LanguagePrefs
+import studio.cluvex.aether.data.VisualPrefs
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.ConnectionState
 import studio.cluvex.aether.model.CoreLogLevel
 import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.GoolMode
 import studio.cluvex.aether.model.ExternalKind
 import studio.cluvex.aether.model.IpVersion
 import studio.cluvex.aether.model.Noize
@@ -64,12 +84,16 @@ import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
 import studio.cluvex.aether.model.SplitMode
 import studio.cluvex.aether.model.TeamAuth
+import studio.cluvex.aether.model.TorBridges
+import studio.cluvex.aether.model.TorMode
 import studio.cluvex.aether.model.TransportBackend
 import studio.cluvex.aether.transport.ExitRegions
+import studio.cluvex.aether.transport.TorCountries
 import studio.cluvex.aether.ui.AboutPanel
 import studio.cluvex.aether.ui.SharePanel
 import studio.cluvex.aether.ui.ai.AiAdvisorPage
 import studio.cluvex.aether.ui.ai.AiChatScreen
+import studio.cluvex.aether.ui.ai.AiTopicIcon
 import studio.cluvex.aether.ui.ai.AiHostContext
 import studio.cluvex.aether.ui.ai.AiSettingsPage
 import studio.cluvex.aether.ui.ai.LocalAiHost
@@ -77,6 +101,7 @@ import studio.cluvex.aether.ui.components.AppPickerDialog
 import studio.cluvex.aether.ui.components.DiagnosticsPanel
 import studio.cluvex.aether.ui.components.LtrOutlinedTextField
 import studio.cluvex.aether.ui.components.SegmentedSelector
+import studio.cluvex.aether.ui.components.SecureSurface
 
 /**
  * Every screen the settings area can show.
@@ -124,6 +149,13 @@ enum class SettingsRoute {
     DIAGNOSTICS,
     SHARE,
     ABOUT,
+
+    /** 1.5.0: the user's own V2Ray/Xray and NapsternetV configs, and their chain. */
+    CUSTOM_CONFIGS,
+    CLEAN_IP_SETTINGS,
+
+    /** 1.5.0: archive of the "What's new" announcements (پیام‌ها و اطلاعیه‌ها). */
+    ANNOUNCEMENTS,
 }
 
 /**
@@ -209,6 +241,9 @@ fun SettingsHost(
         SettingsRoute.SECURITY -> SecurityPage(profile, editable, onProfileChange, back, modifier)
         SettingsRoute.ENGINE -> EnginePage(profile, editable, onProfileChange, back, modifier)
         SettingsRoute.APPEARANCE -> AppearancePage(back, modifier)
+        SettingsRoute.CUSTOM_CONFIGS -> CustomConfigsPage(editable, back, modifier)
+        SettingsRoute.CLEAN_IP_SETTINGS -> CleanIpSettingsPage(editable, back, modifier)
+        SettingsRoute.ANNOUNCEMENTS -> AnnouncementsPage(back, modifier)
         SettingsRoute.DIAGNOSTICS -> PanelPage(stringResource(R.string.diag_title), back, modifier) {
             DiagnosticsPanel(startExpanded = true)
         }
@@ -289,7 +324,7 @@ private fun SettingsHomePage(
         // with its current value on the row, so the whole configuration can be
         // read without opening anything.
         settingsSection {
-            GroupCaption(stringResource(R.string.cat_group_tunnel))
+            GroupCaption(stringResource(R.string.cat_group_tunnel), aiTopic = AiTopic.SETTINGS)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.cat_connection),
@@ -299,6 +334,19 @@ private fun SettingsHomePage(
                     onClick = { onOpen(SettingsRoute.CONNECTION) },
                     aiTopic = AiTopic.BACKEND,
                 )
+                RowDivider()
+                SettingsNavRow(
+                    title = stringResource(R.string.cc_title),
+                    aiTopic = AiTopic.CUSTOM_CONFIGS,
+                    summary = stringResource(R.string.cc_nav_desc),
+                    icon = Icons.Rounded.Route,
+                    value = customConfigsValue(),
+                    onClick = { onOpen(SettingsRoute.CUSTOM_CONFIGS) },
+                )
+                RowDivider()
+                SettingsNavRow(aiTopic = AiTopic.CLEAN_IP_SCANNER, title = stringResource(R.string.cip_settings_title),
+                    summary = stringResource(R.string.cip_settings_summary), icon = Icons.Rounded.Cloud,
+                    onClick = { onOpen(SettingsRoute.CLEAN_IP_SETTINGS) })
                 RowDivider()
                 SettingsNavRow(
                     title = stringResource(R.string.section_transport),
@@ -328,7 +376,7 @@ private fun SettingsHomePage(
         }
 
         if (!quick) settingsSection {
-            GroupCaption(stringResource(R.string.cat_group_device))
+            GroupCaption(stringResource(R.string.cat_group_device), aiTopic = AiTopic.SETTINGS)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.cat_apps),
@@ -360,7 +408,7 @@ private fun SettingsHomePage(
         // three screens rather than one setting - and because a user who has not
         // set a key yet needs to find it without reading the whole tree.
         if (!quick) settingsSection {
-            GroupCaption(stringResource(R.string.cat_ai))
+            GroupCaption(stringResource(R.string.cat_ai), aiTopic = AiTopic.AI_CHAT)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.ai_title),
@@ -372,8 +420,15 @@ private fun SettingsHomePage(
             }
         }
 
+        // Moved here from the language page: animations and connection sounds are
+        // general app behaviour, not language settings.
         if (!quick) settingsSection {
-            GroupCaption(stringResource(R.string.cat_group_app))
+            GroupCaption(stringResource(R.string.cat_display_sound), aiTopic = AiTopic.SETTINGS)
+            DisplayAndSoundGroup()
+        }
+
+        if (!quick) settingsSection {
+            GroupCaption(stringResource(R.string.cat_group_app), aiTopic = AiTopic.SETTINGS)
             SettingsGroup {
                 SettingsNavRow(
                     title = stringResource(R.string.language_title),
@@ -407,8 +462,65 @@ private fun SettingsHomePage(
                     onClick = { onOpen(SettingsRoute.ZERO_TRUST) },
                     aiTopic = AiTopic.ZERO_TRUST,
                 )
+                // ISSUE #5 (1.3.1): "when I turn the screen off and on again the
+                // connection drops - the VPN still says connected but nothing
+                // loads." On most vendor Android builds that is Doze / app standby
+                // suspending the process the tunnel lives in, and the only cure is
+                // an exemption the USER has to grant; an app cannot grant it to
+                // itself.
+                //
+                // The row only appears while the exemption is missing, so it
+                // disappears once it is dealt with rather than becoming permanent
+                // furniture. It opens the system's own battery-optimisation list:
+                // ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS needs NO permission,
+                // unlike ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, which needs
+                // REQUEST_IGNORE_BATTERY_OPTIMIZATIONS in the manifest. Keeping the
+                // permission count at five was worth one extra tap.
+                val power = context.getSystemService(PowerManager::class.java)
+                fun readExempt(): Boolean =
+                    runCatching { power?.isIgnoringBatteryOptimizations(context.packageName) }
+                        .getOrNull() ?: true
+                var exempt by remember(power) { mutableStateOf(readExempt()) }
+                // r8: read once and remembered, the row outlived the grant: the
+                // user taps it, allows Aether in the system list, comes back - and
+                // this page, which never left the composition, still shows it.
+                // Re-read on every resume, which is exactly the moment the user
+                // returns from that system screen.
+                val lifecycleOwner = LocalLifecycleOwner.current
+                DisposableEffect(lifecycleOwner, power) {
+                    val observer = LifecycleEventObserver { _, event ->
+                        if (event == Lifecycle.Event.ON_RESUME) exempt = readExempt()
+                    }
+                    lifecycleOwner.lifecycle.addObserver(observer)
+                    onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+                }
+                if (!exempt) {
+                    RowDivider()
+                    SettingsNavRow(
+                        aiTopic = AiTopic.BATTERY,
+                        title = stringResource(R.string.battery_title),
+                        summary = stringResource(R.string.battery_desc),
+                        icon = Icons.Rounded.BatteryAlert,
+                        onClick = {
+                            runCatching {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+                                )
+                            }
+                        },
+                    )
+                }
                 RowDivider()
                 SettingsNavRow(
+                    aiTopic = AiTopic.ANNOUNCEMENTS,
+                    title = stringResource(R.string.announcements_title),
+                    summary = stringResource(R.string.announcements_desc),
+                    icon = Icons.Rounded.Campaign,
+                    onClick = { onOpen(SettingsRoute.ANNOUNCEMENTS) },
+                )
+                RowDivider()
+                SettingsNavRow(
+                    aiTopic = AiTopic.ABOUT,
                     title = stringResource(R.string.about_title),
                     summary = stringResource(R.string.about_subtitle),
                     icon = Icons.Rounded.Info,
@@ -468,7 +580,7 @@ private fun ConnectionPage(
     modifier: Modifier = Modifier,
 ) = SettingsScaffold(stringResource(R.string.cat_connection), onBack, modifier) {
     settingsSection {
-        GroupCaption(stringResource(R.string.backend_label))
+        GroupCaption(stringResource(R.string.backend_label), aiTopic = AiTopic.BACKEND)
         SettingsGroup {
             SettingsChoiceRow(
                 title = stringResource(R.string.backend_label),
@@ -489,18 +601,136 @@ private fun ConnectionPage(
                 label = { ExitRegions.label(it) },
                 onSelect = { onProfileChange(profile.copy(exitRegion = it)) },
                 enabled = editable && profile.backend.usesExternal,
-                summary = when (profile.backend.externalKind) {
-                    null -> stringResource(R.string.exit_help_aether)
-                    ExternalKind.PSIPHON -> stringResource(R.string.exit_help_psiphon)
+                summary = when {
+                    // Tor picks its own exit country, per circuit, and there is no
+                    // setting anywhere that changes that. Saying so is better than
+                    // a greyed-out row with a sentence about Aether next to it.
+                    profile.backend.needsTorFront -> stringResource(R.string.exit_help_tor)
+                    profile.backend.externalKind == ExternalKind.PSIPHON ->
+                        stringResource(R.string.exit_help_psiphon)
+                    else -> stringResource(R.string.exit_help_aether)
                 },
                 aiTopic = AiTopic.EXIT_REGION,
+                searchable = true,
+                searchPlaceholder = stringResource(R.string.exit_country_search),
             )
         }
         GroupFooter(backendHelp(profile.backend))
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.section_core))
+        SettingsGroup {
+            SettingsSwitchRow(aiTopic = AiTopic.VERIFY_CONNECTION, title = stringResource(R.string.verify_connection_title),
+                summary = stringResource(R.string.verify_connection_desc), icon = Icons.Rounded.Info,
+                checked = profile.verifyConnection, enabled = editable,
+                onCheckedChange = { onProfileChange(profile.copy(verifyConnection = it)) })
+        }
+    }
+
+    // ---- Tor (engine core 2.0.0) -------------------------------------------
+    //
+    // Shown only when the chosen mode actually contains Tor. A settings group that
+    // does nothing is worse than a missing one: it invites the user to change
+    // something and then silently ignores it.
+    if (profile.backend.usesTor) {
+        settingsSection {
+            GroupCaption(stringResource(R.string.section_tor), aiTopic = AiTopic.TOR_BRIDGES)
+            SettingsGroup {
+                SettingsChoiceRow(
+                    title = stringResource(R.string.tor_bridges_title),
+                    icon = Icons.Rounded.Dns,
+                    options = TorBridges.entries,
+                    selected = profile.torBridges,
+                    label = { torBridgesLabel(it) },
+                    onSelect = { onProfileChange(profile.copy(torBridges = it)) },
+                    // In `Aether -> Tor` the guards are dialled through the tunnel,
+                    // so the local network never sees Tor and a bridge has nothing
+                    // to hide from. The row is disabled rather than hidden, because
+                    // the reason is worth reading.
+                    enabled = editable && profile.backend.torMode != TorMode.CHAIN,
+                    summary = if (profile.backend.torMode != TorMode.CHAIN) {
+                        stringResource(R.string.tor_bridges_desc)
+                    } else {
+                        stringResource(R.string.tor_bridges_not_needed)
+                    },
+                    aiTopic = AiTopic.TOR_BRIDGES,
+                )
+                if (profile.backend.torMode != TorMode.CHAIN) {
+                    RowDivider(inset = false)
+                    SettingsChoiceRow(
+                        title = stringResource(R.string.tor_country_title),
+                        icon = Icons.Rounded.Public,
+                        // Blank means "let the engine detect it"; the rest are the
+                        // countries where a bridge is most often the only way in.
+                        options = TorCountries.values,
+                        selected = profile.torCountry.trim().lowercase()
+                            .takeIf { TorCountries.isOffered(it) } ?: "",
+                        label = { torCountryLabel(it) },
+                        onSelect = { onProfileChange(profile.copy(torCountry = it)) },
+                        summary = stringResource(R.string.tor_country_desc),
+                        enabled = editable,
+                        aiTopic = AiTopic.TOR_COUNTRY,
+                    )
+                    RowDivider(inset = false)
+                    SettingsChoiceRow(
+                        title = stringResource(R.string.tor_direct_secs_title),
+                        icon = Icons.Rounded.Timer,
+                        // Presets, not a free number: the useful range is narrow and a
+                        // typed value here is a way to make Tor look broken.
+                        options = TOR_DIRECT_PRESETS,
+                        selected = profile.torDirectSecs
+                            .takeIf { it in TOR_DIRECT_PRESETS } ?: 0,
+                        label = { torDirectLabel(it) },
+                        onSelect = { onProfileChange(profile.copy(torDirectSecs = it)) },
+                        summary = stringResource(R.string.tor_direct_secs_desc),
+                        enabled = editable,
+                        aiTopic = AiTopic.TOR_DIRECT_SECS,
+                    )
+                    RowDivider(inset = false)
+                    // A text BLOCK, not a row: bridge lines are long, LTR and
+                    // multi-line, which is exactly what SettingsBlock hosts (the
+                    // same shape the routing rules use).
+                    SettingsBlock(
+                        helper = stringResource(R.string.tor_bridge_lines_desc),
+                        aiTopic = AiTopic.TOR_BRIDGE_LINES,
+                    ) {
+                        LtrOutlinedTextField(
+                            value = profile.torBridgeLines,
+                            onValueChange = { onProfileChange(profile.copy(torBridgeLines = it)) },
+                            enabled = editable,
+                            singleLine = false,
+                            label = { Text(stringResource(R.string.tor_bridge_lines_title)) },
+                            placeholder = { Text(stringResource(R.string.tor_bridge_lines_hint)) },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                RowDivider(inset = false)
+                // Applies in every Tor mode, chained included: the proof runs after
+                // the bootstrap, and the default target can be blocked either way.
+                SettingsBlock(
+                    helper = stringResource(R.string.tor_check_desc),
+                    aiTopic = AiTopic.TOR_CHECK,
+                ) {
+                    LtrOutlinedTextField(
+                        value = profile.torCheck,
+                        onValueChange = { onProfileChange(profile.copy(torCheck = it)) },
+                        enabled = editable,
+                        singleLine = true,
+                        isError = profile.torCheck.isNotBlank() &&
+                            profile.sanitizedTorCheck() == null,
+                        label = { Text(stringResource(R.string.tor_check_title)) },
+                        placeholder = { Text(stringResource(R.string.tor_check_hint)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+            GroupFooter(stringResource(R.string.tor_group_footer))
+        }
+    }
+
+    settingsSection {
+        GroupCaption(stringResource(R.string.section_core), aiTopic = AiTopic.PROTOCOL)
         SettingsGroup {
             SettingsBlock(title = stringResource(R.string.protocol), aiTopic = AiTopic.PROTOCOL) {
                 SegmentedSelector(
@@ -508,8 +738,62 @@ private fun ConnectionPage(
                     selected = profile.protocol,
                     onSelect = { onProfileChange(profile.copy(protocol = it)) },
                     label = { protocolLabel(it) },
-                    enabled = editable && profile.backend.usesAetherEngine,
+                    // The reverse chain runs MASQUE/HTTP-2 or nothing: the engine
+                    // refuses --wg and --gool through Tor. Disabled with the reason
+                    // written out, rather than accepting a choice that gets silently
+                    // overridden in Profile.effectiveProtocol.
+                    enabled = editable && profile.backend.usesAetherEngine &&
+                        profile.backend.torMode != TorMode.REVERSE,
                 )
+                if (profile.backend.torMode == TorMode.REVERSE) {
+                    SettingsNoticeRow(
+                        text = stringResource(R.string.protocol_forced_reverse),
+                        icon = Icons.Rounded.Info,
+                    )
+                }
+                // Smart says which of its two implementations this profile gets:
+                // the race needs the plain Aether backend and automatic endpoint
+                // selection, and a user who picked Smart on a chained backend should
+                // not have to read the diagnostics log to learn that.
+                if (profile.protocol == Protocol.AUTO) {
+                    SettingsNoticeRow(
+                        text = stringResource(
+                            if (SmartPlusPlan.eligible(profile)) {
+                                R.string.protocol_auto_race
+                            } else {
+                                R.string.protocol_auto_ladder
+                            },
+                        ),
+                        icon = Icons.Rounded.Info,
+                    )
+                }
+            }
+            // Core 2.3.0: `--gool` became WireGuard inside MASQUE and the older
+            // WireGuard-inside-WireGuard moved to `--gool-classic`. Shown for WARP×2,
+            // and for Smart too because Smart can resolve to gool. Hidden in the
+            // reverse chain, where the engine refuses gool altogether.
+            if ((profile.protocol == Protocol.GOOL || profile.protocol == Protocol.AUTO) &&
+                profile.backend.torMode != TorMode.REVERSE
+            ) {
+                RowDivider(inset = false)
+                SettingsBlock(
+                    title = stringResource(R.string.gool_mode_title),
+                    helper = stringResource(
+                        when (profile.goolMode) {
+                            GoolMode.MODERN -> R.string.gool_mode_modern_desc
+                            GoolMode.CLASSIC -> R.string.gool_mode_classic_desc
+                        },
+                    ),
+                    aiTopic = AiTopic.GOOL_MODE,
+                ) {
+                    SegmentedSelector(
+                        options = GoolMode.entries,
+                        selected = profile.goolMode,
+                        onSelect = { onProfileChange(profile.copy(goolMode = it)) },
+                        label = { goolModeLabel(it) },
+                        enabled = editable && profile.backend.usesAetherEngine,
+                    )
+                }
             }
             RowDivider(inset = false)
             SettingsChoiceRow(
@@ -607,7 +891,7 @@ private fun TransportPage(
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_tuning))
+        GroupCaption(stringResource(R.string.cat_group_tuning), aiTopic = AiTopic.MTU)
         SettingsGroup {
             SettingsChoiceRow(
                 title = stringResource(R.string.keepalive_label),
@@ -622,18 +906,64 @@ private fun TransportPage(
             SettingsChoiceRow(
                 title = stringResource(R.string.mtu_label),
                 options = ConnectionProfile.MTU_PRESETS,
-                selected = profile.mtu,
+                selected = profile.mtu.takeIf { it in ConnectionProfile.MTU_PRESETS } ?: 0,
                 label = { "$it" },
                 onSelect = { onProfileChange(profile.copy(mtu = it)) },
                 enabled = editable,
                 aiTopic = AiTopic.MTU,
+            )
+            RowDivider(inset = false)
+            // ISSUE #33 (1.3.1): "let the MTU be chosen freely, not by clicking
+            // between options." The presets stay - they are the four or five values
+            // that actually matter and most users should not be typing here - but
+            // path MTU is a property of a network, and a user hunting for the one
+            // value that stops Telegram stalling needs to be able to enter it.
+            //
+            // The field owns its own text rather than reading profile.mtu back,
+            // because a partially typed number ("12" on the way to "1280") is not a
+            // valid MTU and must not be pushed into the profile: the SCRAMBLED-INPUT
+            // fix in MainActivity solved echo, not semantics. Only a value inside
+            // the range the TUN can actually carry is committed.
+            var mtuText by remember(profile.mtu) { mutableStateOf(profile.mtu.toString()) }
+            val mtuTyped = mtuText.toIntOrNull()
+            val mtuBad = mtuText.isNotEmpty() &&
+                (mtuTyped == null || mtuTyped !in ConnectionProfile.MTU_MIN..ConnectionProfile.MTU_MAX)
+            LtrOutlinedTextField(
+                value = mtuText,
+                onValueChange = { typed ->
+                    mtuText = typed.filter { it.isDigit() }.take(5)
+                    mtuText.toIntOrNull()
+                        ?.takeIf { it in ConnectionProfile.MTU_MIN..ConnectionProfile.MTU_MAX }
+                        ?.let { onProfileChange(profile.copy(mtu = it)) }
+                },
+                enabled = editable,
+                singleLine = true,
+                isError = mtuBad,
+                label = { Text(stringResource(R.string.mtu_custom_label)) },
+                supportingText = {
+                    Text(
+                        if (mtuBad) {
+                            stringResource(
+                                R.string.mtu_custom_range,
+                                ConnectionProfile.MTU_MIN,
+                                ConnectionProfile.MTU_MAX,
+                            )
+                        } else {
+                            stringResource(R.string.mtu_custom_help)
+                        },
+                    )
+                },
+                keyboardType = KeyboardType.Number,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
             )
         }
         GroupFooter(stringResource(R.string.mtu_desc))
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_antidpi))
+        GroupCaption(stringResource(R.string.cat_group_antidpi), aiTopic = AiTopic.ECH)
         SettingsGroup {
             SettingsSwitchRow(
                 title = stringResource(R.string.fragment_title),
@@ -652,6 +982,22 @@ private fun TransportPage(
                 onCheckedChange = { onProfileChange(profile.copy(ech = it)) },
                 aiTopic = AiTopic.ECH,
             )
+            // ISSUE #44 (1.3.1): only meaningful while ECH is on, so it is not
+            // shown otherwise - an always-visible field for a switched-off feature
+            // is a setting people fill in and then wonder about.
+            if (profile.ech) {
+                LtrOutlinedTextField(
+                    value = profile.echConfig,
+                    onValueChange = { onProfileChange(profile.copy(echConfig = it.trim())) },
+                    enabled = editable,
+                    singleLine = true,
+                    label = { Text(stringResource(R.string.ech_config_label)) },
+                    supportingText = { Text(stringResource(R.string.ech_config_help)) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
             RowDivider(inset = false)
             SettingsSwitchRow(
                 title = stringResource(R.string.masque_http2),
@@ -696,7 +1042,7 @@ private fun DnsRoutingPage(
     modifier: Modifier = Modifier,
 ) = SettingsScaffold(stringResource(R.string.cat_dns_routing), onBack, modifier) {
     settingsSection {
-        GroupCaption(stringResource(R.string.dns_label))
+        GroupCaption(stringResource(R.string.dns_label), aiTopic = AiTopic.DNS)
         SettingsGroup {
             SettingsBlock(helper = stringResource(R.string.dns_help), aiTopic = AiTopic.DNS) {
                 LtrOutlinedTextField(
@@ -708,6 +1054,32 @@ private fun DnsRoutingPage(
                     placeholder = { Text(stringResource(R.string.dns_hint)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
+SettingsSwitchRow(
+    aiTopic = AiTopic.GAME_DNS,
+    title = stringResource(R.string.game_mode_title),
+    checked = profile.gameMode,
+    onCheckedChange = { onProfileChange(profile.copy(gameMode = it)) },
+    summary = stringResource(R.string.game_mode_summary),
+    enabled = editable,
+)
+if (profile.gameMode) {
+    AiTopicIcon(AiTopic.GAME_DNS)
+    val invalid = profile.gameDnsServers.isNotBlank() && profile.gameDnsList().isEmpty()
+    LtrOutlinedTextField(
+        value = profile.gameDnsServers,
+        onValueChange = { onProfileChange(profile.copy(gameDnsServers = it)) },
+        enabled = editable,
+        singleLine = true,
+        label = { Text(stringResource(R.string.game_dns_label)) },
+        placeholder = { Text(stringResource(R.string.dns_hint)) },
+        isError = invalid,
+        supportingText = if (invalid) {
+            { Text(stringResource(R.string.game_dns_invalid)) }
+        } else null,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
             }
         }
     }
@@ -715,7 +1087,26 @@ private fun DnsRoutingPage(
     settingsSection {
         GroupCaption(stringResource(R.string.section_routes), aiTopic = AiTopic.ROUTE_BLOCK)
         SettingsGroup {
-            SettingsBlock(aiTopic = AiTopic.ROUTE_DIRECT) {
+            // 1.4.0 smart routing (core/SmartLists.kt)
+            SettingsSwitchRow(
+                aiTopic = AiTopic.BYPASS_IRAN,
+                title = stringResource(R.string.bypass_iran_title),
+                summary = stringResource(R.string.bypass_iran_desc),
+                checked = profile.bypassIran,
+                enabled = editable,
+                onCheckedChange = { onProfileChange(profile.copy(bypassIran = it)) },
+            )
+            RowDivider(inset = false)
+            SettingsSwitchRow(
+                aiTopic = AiTopic.BLOCK_ADS,
+                title = stringResource(R.string.block_ads_title),
+                summary = stringResource(R.string.block_ads_desc),
+                checked = profile.blockAds,
+                enabled = editable,
+                onCheckedChange = { onProfileChange(profile.copy(blockAds = it)) },
+            )
+            RowDivider(inset = false)
+            SettingsBlock(aiTopic = AiTopic.ROUTE_BLOCK) {
                 LtrOutlinedTextField(
                     value = profile.routeBlock,
                     onValueChange = { onProfileChange(profile.copy(routeBlock = it)) },
@@ -725,7 +1116,8 @@ private fun DnsRoutingPage(
                     placeholder = { Text(stringResource(R.string.route_block_hint)) },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Spacer(Modifier.height(12.dp))
+            }
+            SettingsBlock(aiTopic = AiTopic.ROUTE_DIRECT) {
                 LtrOutlinedTextField(
                     value = profile.routeDirect,
                     onValueChange = { onProfileChange(profile.copy(routeDirect = it)) },
@@ -826,8 +1218,12 @@ private fun ZeroTrustPage(
 
     if (profile.teamAuth != TeamAuth.OFF) {
         settingsSection {
+            // AUDIT F-3: the Access service token / client secret are typed and
+            // stored here. Screenshot-, screen-record- and recents-blind while
+            // this section is composed.
+            SecureSurface()
             SettingsGroup {
-                SettingsBlock {
+                SettingsBlock(aiTopic = AiTopic.ZERO_TRUST) {
                     LtrOutlinedTextField(
                         value = profile.team,
                         onValueChange = { onProfileChange(profile.copy(team = it)) },
@@ -847,6 +1243,10 @@ private fun ZeroTrustPage(
                                 enabled = editable,
                                 singleLine = true,
                                 label = { Text(stringResource(R.string.access_id_label)) },
+                                // 1.3.1: which of the three methods needs the user
+                                // present, and which does not, was nowhere on this
+                                // screen. This one does not.
+                                supportingText = { Text(stringResource(R.string.team_auth_service_note)) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Spacer(Modifier.height(12.dp))
@@ -869,11 +1269,25 @@ private fun ZeroTrustPage(
                                 enabled = editable,
                                 singleLine = true,
                                 label = { Text(stringResource(R.string.access_email_label)) },
+                                // 1.3.1, issue #12: say what actually happens. Since
+                                // 1.4.0-r9 the user can sign in beforehand in the
+                                // group below (ZeroTrustMembershipGroup); without
+                                // that, the code is asked for DURING the connect, in
+                                // a dialog (see LoginCodeDialog), and the engine
+                                // waits five minutes for it.
+                                supportingText = { Text(stringResource(R.string.team_auth_email_note)) },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
                         TeamAuth.TOKEN -> {
                             Spacer(Modifier.height(12.dp))
+                            // 1.3.1: tell the user what the verdict on their paste
+                            // is, next to the field, instead of letting a bad or
+                            // expired token become a failed connect whose reason is
+                            // one line in the diagnostics log. Same two checks the
+                            // engine makes; see [AccessToken] for why this is not
+                            // and cannot be a verification.
+                            val verdict = AccessToken.inspect(profile.accessToken)
                             LtrOutlinedTextField(
                                 value = profile.accessToken,
                                 onValueChange = { onProfileChange(profile.copy(accessToken = it)) },
@@ -881,7 +1295,32 @@ private fun ZeroTrustPage(
                                 singleLine = true,
                                 visualTransformation = PasswordVisualTransformation(),
                                 label = { Text(stringResource(R.string.access_token_label)) },
-                                supportingText = { Text(stringResource(R.string.access_secret_help)) },
+                                isError = verdict is AccessToken.Verdict.Malformed ||
+                                    verdict is AccessToken.Verdict.Expired,
+                                supportingText = {
+                                    Text(
+                                        when (verdict) {
+                                            AccessToken.Verdict.Empty ->
+                                                stringResource(R.string.access_token_how)
+                                            AccessToken.Verdict.Malformed ->
+                                                stringResource(R.string.access_token_bad)
+                                            AccessToken.Verdict.Expired ->
+                                                stringResource(R.string.access_token_expired)
+                                            is AccessToken.Verdict.Usable -> when (val d = verdict.daysLeft) {
+                                                null -> stringResource(R.string.access_token_nodate)
+                                                0L -> stringResource(R.string.access_token_ok_soon)
+                                                // See the note in LoginCodeDialog:
+                                                // a count in front of a noun is a
+                                                // <plurals>, not a format string.
+                                                else -> pluralStringResource(
+                                                    R.plurals.access_token_ok,
+                                                    d.toInt(),
+                                                    d,
+                                                )
+                                            }
+                                        },
+                                    )
+                                },
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
@@ -898,6 +1337,12 @@ private fun ZeroTrustPage(
                     aiTopic = AiTopic.GATEWAY,
                 )
             }
+        }
+        // 1.4.0-r9 (issue #12): membership and "sign in first, then connect".
+        // Its own group, below the fields it reads, so the status always sits
+        // under the team and address it is about. See ZeroTrustMembership.kt.
+        settingsSection {
+            ZeroTrustMembershipGroup(profile, editable)
         }
     }
 }
@@ -917,12 +1362,23 @@ private fun AppsPage(
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     val copied = stringResource(R.string.share_copied)
-    val socks = "127.0.0.1:${ShareBridge.SOCKS_SHARE_PORT}"
-    val http = "127.0.0.1:${ShareBridge.HTTP_SHARE_PORT}"
+    // The ports the bridge is ACTUALLY listening on, falling back to the standard
+    // ones while it is not running (1.3.1).
+    //
+    // These two rows used to print the constants unconditionally, while the Share
+    // card on the home screen showed the live values from the same object - so the
+    // two screens could disagree, and this one is the one with a copy button. The
+    // bridge binds a fixed port and retries it rather than moving, so today the
+    // live value is either the constant or null; reading it anyway means this row
+    // cannot start lying if that ever changes.
+    val liveSocksPort by ShareBridge.socksPort.collectAsState()
+    val liveHttpPort by ShareBridge.httpPort.collectAsState()
+    val socks = "127.0.0.1:${liveSocksPort ?: ShareBridge.SOCKS_SHARE_PORT}"
+    val http = "127.0.0.1:${liveHttpPort ?: ShareBridge.HTTP_SHARE_PORT}"
 
     SettingsScaffold(stringResource(R.string.cat_apps), onBack, modifier) {
         settingsSection {
-            GroupCaption(stringResource(R.string.section_routing))
+            GroupCaption(stringResource(R.string.section_routing), aiTopic = AiTopic.PROXY_MODE)
             SettingsGroup {
                 SettingsSwitchRow(
                     title = stringResource(R.string.proxy_mode_title),
@@ -938,6 +1394,7 @@ private fun AppsPage(
                     // Fixed, standard ports: the same value every session, so
                     // what the user copies into another app keeps working.
                     SettingsValueRow(
+                        aiTopic = AiTopic.PROXY_MODE,
                         title = stringResource(R.string.proxy_socks_label),
                         value = socks,
                     ) {
@@ -948,6 +1405,7 @@ private fun AppsPage(
                     }
                     RowDivider(inset = false)
                     SettingsValueRow(
+                        aiTopic = AiTopic.PROXY_MODE,
                         title = stringResource(R.string.proxy_http_label),
                         value = http,
                     ) {
@@ -1078,7 +1536,7 @@ private fun SecurityPage(
     }
 
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_recovery))
+        GroupCaption(stringResource(R.string.cat_group_recovery), aiTopic = AiTopic.SMART_RECONNECT)
         SettingsGroup {
             SettingsSwitchRow(
                 title = stringResource(R.string.reprovision_title),
@@ -1152,8 +1610,13 @@ private fun EnginePage(
         }
     }
 
+    // Core 2.3.0 / 2.4.0 TLS fingerprint and API options. Server names,
+    // certificate checks and the ClientHello fingerprint (same layout and
+    // defaults as the Windows build). See Tls24Settings.kt.
+    tls24Sections(profile, editable, onProfileChange)
+
     settingsSection {
-        GroupCaption(stringResource(R.string.cat_group_tuning))
+        GroupCaption(stringResource(R.string.cat_group_tuning), aiTopic = AiTopic.TLS_GROUPS)
         SettingsGroup {
             // AI-ICON COVERAGE: these were three unrelated fields inside ONE
             // block, so a single icon labelled "TLS groups" was the only
@@ -1235,6 +1698,32 @@ private fun EnginePage(
     }
 }
 
+// ---------------------------------------------------------------- display & sound
+
+/** Home-screen animations and connect/disconnect sound, in the main settings. */
+@Composable
+private fun DisplayAndSoundGroup() {
+    val context = LocalContext.current
+    var soundsEnabled by remember { mutableStateOf(studio.cluvex.aether.core.ConnectionSounds.enabled(context)) }
+    var homeAnimationsEnabled by remember { mutableStateOf(VisualPrefs.homeAnimationsEnabled(context)) }
+    SettingsGroup {
+        SettingsSwitchRow(
+            title = stringResource(R.string.home_animations_title),
+            summary = stringResource(R.string.home_animations_desc),
+            checked = homeAnimationsEnabled,
+            onCheckedChange = {
+                homeAnimationsEnabled = it
+                VisualPrefs.setHomeAnimationsEnabled(context, it)
+            },
+            aiTopic = AiTopic.SETTINGS,
+        )
+        RowDivider(inset = false)
+        SettingsSwitchRow(aiTopic = AiTopic.CONNECTION_SOUND, title = stringResource(R.string.connection_sound_title),
+            summary = stringResource(R.string.connection_sound_summary), checked = soundsEnabled,
+            onCheckedChange = { soundsEnabled = it; studio.cluvex.aether.core.ConnectionSounds.setEnabled(context, it) })
+    }
+}
+
 // ---------------------------------------------------------------- language
 
 @Composable
@@ -1303,6 +1792,10 @@ private fun PanelPage(
 private fun backendShortLabel(backend: TransportBackend): String = when (backend) {
     TransportBackend.AETHER -> "Aether"
     TransportBackend.AETHER_PSIPHON -> "Aether \u2192 Psiphon"
+    TransportBackend.TOR -> "Tor"
+    TransportBackend.AETHER_TOR -> "Aether \u2192 Tor"
+    TransportBackend.TOR_PSIPHON -> "Tor \u2192 Psiphon"
+    TransportBackend.TOR_AETHER -> "Tor \u2192 Aether"
 }
 
 @Composable
@@ -1311,6 +1804,30 @@ private fun backendHelp(backend: TransportBackend): String = when (backend) {
     // Persian UI explained its single most important setting in English.
     TransportBackend.AETHER -> stringResource(R.string.backend_help_aether)
     TransportBackend.AETHER_PSIPHON -> stringResource(R.string.backend_help_chained)
+    TransportBackend.TOR -> stringResource(R.string.backend_help_tor)
+    TransportBackend.AETHER_TOR -> stringResource(R.string.backend_help_aether_tor)
+    TransportBackend.TOR_PSIPHON -> stringResource(R.string.backend_help_tor_psiphon)
+    TransportBackend.TOR_AETHER -> stringResource(R.string.backend_help_tor_aether)
+}
+
+/** Bootstrap patience presets in seconds; 0 keeps the engine's own 75. */
+private val TOR_DIRECT_PRESETS = listOf(0, 20, 45, 120, 240)
+
+@Composable
+private fun torCountryLabel(code: String): String =
+    TorCountries.label(code, stringResource(R.string.tor_country_auto))
+
+@Composable
+private fun torDirectLabel(secs: Int): String = when (secs) {
+    0 -> stringResource(R.string.tor_direct_auto)
+    else -> stringResource(R.string.tor_direct_secs_value, secs)
+}
+
+@Composable
+private fun torBridgesLabel(bridges: TorBridges): String = when (bridges) {
+    TorBridges.AUTO -> stringResource(R.string.tor_bridges_auto)
+    TorBridges.ALWAYS -> stringResource(R.string.tor_bridges_always)
+    TorBridges.OFF -> stringResource(R.string.tor_bridges_off)
 }
 
 @Composable
@@ -1326,6 +1843,13 @@ private fun protocolLabel(protocol: Protocol): String = when (protocol) {
     Protocol.MASQUE -> stringResource(R.string.protocol_masque)
     Protocol.WIREGUARD -> stringResource(R.string.protocol_wireguard)
     Protocol.GOOL -> stringResource(R.string.protocol_gool)
+    Protocol.MIM -> stringResource(R.string.protocol_mim)
+}
+
+@Composable
+private fun goolModeLabel(mode: GoolMode): String = when (mode) {
+    GoolMode.MODERN -> stringResource(R.string.gool_mode_modern)
+    GoolMode.CLASSIC -> stringResource(R.string.gool_mode_classic)
 }
 
 @Composable

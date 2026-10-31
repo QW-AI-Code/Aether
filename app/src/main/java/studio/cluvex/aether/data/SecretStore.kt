@@ -100,6 +100,15 @@ class SecretStore(context: Context) {
         const val ACCESS_TOKEN = "access_token"
 
         /**
+         * The pre-connect Zero Trust sign-in (1.4.0-r9): the enrolment JWT that
+         * Cloudflare issued for the e-mail code typed in Settings, bound to the
+         * team and the address it was issued for. One sealed value, so the binding
+         * is inside the ciphertext. See [TeamSignInStore] and
+         * [studio.cluvex.aether.core.TeamSignInRecord].
+         */
+        const val ACCESS_SIGNIN = "access_signin"
+
+        /**
          * The user's own Gemini API key (1.2.9 AI features).
          *
          * Sealed here for the same reason the Access secret is, plus one that is

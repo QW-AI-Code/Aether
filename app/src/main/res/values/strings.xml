@@ -86,7 +86,12 @@
     <string name="about_original_title">Aether core — Cluvex Studio</string>
     <string name="about_original_note">The upstream engine this app runs on</string>
     <string name="about_port_title">Android app &amp; GUI — QW-AI-Code</string>
-    <string name="about_port_note">This edition: the GUI, the Android runtime and the chained transports</string>
+    <string name="about_port_note">User interface, Android app and configuration-management features; engine development is credited above.</string>
+    <string name="support_core_title">Support the Aether core creator</string>
+    <string name="support_core_image_desc">Telegram profile image of the Aether core creator</string>
+    <string name="support_core_body">To support the creator of the Aether core, please visit this Telegram channel:</string>
+    <string name="support_core_warning">Please do not message QW-AI-Code for this. QW-AI-Code is only the GUI developer of Aether, not the creator of the Aether core. For support and appreciation of the core creator, go directly to the Telegram address below.</string>
+    <string name="support_close">Got it</string>
     <string name="menu_open">Open menu</string>
     <string name="advanced_open">Open advanced settings</string>
 
@@ -334,6 +339,8 @@
     <string name="cat_engine_desc">Fragmentation, TLS groups and core log level</string>
     <string name="cat_zerotrust_desc">Join a Cloudflare Zero Trust organization</string>
     <string name="cat_appearance_desc">Choose English or Persian, or follow the phone</string>
+    <string name="home_animations_title">Home screen animations</string>
+    <string name="home_animations_desc">Turns off the blue glow around the connect button and the other moving home-screen effects on weaker phones. The connect button still spins while connecting, and the live ping meter stays animated.</string>
 
     <string name="backend_label">Network backend</string>
     <string name="backend_help_aether">One hop through the bundled Aether/WARP engine. Fastest.</string>
@@ -617,22 +624,22 @@
     </string-array>
 
     <string-array name="about_port_improvements">
-        <item>Chained Aether → Psiphon transport added — a real foreign exit IP behind Aether\'s obfuscated first hop</item>
-        <item>Chained mode fixes the Iranian exit address plain Aether hands out, and opens AI services (Gemini and friends) that refuse it</item>
-        <item>Exit-country selector with flags for the chained mode, plus a UDP-capable SOCKS front so DNS and QUIC work through it</item>
-        <item>Full native Android app — upstream is CLI-only (no Android or Windows GUI)</item>
-        <item>One-tap system-wide VPN via Android VpnService — no manual proxy setup</item>
-        <item>Embedded hev-socks5-tunnel (tun2socks) running in-process on a native thread</item>
-        <item>Live \"Your IP / Server IP\" badge with multi-provider geolocation</item>
-        <item>Step-by-step connectivity self-test with crash-persistent diagnostic logs</item>
-        <item>Automatic reconnect with backoff and per-scan-mode connect timeouts</item>
-        <item>Protocol, scan-mode and IP-version controls in a Material 3 UI (English + فارسی)</item>
-        <item>Quick Settings tile — connect/disconnect straight from the notification shade</item>
-        <item>Share the VPN over Wi-Fi/hotspot — built-in HTTP + SOCKS5 proxy for laptops &amp; other phones</item>
-        <item>Advanced settings reachable right from the home screen</item>
-        <item>Signed per-ABI release APKs published automatically from GitHub Actions</item>
-        <item>Engine version shown in About, so the bundled core is always verifiable</item>
-        <item>Zero Trust (WARP for organizations), split routing rules and custom in-tunnel DNS</item>
+        <item>Chained Psiphon → Aether mode added: a genuinely foreign exit IP behind Aether\'s obfuscated first hop</item>
+        <item>The same chained mode fixes the plain Iranian Aether IP problem, so AI services (Gemini and others) that reject that IP open normally</item>
+        <item>Exit-country picker with flags for the chained mode, plus a SOCKS front that also carries UDP so DNS and QUIC work through it</item>
+        <item>A complete native Android app: the original edition is command-line only and has no Android or Windows graphical interface</item>
+        <item>One-tap system-wide VPN through Android VpnService, with no manual proxy setup</item>
+        <item>hev-socks5-tunnel (tun2socks) runs inside the app itself on a native thread</item>
+        <item>Live badge for \"your IP / server IP\" using several geolocation services</item>
+        <item>Step-by-step connection self-test, with a diagnostic log that survives a crash</item>
+        <item>Automatic reconnect with growing back-off and a connection timeout matched to each scan mode</item>
+        <item>Protocol, scan-mode and IP-version controls in a Material 3 interface (English and Persian)</item>
+        <item>Quick Settings tile: connect and disconnect straight from the notification shade</item>
+        <item>VPN sharing over Wi-Fi or hotspot: built-in HTTP and SOCKS5 proxy for laptops and other phones</item>
+        <item>Advanced settings reachable directly from the home screen</item>
+        <item>Signed APKs for every architecture, published automatically by GitHub Actions</item>
+        <item>The engine version is shown in About, so the core bundled with the app can always be verified</item>
+        <item>Zero Trust (enterprise WARP), split-routing rules and custom DNS inside the tunnel</item>
     </string-array>
     <!-- 1.3.1: replaces meta_protocol. The row names the whole path now, not just
          the engine's transport - see TransportBackend.pipelineLabel. -->
@@ -782,6 +789,10 @@
     <string name="cat_group_tls">TLS fingerprint</string>
     <string name="tls_ciphers_label">TLS 1.2 cipher suites</string>
     <string name="tls_ciphers_help">Leave empty for the recommended default (Chrome’s list, shown above). Otherwise BoringSSL names separated by “:”, e.g. ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256. An unknown name stops the engine at startup.</string>
+    <string name="tls_verify_title">Verify gateway certificate</string>
+    <string name="tls_verify_desc">Check the MASQUE gateway’s certificate against the engine’s pins. Always on with a Zero Trust team.</string>
+    <string name="api_address_label">WARP API address</string>
+    <string name="api_address_help">IP or name, optional port. Empty uses the default.</string>
     <string name="disable_grease_title">Disable GREASE</string>
     <string name="disable_grease_desc">Leave the GREASE values out of the TLS handshake. Off keeps it looking like Chrome’s.</string>
     <string name="tls_group_footer">Applies to MASQUE over HTTP/2, the WARP API calls and the ECH lookup. HTTP/3 (QUIC) offers TLS 1.3 only, so it lists no TLS 1.2 ciphers.</string>
@@ -802,7 +813,7 @@
     <string name="cc_hops_triple">Triple chain</string>
     <string name="cc_group_import">Add a config</string>
     <string name="cc_import_paste">Link or text</string>
-    <string name="cc_import_paste_desc">vless, vmess, trojan, ss, socks, wireguard, npvt links, Xray JSON or a subscription URL</string>
+    <string name="cc_import_paste_desc">vless, vmess, trojan, ss, socks, wireguard, npvt links, Xray JSON or a hosted config URL</string>
     <string name="cc_import_file">Import a file</string>
     <string name="cc_import_file_desc">.npvt, .txt, .json or a QR code image</string>
     <string name="cc_import_camera">Scan a QR code</string>
@@ -810,7 +821,7 @@
     <string name="cc_import_image">QR code from an image</string>
     <string name="cc_import_image_desc">A screenshot or a saved picture</string>
     <string name="cc_import_action">Import</string>
-    <string name="cc_paste_hint">Paste one or more links, a JSON config or a subscription URL</string>
+    <string name="cc_paste_hint">Paste one or more links, a JSON config or a hosted config URL</string>
     <string name="cc_paste_clipboard">Paste from clipboard</string>
     <string name="cc_scan_prompt">Point the camera at a config QR code</string>
     <string name="cc_imported">%1$d config(s) added</string>
@@ -850,7 +861,7 @@
     <string name="cc_ping_noreply">No response</string>
     <string name="cc_ping_invalid">Invalid config</string>
     <string name="cc_ping_nonet">No internet</string>
-    <string name="cc_ping_footer">The ping is a real delay test, like v2rayNG\'s: each config runs in the Xray core exactly as a direct connection would, and one request (generate_204) is sent through it. The number is the time for that request, handshake included. A config that carries nothing reports -1, with the reason: “Offline / server down” — the server\'s name does not resolve or its port is closed; “Filtered” — the network drops or resets the connection to the server (chaining it behind Aether or Tor can help); “No response” — the server accepts connections but the config carried nothing (expired, wrong key or user, or its protocol is blocked); “Invalid config” — the Xray core refuses the config.</string>
+    <string name="cc_ping_footer">Real delay is measured through each config running in Xray using HTTPS generate_204. Two attempts share a connection when possible; the faster successful request is reported. A cold attempt includes remote CONNECT and TLS, while a warm request can reuse them. Core startup and the test queue are excluded. No network means Offline; failure to start the core means Invalid config; no valid 204 response means No response. A timeout does not by itself prove that the server is blocked or down. Home uses the same target and method, but a chained tunnel can have a different delay from a direct config.</string>
     <string name="cc_err_psiphon_direct">Psiphon could not reach its own network from here, so it has nothing to hand the config. Use the other direction (Config → Psiphon) on this network: there Psiphon dials through your config.</string>
     <string name="cc_err_expired">This custom config has expired (its author set an expiry date).</string>
     <string name="cc_err_mobile_only">This custom config may only be used on mobile data.</string>
@@ -862,18 +873,156 @@
     <string name="announcements_desc">What\'s new in this version and the connection guide, any time</string>
     <string name="announcements_version">Version %1$s</string>
     <string name="announcements_footer">Every update message is kept here. Tap one to read it again.</string>
+    <string name="cc_verify">Verify connection</string>
+    <string name="cc_verify_desc">Custom configs only. Off skips readiness checks, not core startup or liveness.</string>
+    <string name="cc_auto">Auto-select / Best ping</string>
+    <string name="cc_auto_desc">While connected: periodically test eligible configs in the active group (or imported link) and reconnect to a faster healthy server. Brief interruptions are expected.</string>
+    <string name="cc_health_interval">Health-check interval</string>
+    <string name="cc_manual">Configs</string>
+    <string name="cc_subscriptions">Imported links</string>
+    <string name="cc_all_groups">All groups</string>
+    <string name="cc_group_new">New tab</string>
+    <string name="cc_group_edit">Edit tab</string>
+    <string name="cc_group_name">Name</string>
+    <string name="cc_group_save">Save</string>
+    <string name="cc_move_group">Move to tab</string>
+    <string name="cc_ungrouped">No tab</string>
+    <string name="cc_sub_new">Add link</string>
+    <string name="cc_sub_update">Refresh link</string>
+    <string name="cc_sub_url">Link URL</string>
+    <string name="cc_sub_updated">Link updated</string>
 
-    <!-- Sign-in + account header -->
-    <string name="auth_title">Sign in</string>
-    <string name="auth_subtitle">Sign in to continue to Aether</string>
-    <string name="auth_username">Username or email</string>
-    <string name="auth_password">Password</string>
-    <string name="auth_sign_in">Sign in</string>
-    <string name="auth_error_invalid_input">Enter your username and a password of at least 4 characters.</string>
-    <string name="auth_error_wrong">Wrong username or password.</string>
-    <string name="auth_error_network">Could not reach the server. Check your connection and try again.</string>
-    <string name="account_plan">Plan: %1$s</string>
-    <string name="account_plan_expiry">Plan: %1$s · expires %2$s</string>
-    <string name="account_sign_out">Sign out</string>
-    <string name="account_sign_out_summary">Disconnects the VPN and returns to the sign-in screen</string>
+    <!-- Same-version functional repair: catalog, selection feedback and built-in verification. -->
+    <string name="cc_tab_all">All</string>
+    <string name="cc_add_config">Add config</string>
+    <string name="cc_col_name">Server name</string>
+    <string name="cc_col_type">Type</string>
+    <string name="cc_col_protocol">Protocol</string>
+    <string name="cc_col_ping">Ping</string>
+    <string name="cc_col_port">Port</string>
+    <string name="cc_col_actions">Management</string>
+    <string name="cc_subscription_record">Imported link</string>
+    <string name="cc_ping_failed_short">Failed</string>
+    <string name="cc_manage_short">Manage</string>
+    <string name="cc_sub_delete_confirm">Delete %1$s and its downloaded configs?</string>
+    <string name="cc_table_footer">Ping and server actions stay visible. Swipe the middle columns for type, protocol and port. Failed tests show the diagnostic status; locked server ports remain hidden.</string>
+    <string name="state_selecting">Selecting the best server…</string>
+    <string name="verify_connection_title">Verify connection</string>
+    <string name="verify_connection_desc">Default on for all six built-in modes. Turning off skips optional initial connection checks, not engine startup, Tor bootstrap, exit-IP lookup or ongoing health monitoring.</string>
+    <string name="cc_custom_tab">Custom user tab</string>
+    <string name="cc_server_ping">Server / ping</string>
+    <string name="cc_link_source">Imported link</string>
+<string name="err_vpn_permission_unavailable">The VPN permission screen is unavailable on this device.</string>
+<string name="cc_sort_ping_desc">Highest latency first</string>
+<string name="cc_sort_ping_desc_summary">Off: lowest latency first. Failed or untested configs always stay at the end.</string>
+<string name="game_mode_title">Game Mode (dedicated DNS)</string>
+<string name="game_mode_summary">While on, the resolvers below are used by the Aether engine. Off keeps the current behavior. Lower ping is not guaranteed.</string>
+<string name="game_dns_label">Game Mode DNS</string>
+<string name="game_dns_invalid">No valid address. The regular DNS setting will be used.</string>
+<string name="preset_default_name">Default</string>
+<string name="preset_preserved_name">Saved settings</string>
+<string name="preset_save_as_new">Save current settings as new preset</string>
+<string name="preset_delete">Delete this preset</string>
+<string name="preset_name_hint">Preset name</string>
+<string name="preset_locked_hint">Disconnect to switch presets</string>
+<string name="preset_save">Save</string>
+<string name="preset_cancel">Cancel</string>
+<string name="preset_import">Import settings</string>
+<string name="preset_export">Export selected profile (non-secret)</string>
+<string name="preset_import_preview">Import %1$d presets? Current settings will not change until a preset is selected. Proxy credentials, Zero Trust secrets and custom server data are excluded.</string>
+<string name="preset_export_done">Settings exported without credentials or custom servers.</string>
+<string name="preset_operation_failed">Preset operation failed. Storage may be unavailable or the settings file may be invalid.</string>
+    <string name="cc_delete_tab_title">Delete tab and its configs</string>
+    <string name="cc_delete_tab_confirm">Delete “%1$s” and all configs in this tab? This cannot be undone. The All tab is protected.</string>
+
+<string name="cc_ping_all_short">Ping all</string>
+<string name="cc_select">Select</string>
+<string name="cc_select_done">Done</string>
+<string name="cc_speed_test">Download / upload speed test</string>
+<string name="cc_speed_running">Measuring real throughput…</string>
+<string name="cc_speed_failed">No throughput result; endpoint or proxy unavailable</string>
+<string name="cc_speed_consent">This test sends synthetic data through this server only and may use approximately 10 MiB per attempt. Mobile data charges may apply. No personal files are uploaded.</string>
+<string name="cc_speed_start">Start test</string>
+<string name="connection_sound_title">Connection sounds</string>
+<string name="connection_sound_summary">Play a short cue when connected or disconnected. Silent mode is respected.</string>
+    <string name="cip_title">Clean IP Scanner</string>
+    <string name="cip_notice">Probes public Cloudflare edges: up to 1 MB per healthy candidate, potentially hundreds of MB (mobile data charges may apply). Edge results are preliminary; applying to a server requires real proxy ping plus 3 stability checks. Disconnect first. Locked and incompatible servers cannot be changed.</string>
+    <string name="cip_profile">Scan depth</string>
+    <string name="cip_fast">Fast</string>
+    <string name="cip_balanced">Balanced</string>
+    <string name="cip_deep">Deep</string>
+    <string name="cip_manual_ceiling">Use manual ping limit</string>
+    <string name="cip_ceiling">Maximum allowed ping (ms)</string>
+    <string name="cip_start">Start scan</string>
+    <string name="cip_stop">Stop scan</string>
+    <string name="cip_probing">Scanning Cloudflare IPs… %1$d%%</string>
+    <string name="cip_validating">Checking real proxy ping… %1$d%%</string>
+    <string name="cip_locked">Disconnect and finish any active ping test before scanning.</string>
+    <string name="cip_cancelled">Scan stopped. No unvalidated endpoint was applied.</string>
+    <string name="cip_failed">Scan failed or the server changed. No unvalidated endpoint was saved.</string>
+    <string name="cip_empty">No healthy edge found. Try a deeper profile or another network.</string>
+    <string name="cip_applied">%1$d server(s) updated with confirmed endpoints.</string>
+    <string name="cip_unchanged">No stable real-proxy candidate qualified; the current endpoint was kept.</string>
+    <string name="cip_server_shortcut">Scan / change clean IP</string>
+    <string name="cip_settings_title">Clean IP scan settings</string>
+    <string name="cip_settings_summary">Scan depth and a shared manual real-ping limit for single and group scans</string>
+    <string name="cip_profiles_desc">How hard the clean-IP scanner works, for both single and group scans.</string>
+    <string name="cip_fast_desc">Quick and shallow — fewest candidates and shortest wait.</string>
+    <string name="cip_balanced_desc">Default — a balanced mix of depth and speed.</string>
+    <string name="cip_deep_desc">Most thorough and slowest — use when a scan finds nothing.</string>
+    <string name="cip_profile_detail">Budget %1$d · timeout %2$d ms · tries %3$d · parallel %4$d</string>
+    <string name="cip_manual_desc">On: take the first stable IP within the limit. Off: choose the lowest stable real ping among the tested candidates.</string>
+    <string name="cip_limit_error">Enter 50–5000 ms. The last valid saved limit remains in use until a valid value is entered.</string>
+    <string name="cip_limit_policy">50–5000 ms. If no confirmed candidate is within the enabled limit, keep the current server endpoint.</string>
+    <string name="cip_scan_all">Scan clean IPs for servers in this tab</string>
+    <string name="cip_group_progress">Scanning server %1$d of %2$d</string>
+    <string name="cip_result_dismiss">Dismiss scan result</string>
+    <string name="cc_err_active_tab_empty">The selected tab has no connectable server. Choose a tab or server.</string>
+    <string name="cat_display_sound">Display and sound</string>
+    <string name="exit_country_search">Search country</string>
+    <string name="cip_custom_title">Custom Cloudflare IP ranges</string>
+    <string name="cip_custom_enable">Use my own IP ranges</string>
+    <string name="cip_custom_desc">On: the scanner looks for a clean IP only inside the ranges entered below instead of the built-in Cloudflare ranges.</string>
+    <string name="cip_custom_label">IP ranges</string>
+    <string name="cip_custom_hint">One per line: CIDR (104.16.0.0/20), single IP (104.16.1.5) or range (104.16.1.1-104.16.1.80). Public IPv4 only.</string>
+    <string name="cip_custom_invalid">Invalid or non-public entry: %1$s</string>
+    <string name="cip_custom_count">%1$d range(s), %2$s addresses</string>
+    <string name="cip_custom_none">Custom ranges are on but no valid range is entered. Add a range or turn the option off.</string>
+
+    <!-- Core 2.4.0 TLS / API options (ported from the Windows build) -->
+    <string name="tls24_names_caption">Server names (SNI)</string>
+    <string name="masque_sni_label">MASQUE server name</string>
+    <string name="masque_sni_help">The name the MASQUE handshakes put in their ClientHello. Empty = core default.</string>
+    <string name="api_sni_label">API server name (SNI)</string>
+    <string name="api_sni_help">The server name the ClientHello of those API calls sends.</string>
+    <string name="api_host_label">API host</string>
+    <string name="api_host_help">The HTTP host of those API calls.</string>
+    <string name="tls24_cert_caption">Certificate checks</string>
+    <string name="trust_anchors_label">Trust anchor IDs</string>
+    <string name="trust_anchors_help">Dotted IDs separated by a colon. Empty = none.</string>
+    <string name="cert_compression_label">Certificate compression</string>
+    <string name="tls24_off">Off</string>
+    <string name="tls13_ciphers_label">TLS 1.3 cipher suites</string>
+    <string name="tls13_ciphers_help">Standard names separated by a colon, in order. Empty = Chrome default.</string>
+    <string name="key_shares_label">Key shares</string>
+    <string name="key_shares_help">Groups that get a key share; each must be one of the TLS groups. Empty = Chrome default.</string>
+    <string name="sigalgs_label">Signature algorithms</string>
+    <string name="sigalgs_help">BoringSSL names separated by a colon. Empty = core default.</string>
+    <string name="alps_label">ALPS</string>
+    <string name="alps_new">New</string>
+    <string name="alps_old">Old</string>
+    <string name="server_padding_label">Server padding (bytes)</string>
+    <string name="server_padding_help">Bytes of padding asked of the server, 0 to 65535. Empty = none.</string>
+    <string name="grease_sigalgs_title">GREASE signature algorithm</string>
+    <string name="grease_sigalgs_desc">Put a GREASE value first among the signature algorithms, as Chrome does.</string>
+    <string name="ech_grease_title">ECH GREASE</string>
+    <string name="ech_grease_desc">Send a GREASE ECH extension when no ECH key is offered.</string>
+    <string name="no_ocsp_title">Disable OCSP stapling</string>
+    <string name="no_ocsp_desc">Leave out the status_request extension.</string>
+    <string name="no_sct_title">Disable SCT</string>
+    <string name="no_sct_desc">Leave out the signed_certificate_timestamp extension.</string>
+    <string name="no_ticket_title">Disable session tickets</string>
+    <string name="no_ticket_desc">Leave out the session_ticket extension.</string>
+    <string name="no_perm_title">Disable extension permutation</string>
+    <string name="no_perm_desc">Keep one fixed order of the extensions instead of Chrome\'s per-handshake shuffle.</string>
 </resources>

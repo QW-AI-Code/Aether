@@ -33,7 +33,7 @@ AETHER_SRC="${NATIVE_DIR}/aether"
 # own modifications (custom-range scanning in prober.rs / wg_prober.rs, etc.)
 # are ALWAYS compiled into libaether.so with zero manual steps. When this dir is
 # present we use it verbatim and never touch the network for the engine. Delete
-# native/aether (or set AETHER_FORCE_CLONE=1) to go back to cloning upstream.
+# native/aether is an error: the engine is never cloned (auto-update disabled).
 VENDORED_AETHER="${PROJECT_DIR}/native/aether"
 AETHER_FORCE_CLONE="${AETHER_FORCE_CLONE:-}"
 
@@ -65,23 +65,25 @@ if [ ! -f "${HEV_DIR}/Makefile" ]; then
 fi
 
 echo "==> Providing Aether engine source (engine)"
-if [ -z "${AETHER_FORCE_CLONE}" ] && \
-   find "${VENDORED_AETHER}" -name Cargo.toml -not -path '*/target/*' 2>/dev/null | grep -q .; then
-  echo "   using the VENDORED engine bundled in this repo: ${VENDORED_AETHER}"
-  echo "   (your prober.rs / wg_prober.rs changes are included automatically; no download needed)"
-  rm -rf "${AETHER_SRC}"
-  mkdir -p "${AETHER_SRC}"
-  # Copy everything except any local build output (target/).
-  ( cd "${VENDORED_AETHER}" && tar --exclude='./target' --exclude='*/target' -cf - . ) \
-    | ( cd "${AETHER_SRC}" && tar -xf - )
-else
-  echo "   no vendored source found (or AETHER_FORCE_CLONE set); cloning ${AETHER_REPO}"
-  clone_repo "${GH}/${AETHER_REPO}.git" "${AETHER_SRC}" "${AETHER_REF}"
+# 1.6.0: the engine is NEVER downloaded. Automatic core updates are disabled;
+# the vendored native/aether (see CORE_VERSION) is the only source accepted.
+if [ -n "${AETHER_FORCE_CLONE}" ]; then
+  echo "WARNING: AETHER_FORCE_CLONE is ignored - automatic core download is disabled." >&2
 fi
+if [ -z "$(find "${VENDORED_AETHER}" -name Cargo.toml -not -path '*/target/*' 2>/dev/null | head -n1)" ]; then
+  echo "ERROR: vendored engine missing at ${VENDORED_AETHER}; refusing to download one." >&2
+  exit 1
+fi
+echo "   using the VENDORED engine bundled in this repo: ${VENDORED_AETHER} (core $(cat "${VENDORED_AETHER}/CORE_VERSION" 2>/dev/null || echo '?'))"
+rm -rf "${AETHER_SRC}"
+mkdir -p "${AETHER_SRC}"
+# Copy everything except any local build output (target/).
+( cd "${VENDORED_AETHER}" && tar --exclude='./target' --exclude='*/target' -cf - . ) \
+  | ( cd "${AETHER_SRC}" && tar -xf - )
 # The Aether binary crate does NOT live at the repo root; it sits in a
 # subdirectory (e.g. aether/) next to the vendored quiche/ QUIC library. Just
 # verify at least one Cargo.toml exists; build-natives.sh locates the crate.
-if ! find "${AETHER_SRC}" -name Cargo.toml -not -path '*/target/*' | grep -q .; then
+if ! [ -n "$(find "${AETHER_SRC}" -name Cargo.toml -not -path '*/target/*' | head -n1)" ]; then
   echo "ERROR: Aether source has no Cargo.toml anywhere under ${AETHER_SRC}" >&2
   ls -la "${AETHER_SRC}" >&2 || true
   exit 1
