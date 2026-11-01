@@ -370,11 +370,11 @@ androidComponents {
 }
 
 dependencies {
-    val composeBom = platform("androidx.compose:compose-bom:2024.10.01")
+    val composeBom = platform("androidx.compose:compose-bom:2026.09.00")
     implementation(composeBom)
 
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("androidx.core:core-ktx:1.15.0")
+    implementation("com.squareup.okhttp3:okhttp:5.5.1")
+    implementation("androidx.core:core-ktx:1.19.1")
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
@@ -386,16 +386,16 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
 
-    implementation("androidx.datastore:datastore-preferences:1.1.1")
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("androidx.datastore:datastore-preferences:1.3.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
 
     // 1.5.0 custom configs: JSON for the Xray config writer and the config parser
     // (the JsonElement API only, so no serialization compiler plugin is needed),
     // and ZXing for QR codes - the camera scanner and decoding a QR from an image.
-    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
+    implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.12.0")
     // Portable authenticated NPVS v5 decryption, including Android 26/27.
-    implementation("org.bouncycastle:bcprov-jdk18on:1.80")
-    implementation("com.google.zxing:core:3.5.3")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.86")
+    implementation("com.google.zxing:core:3.5.4")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
@@ -403,7 +403,7 @@ dependencies {
     // JVM model tests plus actual Compose recomposition regressions on Robolectric.
     // These test dependencies never enter the release APK.
     testImplementation("junit:junit:4.13.2")
-    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("org.robolectric:robolectric:4.17")
     testImplementation("androidx.compose.ui:ui-test-junit4")
     // Activity used by Compose JVM regressions also exists in release unit tests.
     testImplementation("androidx.compose.ui:ui-test-manifest")
