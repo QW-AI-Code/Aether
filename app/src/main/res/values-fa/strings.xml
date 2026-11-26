@@ -46,7 +46,7 @@
     <string name="notif_title">اِتِر</string>
     <string name="notif_action_disconnect">قطع اتصال</string>
 
-    <string name="err_engine_timeout">هسته نتوانست پراکسی محلی را به‌موقع باز کند.</string>
+    <string name="err_engine_timeout">برای این راهبرد در زمان مقرر دروازهٔ سالمی پیدا نشد.</string>
     <string name="err_engine_died">هسته به‌طور غیرمنتظره متوقف شد.</string>
     <string name="err_proxy_ports">پورت‌های پراکسی محلی باز نشدند — احتمالاً برنامهٔ دیگری از آن‌ها استفاده می‌کند.</string>
 
@@ -167,9 +167,9 @@
     <string name="section_routing">مسیریابی</string>
 
     <!-- گیت آمادگی + بازنشانی تنظیمات (v1.2.1) -->
-    <string name="state_verifying">در حال بررسی سلامت اتصال…</string>
+    <string name="state_smart_gate">دروازهٔ هوشمند: در انتظار عبور دادهٔ واقعی…</string>
     <string name="state_analyzing">در حال تحلیل شبکه (اتصال هوشمند)…</string>
-    <string name="err_auto_failed">اتصال هوشمند همهٔ راهبردها را امتحان کرد اما هیچ‌کدام روی این شبکه متصل نشد. یک پروتکل را دستی انتخاب کنید.</string>
+    <string name="err_auto_failed">اتصال هوشمند همهٔ پروتکل‌ها را منصفانه تست کرد اما هیچ‌کدام در این لحظه روی این شبکه به اینترنت نرسید. یک دقیقه حالت پرواز را روشن کنید و دوباره تلاش کنید.</string>
     <string name="err_protocol_failed">این پروتکل حتی با مبهم‌سازی هم روی این شبکه متصل نشد. حالت هوشمند یا پروتکل دیگری را امتحان کنید.</string>
     <string name="err_selftest">تونل برقرار شد اما تست انتهابهانتها ناموفق بود. دوباره تلاش کنید.</string>
     <string name="section_reset">بازنشانی</string>
@@ -615,9 +615,10 @@
     </string-array>
     <string name="meta_pipeline">اتصال</string>
 
-    <string name="state_smart_plus_racing">چند مسیر را هم‌زمان امتحان می‌کند…</string>
+    <string name="state_smart_plus_racing">همهٔ پروتکل‌ها هم‌زمان و منصفانه تست می‌شوند…</string>
+    <string name="state_smart_comparing">مقایسهٔ مسیرهای سالم (پینگ و سرعت)…</string>
 
-    <string name="protocol_auto_race">در این حالت، «هوشمند» دو مسیر را هم‌زمان امتحان می‌کند و به‌خاطر می‌سپارد روی این شبکه کدام‌یک کار کرد تا اتصال بعدی سریع باشد.</string>
+    <string name="protocol_auto_race">در این حالت، «هوشمند» وایرگارد و ⁨MASQUE⁩ را هم‌زمان و از یک لحظه تست می‌کند، پینگ و سرعت هر مسیر سالم را می‌سنجد، به بهترین مسیر وصل می‌شود و آن را برای این شبکه به خاطر می‌سپارد.</string>
     <string name="protocol_auto_ladder">روی این بک‌اند، «هوشمند» مسیرها را یکی‌یکی امتحان می‌کند. مسابقهٔ موازی به بک‌اند سادهٔ اتر و انتخاب خودکار اندپوینت نیاز دارد.</string>
     <!-- 1.4.0-r5: VPN sharing rewrite -->
     <string name="share_status_live">اشتراک فعال · ⁨%1$d⁩ اتصال</string>
@@ -843,8 +844,6 @@
     <string name="announcements_desc">تازه‌های این نسخه و راهنمای اتصال، هر زمان که خواستید</string>
     <string name="announcements_version">نسخهٔ %1$s</string>
     <string name="announcements_footer">همهٔ پیام‌های به‌روزرسانی اینجا بایگانی می‌شوند. برای خواندن دوباره روی هر کدام بزنید.</string>
-    <string name="cc_verify">راستی‌آزمایی اتصال</string>
-    <string name="cc_verify_desc">فقط کانفیگ سفارشی؛ خاموش کردن، تست اولیه را رد می‌کند، نه راه‌اندازی هسته و پایش سلامت را.</string>
     <string name="cc_auto">انتخاب خودکار / کمترین پینگ</string>
     <string name="cc_auto_desc">هنگام اتصال، کانفیگ‌های مجاز گروه فعال (یا لینک کانفیگ) دوره‌ای تست می‌شوند و به سرور بهتر اتصال مجدد انجام می‌شود؛ وقفهٔ کوتاه طبیعی است.</string>
     <string name="cc_health_interval">بازهٔ پایش سلامت</string>
@@ -877,8 +876,6 @@
     <string name="cc_sub_delete_confirm">لینک کانفیگ %1$s و کانفیگ‌های دانلودشدهٔ آن حذف شوند؟</string>
     <string name="cc_table_footer">پینگ و منوی هر سرور همیشه در دید هستند. ستون‌های میانی نوع، پروتکل و پورت اسکرول می‌شوند. نتیجهٔ ناموفق با وضعیت تشخیصی نمایش داده می‌شود؛ پورت کانفیگ قفل‌شده مخفی می‌ماند.</string>
     <string name="state_selecting">در حال انتخاب بهترین سرور…</string>
-    <string name="verify_connection_title">راستی‌آزمایی اتصال</string>
-    <string name="verify_connection_desc">پیش‌فرض برای شش حالت اصلی روشن است. خاموش‌کردن، تست اختیاری اولیه را رد می‌کند؛ نه راه‌اندازی هسته، آماده‌سازی Tor، دریافت IP خروجی یا پایش مداوم سلامت اتصال را.</string>
     <string name="cc_custom_tab">تب سفارشی کاربر</string>
     <string name="cc_server_ping">نام سرور / پینگ</string>
     <string name="cc_link_source">لینک واردشده</string>
@@ -995,4 +992,84 @@
     <string name="no_ticket_desc">افزونهٔ ⁨session_ticket⁩ حذف می‌شود.</string>
     <string name="no_perm_title">غیرفعال‌کردن جابه‌جایی افزونه‌ها</string>
     <string name="no_perm_desc">به‌جای جابه‌جایی تصادفی ⁨Chrome⁩ در هر دست‌دهی، ترتیب افزونه‌ها ثابت می‌ماند.</string>
+<string name="err_vpn_consent_denied">اندروید مجوز ⁨VPN⁩ را نداد. برای تلاش دوباره، دکمهٔ اتصال را بزنید.</string>
+<string name="vpn_consent_title">مجوز ⁨VPN⁩ داده نشد</string>
+<string name="vpn_consent_body_silent">اندروید صفحهٔ مجوز ⁨VPN⁩ را پیش از نمایش بست و اتر نتوانست اتصال را شروع کند.\n\nتقریباً همیشه دلیلش این است که یک برنامهٔ ⁨VPN⁩ دیگر روی «همیشه روشن» (⁨Always-on VPN⁩) تنظیم شده، یا پروفایل کاری، پوشهٔ امن (⁨Secure Folder⁩) یا سیاست مدیریت دستگاه اجازهٔ تغییر ⁨VPN⁩ را نمی‌دهد.\n\nتنظیمات ⁨VPN⁩ را باز کنید (در سامسونگ: تنظیمات › اتصالات › تنظیمات بیشتر اتصال › ⁨VPN⁩)، تنظیمات آن برنامهٔ دیگر را باز کنید، «⁨Always-on VPN⁩» و «مسدودکردن اتصال‌های بدون ⁨VPN⁩» را خاموش کنید و دوباره دکمهٔ اتصال را بزنید.</string>
+<string name="vpn_consent_body_cancelled">درخواست مجوز ⁨VPN⁩ بدون زدن «تأیید» بسته شد و اتر نتوانست اتصال را شروع کند.\n\nاگر دکمهٔ «تأیید» واکنش نشان نداد، برنامه‌ای که روی صفحه نمایش داده می‌شود جلوی آن را گرفته است (فیلتر نور آبی، کم‌نورکنندهٔ صفحه، حباب‌های شناور، ضبط صفحه). آن را لحظه‌ای خاموش کنید و دوباره دکمهٔ اتصال را بزنید.\n\nاگر برنامهٔ ⁨VPN⁩ دیگری روی «⁨Always-on VPN⁩» است، اول همان گزینه را در تنظیمات ⁨VPN⁩ خاموش کنید.</string>
+<string name="vpn_consent_open_settings">باز کردن تنظیمات ⁨VPN⁩</string>
+<string name="vpn_consent_close">بستن</string>
+<string name="cc_quick_ping">تست پینگ</string>
+<string name="cc_quick_speed">تست سرعت</string>
+<string name="cc_quick_delete">حذف</string>
+<string name="cc_sort_by">مرتب‌سازی سرورها بر اساس</string>
+<string name="cc_sort_by_desc">پینگ، یا سرعت دانلود / آپلودِ سنجیده‌شده با تست سرعت (سریع‌ترین بالا).</string>
+<string name="cc_sort_ping">پینگ</string>
+<string name="cc_sort_download">سرعت دانلود</string>
+<string name="cc_sort_upload">سرعت آپلود</string>
+<string name="cc_speed_all">تست سرعت همه</string>
+<string name="cc_speed_all_running">در حال تست سرعت…</string>
+<string name="cc_speed_all_consent">از راه هر یک از %1$d سرورِ این تب، یکی پس از دیگری، دادهٔ آزمایشی دانلود و آپلود می‌کند (حدود ۱۰ مگابایت برای هر سرور). سرورهایی که آخرین پینگشان ناموفق بوده رد می‌شوند. ممکن است هزینهٔ اینترنت همراه داشته باشد.</string>
+<string name="app_traffic_self">اتر (تونل)</string>
+<string name="app_traffic_removed">برنامه‌های حذف‌شده</string>
+<string name="app_traffic_tethering">هات‌اسپات / اشتراک اینترنت</string>
+<string name="app_traffic_system">سیستم اندروید</string>
+<string name="cd_ping_title">جزئیات تأخیر (پینگ)</string>
+<string name="cd_ping_last">آخرین</string>
+<string name="cd_ping_min">کمینه</string>
+<string name="cd_ping_max">بیشینه</string>
+<string name="cd_ping_avg">میانگین</string>
+<string name="cd_ping_jitter">جیتر (نوسان)</string>
+<string name="cd_ping_loss">پکت لاس (از دست رفتن)</string>
+<string name="cd_ping_samples">پاسخ‌داده / کل آزمون‌ها</string>
+<string name="cd_ping_note">از درون همین تونل و با یک درخواست ⁨HTTPS⁩ با بررسی گواهی، از شروع همین اتصال سنجیده شده است. آزمونی که پاسخ نگیرد از دست رفته حساب می‌شود.</string>
+<string name="cd_ping_burst">۱۰ بار اندازه بگیر</string>
+<string name="cd_ping_measuring">در حال اندازه‌گیری…</string>
+<string name="cd_close">بستن</string>
+<string name="cd_node_aether">هستهٔ اتر: تونل ⁨WARP⁩ / ⁨MASQUE⁩ کلادفلر</string>
+<string name="cd_node_tor">شبکهٔ تور: سه رله</string>
+<string name="cd_node_psiphon">شبکهٔ سایفون</string>
+<string name="cd_node_config">کانفیگ شخصی شما (⁨Xray⁩)</string>
+<string name="cd_chain_title">زنجیرهٔ اتصال</string>
+<string name="cd_chain_offline">متصل نیستید. برای دیدن نودهایی که ترافیک از آن‌ها می‌گذرد وصل شوید.</string>
+<string name="cd_chain_device">این دستگاه</string>
+<string name="cd_chain_internet">اینترنت</string>
+<string name="cd_role_single">تنها نود: شبکهٔ شما آن را می‌بیند و سایت‌ها نشانی آن را</string>
+<string name="cd_role_first">نود اول: تنها نودی که شبکهٔ شما (و ⁨DPI⁩ آن) می‌بیند</string>
+<string name="cd_role_exit">نود خروجی: سایت‌ها نشانی این نود را می‌بینند</string>
+<string name="cd_role_middle">نود میانی: ترافیک را بین بقیه جابه‌جا می‌کند</string>
+<string name="cd_traffic_title">جزئیات ترافیک</string>
+<string name="cd_traffic_apps">برنامه‌هایی که از اینترنت استفاده می‌کنند</string>
+<string name="cd_traffic_access_needed">اندروید آمار ترافیک هر برنامه را فقط وقتی می‌دهد که «دسترسی به میزان استفاده» را برای اتر روشن کنید. این اعداد از دستگاه خارج نمی‌شوند.</string>
+<string name="cd_traffic_grant">اجازهٔ دسترسی به میزان استفاده</string>
+<string name="cd_traffic_none">هنوز ترافیکی ثبت نشده است.</string>
+<string name="cd_traffic_note">اعداد از آمار شبکهٔ اندروید می‌آیند که با کمی تأخیر به‌روز می‌شود و در بازه‌های زمانی شمرده می‌شود. «اکنون» یعنی ترافیک آن برنامه در چند ثانیهٔ اخیر بیشتر شده است.</string>
+<string name="cd_traffic_active">اکنون</string>
+<string name="chain_core_config">کانفیگ</string>
+<string name="chain_core_config_desc">سرور ⁨V2Ray⁩ / ⁨Xray⁩ / نپستر شخصی شما</string>
+<string name="chain_core_aether_desc">⁨WARP⁩ یا ⁨MASQUE⁩ کلادفلر، با حالت هوشمند و ضد ⁨DPI⁩</string>
+<string name="chain_core_psiphon_desc">شبکهٔ سایفون، کشور خروجی خودکار یا انتخابی</string>
+<string name="chain_core_tor_desc">شبکهٔ تور، با بریج وقتی مسدود است</string>
+<string name="chain_builder_title">زنجیرهٔ اتصال</string>
+<string name="chain_node_count">تعداد نودها</string>
+<string name="chain_nodes_n">%1$d</string>
+<string name="chain_node_title">نود %1$d</string>
+<string name="chain_node_settings">تنظیمات %1$s</string>
+<string name="chain_node_shown">در پایین نمایش داده شده</string>
+<string name="chain_need_config">این زنجیره به یک کانفیگ شخصی نیاز دارد. در بخش کانفیگ‌های سفارشی یکی اضافه یا انتخاب کنید.</string>
+<string name="chain_aether_transport">ترابری و ضد ⁨DPI⁩</string>
+<string name="chain_aether_transport_desc">⁨MASQUE⁩ روی ⁨HTTP/2⁩ یا ⁨HTTP/3⁩، میزان مبهم‌سازی و تکه‌تکه‌سازی ⁨TLS⁩</string>
+<string name="chain_show_all">نمایش همهٔ تنظیمات اتصال</string>
+<string name="chain_builder_footer">تعداد نودهای زنجیره و هستهٔ هر نود را به ترتیبی که ترافیک از گوشی خارج می‌شود انتخاب کنید. با زدن تنظیمات هر نود فقط گزینه‌های همان هسته نمایش داده می‌شود.</string>
+<string name="diag_share_title">ارسال گزارش عیب‌یابی</string>
+<string name="diag_share_desc">پیشنهاد ارسال گزارش کرش‌ها و اتصال‌های ناموفق به سازندگان در گیت‌هاب. گزارش پاک‌سازی می‌شود (بدون ⁨IP⁩، سرور یا کلید) و فقط وقتی خودتان ثبتش کنید ارسال می‌شود.</string>
+<string name="diag_share_now">همین حالا گزارش عیب‌یابی بفرست</string>
+<string name="diag_share_send">ارسال گزارش</string>
+<string name="diag_share_not_now">الان نه</string>
+<string name="diag_share_failed_title">اتصال ناموفق بود</string>
+<string name="diag_share_failed_body">گزارش عیب‌یابی برای سازندگان فرستاده شود؟ شامل لاگِ پاک‌سازی‌شدهٔ همین تلاش است، بدون ⁨IP⁩، سرور یا کلید. می‌توانید این پیشنهاد را در تنظیمات خاموش کنید.</string>
+<string name="diag_share_paste_hint">گزارش کاملِ پاک‌سازی‌شده در کلیپ‌بورد کپی شد. پیش از ثبت، آن را اینجا جای‌گذاری کنید.</string>
+<string name="chain_three_needs_config">زنجیرهٔ ۳ نودی همیشه یک کانفیگ دارد: هسته حداکثر دو تا از ⁨Aether⁩، ⁨Psiphon⁩ و ⁨Tor⁩ را پشت سر هم اجرا می‌کند و نود سوم کانفیگ خود شماست (اول یا آخر).</string>
+    <!-- 1.7.0 (same version): the smart connection gate replaced "Verify connection". -->
+    <string name="smart_gate_title">دروازهٔ هوشمند اتصال</string>
+    <string name="smart_gate_desc">همیشه فعال است و تنظیمی لازم ندارد. «متصل» فقط وقتی نشان داده می‌شود که داده واقعاً از تونل رد و بدل شده باشد؛ معمولاً در کمتر از یک ثانیه. پس اتصال فیک ممکن نیست. گزینهٔ قدیمی راستی‌آزمایی حذف شد: باعث می‌شد ⁨MASQUE⁩ وصل نشود و اتصال‌ها کند شوند.</string>
 </resources>

@@ -40,8 +40,8 @@ object CustomConfigStore {
         val enabled: Boolean = false,
         val groups: List<Group> = emptyList(),
         val subscriptions: List<Subscription> = emptyList(),
-        val verifyConnection: Boolean = true,
-        val autoSelect: Boolean = false,
+        /** 1.7.0 (same version): on by default - connect to the lowest real delay. */
+        val autoSelect: Boolean = true,
         val healthIntervalSeconds: Long = 300,
         val tabNames: Map<String, String> = emptyMap(),
         /** Persisted independently of page/navigation lifetime; never inferred from activeId. */
@@ -162,7 +162,6 @@ object CustomConfigStore {
         return selected
     }
 
-    fun setVerify(context: Context, on: Boolean): State = update(context) { it.copy(verifyConnection = on) }
     fun setAutoSelect(context: Context, on: Boolean): State = update(context) { it.copy(autoSelect = on) }
     fun setHealthInterval(context: Context, seconds: Long): State = update(context) {
         it.copy(healthIntervalSeconds = seconds.coerceIn(60, 3600))
@@ -224,7 +223,6 @@ object CustomConfigStore {
         put("v", 4)
         put("activeTab", s.activeTab)
         put("tabNames", buildJsonObject { s.tabNames.forEach { (key, value) -> put(key, value) } })
-        put("verifyConnection", s.verifyConnection)
         put("autoSelect", s.autoSelect)
         put("healthIntervalSeconds", s.healthIntervalSeconds)
         put("groups", buildJsonArray { s.groups.forEach { g -> add(buildJsonObject {
@@ -304,8 +302,7 @@ object CustomConfigStore {
                     if (((o["v"] as? JsonPrimitive)?.longOrNull ?: 1L) >= 3L) sub.s("groupId")
                     else configs.filter { it.subscriptionId == sub.s("id") }.map { it.groupId }.distinct().singleOrNull())
             },
-            verifyConnection = (o["verifyConnection"] as? JsonPrimitive)?.booleanOrNull ?: true,
-            autoSelect = o.b("autoSelect"),
+            autoSelect = (o["autoSelect"] as? JsonPrimitive)?.booleanOrNull ?: true,
             healthIntervalSeconds = (o["healthIntervalSeconds"] as? JsonPrimitive)?.longOrNull
                 ?.coerceIn(60, 3600) ?: 300,
             activeId = active,

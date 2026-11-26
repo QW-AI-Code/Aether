@@ -8,7 +8,10 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -41,6 +44,11 @@ internal fun ConfigDataTable(
     scanTargetId: String? = null,
     scanProgress: Int = 0,
     scanValidating: Boolean = false,
+    // 1.7.0 (same version): one-tap actions on every capsule, so the common
+    // operations no longer need the config's menu. Null hides an action.
+    onPing: ((CustomConfig) -> Unit)? = null,
+    onSpeed: ((CustomConfig) -> Unit)? = null,
+    onDelete: ((CustomConfig) -> Unit)? = null,
 ) {
     if (rows.isEmpty()) { SettingsNoticeRow(stringResource(R.string.cc_empty), Icons.Rounded.MoreVert); return }
     val listState = rememberLazyListState()
@@ -77,12 +85,6 @@ internal fun ConfigDataTable(
                         Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
                             if (c != null) PingChip(pings[c.id])
                         }
-                        if (c != null && onScanIp != null && studio.cluvex.aether.scanner.CleanIpScanManager.supported(c)) {
-                            IconButton(enabled = editable && !testingAll && !scanning,
-                                onClick = { onScanIp(c) }, modifier = Modifier.size(36.dp).testTag("scan:${c.id}")) {
-                                Icon(Icons.Rounded.Search, stringResource(R.string.cip_server_shortcut))
-                            }
-                        }
                         IconButton(enabled = !testingAll, onClick = {
                             if (c != null) onConfigMenu(c) else sub?.let(onSubscriptionMenu)
                         }, modifier = Modifier.size(40.dp)) {
@@ -105,6 +107,30 @@ internal fun ConfigDataTable(
                             }, color = MaterialTheme.colorScheme.secondary, fontSize = 11.sp)
                         } }
                     }
+                    // 1.7.0 (same version): the one-tap actions sit on their own row, so the
+                    // ping / status chip above keeps the whole width it needs.
+                    if (c != null && (onPing != null || onSpeed != null || onDelete != null || onScanIp != null)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End)) {
+                            if (c != null) {
+                                val speedRunning = speeds[c.id]?.running == true
+                                if (onPing != null) QuickAction(Icons.Rounded.Refresh, stringResource(R.string.cc_quick_ping),
+                                    enabled = !testingAll && pings[c.id]?.status != ConfigPing.PingStatus.TESTING,
+                                    tag = "quick-ping:${c.id}") { onPing(c) }
+                                if (onSpeed != null) QuickAction(Icons.Rounded.Speed, stringResource(R.string.cc_quick_speed),
+                                    enabled = !testingAll && !speedRunning, tag = "quick-speed:${c.id}") { onSpeed(c) }
+                                if (onDelete != null) QuickAction(Icons.Rounded.Delete, stringResource(R.string.cc_quick_delete),
+                                    enabled = editable && !testingAll, tag = "quick-delete:${c.id}",
+                                    tint = MaterialTheme.colorScheme.error) { onDelete(c) }
+                            }
+                            if (c != null && onScanIp != null && studio.cluvex.aether.scanner.CleanIpScanManager.supported(c)) {
+                                IconButton(enabled = editable && !testingAll && !scanning,
+                                    onClick = { onScanIp(c) }, modifier = Modifier.size(36.dp).testTag("scan:${c.id}")) {
+                                    Icon(Icons.Rounded.Search, stringResource(R.string.cip_server_shortcut))
+                                }
+                            }
+                        }
+                    }
                     if (scanning && c != null && c.id == scanTargetId) {
                         val progress = scanProgress.coerceIn(0, 100)
                         val blue = androidx.compose.ui.graphics.Color(0xFF4FC3F7)
@@ -120,6 +146,21 @@ internal fun ConfigDataTable(
                 }
             }
         }
+    }
+}
+
+/** A small (32 dp) icon button for the capsule's one-tap actions. */
+@Composable
+private fun QuickAction(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    enabled: Boolean,
+    tag: String,
+    tint: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    onClick: () -> Unit,
+) {
+    IconButton(enabled = enabled, onClick = onClick, modifier = Modifier.size(32.dp).testTag(tag)) {
+        Icon(icon, label, Modifier.size(18.dp), tint = if (enabled) tint else tint.copy(alpha = .38f))
     }
 }
 
@@ -147,12 +188,17 @@ private fun PingChip(report: ConfigPing.Report?) {
         PingQuality.POOR -> studio.cluvex.aether.ui.theme.AetherError
         PingQuality.UNAVAILABLE -> MaterialTheme.colorScheme.onSurfaceVariant
     }
-    Surface(modifier = Modifier.widthIn(max = 140.dp),
-        shape = RoundedCornerShape(50), color = color.copy(alpha = .12f),
-        border = BorderStroke(1.dp, color.copy(alpha = .3f))) {
-        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
-            Text(label, Modifier.padding(horizontal = 10.dp, vertical = 5.dp), color = color,
-                fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
+    // 1.7.0 (same version): the whole status is always shown - the font shrinks
+    // to the space the row leaves (FitLineText) instead of ending in "...".
+    // White text on the tinted chip: coloured text on colour is hard to read.
+    Surface(shape = RoundedCornerShape(50), color = color.copy(alpha = .22f),
+        border = BorderStroke(1.dp, color.copy(alpha = .55f))) {
+        studio.cluvex.aether.ui.components.FitLineText(
+            text = label,
+            style = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, fontWeight = FontWeight.SemiBold),
+            color = androidx.compose.ui.graphics.Color.White,
+            minFontSize = 7.sp,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+        )
     }
 }

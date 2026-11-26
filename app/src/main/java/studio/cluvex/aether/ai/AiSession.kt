@@ -911,7 +911,7 @@ object AiSession {
             "connected using custom chain: ${it.mode.label(it.configLabel)}; private server credentials omitted"
         } ?: "connected"
         is ConnectionState.Reconnecting -> "reconnecting (attempt ${state.attempt} of ${state.maxAttempts})"
-        ConnectionState.Verifying -> "tunnel up, end-to-end self-test still running"
+        ConnectionState.Proving -> "tunnel up, the smart gate is proving that real data flows"
         ConnectionState.Selecting -> "selecting best custom server"
         ConnectionState.Connecting, ConnectionState.Launching -> "connecting"
         ConnectionState.Disconnecting -> "disconnecting"

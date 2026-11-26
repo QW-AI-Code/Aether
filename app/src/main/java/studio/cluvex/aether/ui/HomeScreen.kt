@@ -366,7 +366,7 @@ private fun stateTitle(state: ConnectionState): String = when (state) {
     is ConnectionState.Selecting -> stringResource(R.string.state_selecting)
     is ConnectionState.Launching -> stringResource(R.string.state_launching)
     is ConnectionState.Connecting -> stringResource(R.string.state_connecting)
-    is ConnectionState.Verifying -> stringResource(R.string.state_verifying)
+    is ConnectionState.Proving -> stringResource(R.string.state_smart_gate)
     is ConnectionState.Connected -> stringResource(R.string.state_connected)
     is ConnectionState.Reconnecting -> stringResource(R.string.state_reconnecting)
     is ConnectionState.Disconnecting -> stringResource(R.string.state_disconnecting)

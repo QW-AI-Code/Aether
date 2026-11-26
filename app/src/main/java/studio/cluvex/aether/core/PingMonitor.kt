@@ -18,6 +18,15 @@ data class PingResult(val ms: Long = -1L, val running: Boolean = false, val erro
 object PingMonitor {
     private val _state = MutableStateFlow(PingResult())
     val state: StateFlow<PingResult> = _state.asStateFlow()
+
+    /**
+     * 1.7.0 (same version): every completed probe of the current tunnel, oldest
+     * first, -1 for a probe that got no answer. Feeds the latency details popup
+     * on the connection card (min / max / average / jitter / packet loss).
+     */
+    private val _history = MutableStateFlow<List<Long>>(emptyList())
+    val history: StateFlow<List<Long>> = _history.asStateFlow()
+    const val HISTORY_SIZE = 120
     private val mutex = Mutex()
     private var tunnelPort = PortLease.socks
     private var epoch = 0L
@@ -36,6 +45,7 @@ object PingMonitor {
         epoch++
         session?.close(); session = null
         _state.value = PingResult()
+        _history.value = emptyList()
     }
 
     suspend fun pingOnce(viaTunnel: Boolean) {
@@ -61,6 +71,8 @@ object PingMonitor {
                         is RealDelay.Result.Ok -> PingResult(ms = result.ms)
                         else -> PingResult(error = true)
                     }
+                    val sample = (result as? RealDelay.Result.Ok)?.ms ?: -1L
+                    _history.value = (_history.value + sample).takeLast(HISTORY_SIZE)
                 }
             }
         } finally { mutex.unlock() }

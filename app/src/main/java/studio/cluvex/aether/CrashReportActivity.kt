@@ -111,6 +111,16 @@ class CrashReportActivity : ComponentActivity() {
                         }
                         val context = LocalContext.current
                         var copied by remember { mutableStateOf(false) }
+                        // 1.7.0 (same version): Send diagnostics (can be turned off in Settings).
+                        if (studio.cluvex.aether.core.DiagnosticsReporter.isEnabled(context)) {
+                            OutlinedButton(
+                                onClick = {
+                                    studio.cluvex.aether.core.DiagnosticsReporter.send(
+                                        context, studio.cluvex.aether.core.DiagnosticsReporter.Kind.CRASH, details)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) { Text(stringResource(R.string.diag_share_send)) }
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             OutlinedButton(
                                 onClick = {

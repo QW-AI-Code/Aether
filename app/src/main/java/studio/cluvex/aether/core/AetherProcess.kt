@@ -24,6 +24,78 @@ class AetherProcess(
 ) {
     private var process: Process? = null
 
+    /**
+     * 1.7.0 READINESS ROOT-CAUSE FIX.
+     *
+     * The engine binds its SOCKS5 listener the moment it starts (lib.rs,
+     * `Listeners::bind`) so the port can never be taken while it reconnects, and
+     * only starts ANSWERING on it once a tunnel is up (`socks::serve`, which logs
+     * `[+] socks5 server listening on ...`). The kernel completes the TCP
+     * handshake for a bound-but-not-serving socket, so "the port is open" was true
+     * ~0.3 s after every spawn - long before the engine had verified a cached
+     * gateway, let alone scanned for one. Every caller then ran a single 4 s SOCKS
+     * handshake and killed an engine that was simply still working: both Tehran
+     * field logs of 1.6.0 show every attempt failing exactly 4.0 s after the port
+     * "opened", including the MASQUE gateway that was about to come up.
+     *
+     * [servingAtMs] is the engine's own word that it is serving; [fatalLine] is
+     * the reason it gave when it stopped. Both are written by the log thread.
+     */
+    @Volatile
+    var servingAtMs: Long = 0L
+        private set
+
+    @Volatile
+    var fatalLine: String? = null
+        private set
+
+    @Volatile
+    var startedAtMs: Long = 0L
+        private set
+
+    /** True once the engine has said it serves SOCKS5 on its listener. */
+    val isServing: Boolean get() = servingAtMs > 0L
+
+    /**
+     * 1.7.0 (same version) SMART BRAIN: what this engine's own output says about
+     * the network - UDP silence, TLS resets, an empty scan, a blocked account API,
+     * a damaged identity ([DpiBrain] bit set). Read by the Smart race and ladder
+     * to decide the next tactic instead of walking a fixed list.
+     */
+    @Volatile
+    var dpiSignals: Int = 0
+        private set
+
+    /**
+     * Whether this instance holds one count in [IdentityVault.markRunning]. A
+     * second [stop] (the race's sweep after the lane's own stop, a cleanup after
+     * a failed start) used to decrement the counter AGAIN - i.e. the count of a
+     * different, live engine - and seal + shred the identity under it.
+     */
+    private val counted = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private val tail = ArrayDeque<String>()
+
+    /** The engine's last output lines (newest last), for the Smart brain and the log. */
+    fun recentLines(): List<String> = synchronized(tail) { tail.toList() }
+
+    private fun ingestReadiness(line: String) {
+        if (line.contains(SERVING_MARKER)) {
+            if (servingAtMs == 0L) servingAtMs = android.os.SystemClock.elapsedRealtime()
+        }
+        val bits = DpiBrain.signalsOf(line)
+        if (bits != 0) dpiSignals = dpiSignals or bits
+        synchronized(tail) {
+            tail.addLast(line.take(300))
+            while (tail.size > TAIL_LINES) tail.removeFirst()
+        }
+        val trimmed = line.trimStart()
+        // The engine's `main` prints its terminal error as `Error: <reason>`.
+        if (trimmed.startsWith("Error:")) {
+            fatalLine = trimmed.take(400)
+        }
+    }
+
     fun start(profile: ConnectionProfile, extraEnv: Map<String, String> = emptyMap()) {
         val bin = File(nativeLibDir, "libaether.so")
         if (!bin.exists()) {
@@ -135,9 +207,14 @@ class AetherProcess(
             reapPsiphonOrphans()
         }
 
+        servingAtMs = 0L
+        fatalLine = null
+        dpiSignals = 0
+        synchronized(tail) { tail.clear() }
+        startedAtMs = android.os.SystemClock.elapsedRealtime()
         val proc = builder.start()
         process = proc
-        IdentityVault.markRunning(true)
+        if (counted.compareAndSet(false, true)) IdentityVault.markRunning(true)
         // ZERO TRUST (1.3.1, issue #12): hand the engine's stdin to the login-code
         // prompt. Nothing in the app had ever written to it, which is why the
         // e-mail enrolment path could not work - the engine asks for the code on
@@ -179,6 +256,9 @@ class AetherProcess(
                         // (app-private file) still receives every line below.
                         if (BuildConfig.DEBUG) Log.i("aether-engine", it)
                         DiagnosticsLog.d(tag, it)
+                        // 1.7.0: readiness is tracked for EVERY engine, lane or
+                        // session - it is a property of this process only.
+                        ingestReadiness(it)
                         if (!racing) {
                             // Desktop-parity info row: pick out the endpoint the
                             // engine selected (no-op for every other line).
@@ -301,6 +381,12 @@ class AetherProcess(
      * has to enrol again. [IdentityVault.markRunning] returns how many are left.
      */
     private fun sealIfLastEngine() {
+        if (!counted.compareAndSet(true, false)) {
+            // This instance holds no count (never started, or already reaped):
+            // it must not take one away from an engine that is still running.
+            IdentityVault.sealIfIdle(workingDir)
+            return
+        }
         val stillRunning = IdentityVault.markRunning(false)
         if (stillRunning > 0) {
             DiagnosticsLog.d(
@@ -331,6 +417,13 @@ class AetherProcess(
     private companion object {
         /** How long a polite SIGTERM gets before we escalate to SIGKILL. */
         const val GRACEFUL_EXIT_MS = 250L
+
+        /** What `socks::serve` logs the moment the engine starts answering SOCKS5. */
+        const val SERVING_MARKER = "socks5 server listening on"
+
+        /** Output lines kept per engine for [recentLines]. */
+        const val TAIL_LINES = 80
+
     }
 
     /**

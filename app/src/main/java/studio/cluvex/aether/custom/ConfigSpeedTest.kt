@@ -24,6 +24,31 @@ object ConfigSpeedTest {
     internal fun bytesPerSecond(bytes: Long, nanos: Long): Long =
         SpeedRate.bytesPerSecond(bytes, nanos)
 
+    private val mutableTestingAll = MutableStateFlow(false)
+    /** True while [measureAll] works through a list. */
+    val testingAll: StateFlow<Boolean> = mutableTestingAll.asStateFlow()
+
+    /**
+     * 1.7.0 (same version): download/upload test of a whole list, one server at a
+     * time (parallel runs would share the same uplink and measure each other).
+     * Servers whose latest real-delay test failed are skipped: they cannot carry data.
+     */
+    suspend fun measureAll(context: Context, configs: List<CustomConfig>) {
+        if (configs.isEmpty() || !mutableTestingAll.compareAndSet(false, true)) return
+        try {
+            val pings = ConfigPingStore.results.value
+            for (config in configs) {
+                currentCoroutineContext().ensureActive()
+                val ping = pings[config.id]
+                if (ping != null && ping.status != ConfigPing.PingStatus.UNTESTED &&
+                    ping.status != ConfigPing.PingStatus.TESTING && !ping.ok) continue
+                measure(context, config)
+            }
+        } finally {
+            mutableTestingAll.value = false
+        }
+    }
+
     suspend fun measure(context: Context, config: CustomConfig) {
         if (!gate.tryLock()) return
         mutableResults.update { it + (config.id to Report(running = true)) }

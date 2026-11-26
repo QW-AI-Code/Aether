@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import subprocess
+import tomllib
 
 # Existing scoped exception: Tor RSA signature verification, not private-key decryption.
 # No patched rsa release exists for Marvin; keep this exception visible in every report.
@@ -17,6 +18,49 @@ RSA_EXCEPTION = "RUSTSEC-2023-0071"
 # applied after `cargo tree` proves the package is NOT in the build graph of any target with the
 # shipped features; if it ever enters the graph the finding blocks the release again.
 LOCKFILE_ONLY = {"RUSTSEC-2026-0387": ("crypto-bigint", "0.5.5")}
+
+
+# Accepted, tightly scoped risk (1.7.0). RUSTSEC-2026-0459: bundled SQLite < 3.54.0 can return
+# uninitialised page-cache memory when a process opens a database together with a sibling `-wal`
+# file of a different page size that a less trusted party wrote. The fix is libsqlite3-sys 0.39
+# (rusqlite 0.41), a semver-major step that arti's tor-dirmgr 0.46 (rusqlite ^0.39) does not
+# accept, so no lockfile update can reach it. In this engine SQLite is used only by tor-dirmgr
+# for Tor's directory cache, which lives in the app's private storage (AETHER_TOR_DIR under the
+# app's files dir): only the app itself can write those files, so the precondition of the
+# advisory cannot be met by another party. The exception is applied ONLY while the lockfile
+# proves exactly that shape - this version, reached only through rusqlite and only from
+# tor-dirmgr. Any other version or any other dependent blocks the release again.
+ACCEPTED_RISK = {
+    "RUSTSEC-2026-0459": {
+        "package": ("libsqlite3-sys", "0.37.0"),
+        "chain": (("libsqlite3-sys", {"rusqlite"}), ("rusqlite", {"tor-dirmgr"})),
+        "reason": "SQLite only opens Tor's directory cache in app-private storage (no untrusted -wal); "
+                  "fix needs rusqlite 0.41, which tor-dirmgr 0.46 does not accept",
+    },
+}
+
+
+def lock_packages(crate):
+    try:
+        return tomllib.loads((crate / "Cargo.lock").read_text(encoding="utf-8")).get("package", [])
+    except (OSError, ValueError):
+        return []
+
+
+def dependents_of(packages, name):
+    names = set()
+    for package in packages:
+        for dependency in package.get("dependencies", []):
+            if dependency.split()[0] == name:
+                names.add(package["name"])
+    return names
+
+
+def accepted_risk_holds(packages, spec):
+    name, version = spec["package"]
+    if not any(p.get("name") == name and p.get("version") == version for p in packages):
+        return False
+    return all(dependents_of(packages, crate_name) == allowed for crate_name, allowed in spec["chain"])
 
 
 def not_in_build_graph(crate, name, version):
@@ -48,6 +92,14 @@ def audit(crate, report, strict):
             emit(f"Lockfile-only exception verified: {name} {version} is not in the build graph ({advisory_id}).")
         else:
             emit(f"::warning::{name} {version} is in the build graph; {advisory_id} is NOT excepted.")
+    packages = lock_packages(crate)
+    for advisory_id, spec in ACCEPTED_RISK.items():
+        name, version = spec["package"]
+        if accepted_risk_holds(packages, spec):
+            ignores.append(advisory_id)
+            emit(f"Scoped accepted risk verified: {name} {version} ({advisory_id}) - {spec['reason']}.")
+        elif any(p.get("name") == name for p in packages):
+            emit(f"::warning::{name} is present but not in the reviewed shape; {advisory_id} is NOT excepted.")
     ignore_args = [arg for advisory_id in ignores for arg in ("--ignore", advisory_id)]
     result = subprocess.run(["cargo", "audit", "--json", *ignore_args],
                             cwd=crate, capture_output=True, text=True)

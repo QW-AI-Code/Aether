@@ -97,3 +97,8 @@ BUILD_VALIDATION.md
 PROJECT_STATUS.md
 _META/TODO/bhs.md
 native/aether/Docs/Aether.png
+# --- 1.7.0 (same version): the optional connection-check switch was replaced by
+#     the always-on smart connection gate (core/LiveDataProof.kt).
+app/src/main/java/studio/cluvex/aether/model/VerificationPolicy.kt
+app/src/main/java/studio/cluvex/aether/custom/CustomReadiness.kt
+app/src/test/java/studio/cluvex/aether/model/VerificationPolicyTest.kt

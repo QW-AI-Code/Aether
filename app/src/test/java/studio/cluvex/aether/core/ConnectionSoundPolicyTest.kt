@@ -23,7 +23,7 @@ class ConnectionSoundPolicyTest {
         val p = ConnectionSoundPolicy()
         p.accept(ConnectionState.Connected("127.0.0.1:1"))
         assertNull(p.accept(ConnectionState.Reconnecting(1, 5)))
-        assertNull(p.accept(ConnectionState.Verifying))
+        assertNull(p.accept(ConnectionState.Proving))
         assertNull(p.accept(ConnectionState.Connected("127.0.0.1:1")))
         assertEquals(ConnectionSoundPolicy.Cue.DISCONNECT, p.accept(ConnectionState.Error("test")))
     }

@@ -37,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.verticalScroll
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.BufferOverflow
@@ -138,17 +139,95 @@ class MainActivity : ComponentActivity() {
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
 
+    // ------------------------------------------------------------------
+    // CONNECT BUTTON "DOES NOTHING" (1.7.0, same version - field report from a
+    // Galaxy S24 Ultra; 1.5.0 and 1.6.0 behaved the same on that phone and fine
+    // on a tablet).
+    //
+    // ROOT CAUSE: a tap on Connect only reaches the service after Android's VPN
+    // consent (VpnService.prepare). When the system refuses that consent - most
+    // often because ANOTHER VPN app is set as "Always-on VPN" (Samsung: Settings
+    // > Connections > More connection settings > VPN), a work profile / Secure
+    // Folder / device policy forbids VPN changes, or a screen overlay (blue-light
+    // filter, floating bubbles, screen recorder) blocks the "OK" button - the
+    // consent screen closes at once with RESULT_CANCELED, usually without ever
+    // being shown. The old callback simply ignored any result but RESULT_OK: no
+    // state change, no message, no log line. To the user the button "does not
+    // respond at all" while the home screen keeps showing the operator IP.
+    //
+    // FIX: a refused consent is now always visible - an Error state on the home
+    // screen, a diagnostics line, and a dialog that says why and opens the VPN
+    // settings. A consent granted after the activity was recreated (rotation,
+    // display-size change, the system killing the activity behind the consent
+    // screen) no longer loses the tap either: the connect is retried with the
+    // current profile instead of being dropped because pendingProfile was null.
+    // ------------------------------------------------------------------
+    private var consentLaunchedAt = 0L
+    /** null = hidden; true = refused without a dialog; false = dismissed / cancelled. */
+    private var vpnConsentNotice by mutableStateOf<Boolean?>(null)
+
+    // 1.7.0 (same version): Send diagnostics after a failed connection, once per failure.
+    private var failureNotice by mutableStateOf<String?>(null)
+    private var failurePrompted = false
+
     private val vpnPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            val profile = pendingProfile
+            val profile = pendingProfile ?: uiProfile.value
+            val lostTap = pendingProfile == null
             pendingProfile = null
+            var retry = false
             try {
-                if (result.resultCode == RESULT_OK && profile != null) AetherController.connect(this, profile)
+                if (result.resultCode == RESULT_OK) {
+                    if (profile != null) {
+                        if (lostTap) DiagnosticsLog.i(UI_TAG, "VPN consent granted after activity recreation - connecting")
+                        AetherController.connect(this, profile)
+                    } else {
+                        retry = true
+                    }
+                } else {
+                    val elapsed = SystemClock.elapsedRealtime() - consentLaunchedAt
+                    val silent = consentLaunchedAt > 0L && elapsed in 0..CONSENT_SILENT_MS
+                    DiagnosticsLog.w(
+                        UI_TAG,
+                        if (silent) "VPN consent refused by the system without a dialog after ${elapsed} ms " +
+                            "(another app is the Always-on VPN, or a work profile / device policy blocks VPN changes)"
+                        else "VPN consent was not granted (dialog dismissed, or its OK button was blocked by a screen overlay)",
+                    )
+                    AetherController.setState(ConnectionState.Error(getString(R.string.err_vpn_consent_denied)))
+                    vpnConsentNotice = silent
+                }
             } catch (e: Exception) {
                 DiagnosticsLog.e(UI_TAG, "VPN consent callback failed: ${e.javaClass.simpleName}")
                 AetherController.setState(ConnectionState.Error(getString(R.string.state_error)))
-            } finally { toggleInFlight.set(false) }
+            } finally {
+                consentLaunchedAt = 0L
+                toggleInFlight.set(false)
+            }
+            if (retry) {
+                // The profile was not loaded yet in this (recreated) activity:
+                // run the normal path, which now finds the consent granted.
+                lastToggleAt = -TOGGLE_DEBOUNCE_MS
+                toggleConnection()
+            }
         }
+
+    /** Opens the system VPN list (Always-on VPN lives there), with safe fallbacks. */
+    private fun openVpnSettings() {
+        val candidates = listOf(
+            android.provider.Settings.ACTION_VPN_SETTINGS,
+            android.provider.Settings.ACTION_WIRELESS_SETTINGS,
+            android.provider.Settings.ACTION_SETTINGS,
+        )
+        for (action in candidates) {
+            try {
+                startActivity(Intent(action))
+                return
+            } catch (_: ActivityNotFoundException) {
+            } catch (_: SecurityException) {
+            }
+        }
+        Toast.makeText(this, getString(R.string.err_vpn_permission_unavailable), Toast.LENGTH_LONG).show()
+    }
 
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* best effort */ }
@@ -326,11 +405,58 @@ class MainActivity : ComponentActivity() {
                             onSelectPreset = ::applyPreset, onSavePresetAs = ::savePresetAs,
                             onDeletePreset = ::deletePreset, onRenamePreset = ::renamePreset,
                             onImportPresets = { presetImportLauncher.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-                            onExportPresets = { presetExportLauncher.launch("Aether-1.6.0-presets.json") },
+                            onExportPresets = { presetExportLauncher.launch("Aether-1.7.0-presets.json") },
                             presetBusy = presetsBusy || toggleInFlight.get(),
                         )
                         // Current-version notice; no introductory pager gate.
                         WhatsNewGate()
+                        LaunchedEffect(state) {
+                            val current = state
+                            if (current is ConnectionState.Error) {
+                                if (!failurePrompted && vpnConsentNotice == null &&
+                                    current.message != getString(R.string.err_vpn_consent_denied) &&
+                                    studio.cluvex.aether.core.DiagnosticsReporter.isEnabled(this@MainActivity)) {
+                                    failurePrompted = true
+                                    failureNotice = current.message
+                                }
+                            } else if (current.isConnected || current.isBusy) {
+                                failurePrompted = false
+                            }
+                        }
+                        failureNotice?.let { message ->
+                            AlertDialog(onDismissRequest = { failureNotice = null },
+                                title = { Text(getString(R.string.diag_share_failed_title)) },
+                                text = { Text(getString(R.string.diag_share_failed_body)) },
+                                confirmButton = { TextButton(onClick = {
+                                    failureNotice = null
+                                    val p = uiProfile.value
+                                    val detail = message + (p?.let {
+                                        "\nbackend=${it.backend.name} protocol=${it.protocol.name}" } ?: "")
+                                    studio.cluvex.aether.core.DiagnosticsReporter.send(this@MainActivity,
+                                        studio.cluvex.aether.core.DiagnosticsReporter.Kind.CONNECTION_FAILED, detail)
+                                }) { Text(getString(R.string.diag_share_send)) } },
+                                dismissButton = { TextButton(onClick = { failureNotice = null }) {
+                                    Text(getString(R.string.diag_share_not_now))
+                                } })
+                        }
+                        vpnConsentNotice?.let { silent ->
+                            AlertDialog(onDismissRequest = { vpnConsentNotice = null },
+                                title = { Text(getString(R.string.vpn_consent_title)) },
+                                text = {
+                                    androidx.compose.foundation.layout.Column(
+                                        modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState()),
+                                    ) {
+                                        Text(getString(if (silent) R.string.vpn_consent_body_silent else R.string.vpn_consent_body_cancelled))
+                                    }
+                                },
+                                confirmButton = { TextButton(onClick = {
+                                    vpnConsentNotice = null
+                                    openVpnSettings()
+                                }) { Text(getString(R.string.vpn_consent_open_settings)) } },
+                                dismissButton = { TextButton(onClick = { vpnConsentNotice = null }) {
+                                    Text(getString(R.string.vpn_consent_close))
+                                } })
+                        }
                         importPreview?.let { preview ->
                             AlertDialog(onDismissRequest = { importPreview = null },
                                 title = { Text(getString(R.string.preset_import)) },
@@ -379,7 +505,9 @@ class MainActivity : ComponentActivity() {
                 val consent = AetherController.prepare(this@MainActivity)
                 if (consent != null) {
                     pendingProfile = profile
+                    DiagnosticsLog.i(UI_TAG, "Asking Android for the VPN consent")
                     try {
+                        consentLaunchedAt = SystemClock.elapsedRealtime()
                         vpnPermissionLauncher.launch(consent)
                     } catch (e: ActivityNotFoundException) {
                         pendingProfile = null
@@ -558,4 +686,6 @@ class MainActivity : ComponentActivity() {
 }
 
 private const val TOGGLE_DEBOUNCE_MS = 400L
+/** A consent screen that closes faster than this was never shown to the user. */
+private const val CONSENT_SILENT_MS = 1_500L
 private const val UI_TAG = "MainActivity"

@@ -74,8 +74,9 @@ object AiPatch {
      * text is written to be read by one.
      */
     val WRITABLE: Map<String, String> = linkedMapOf(
-        "protocol" to "AUTO (Smart: races two routes and remembers per network on the " +
-            "plain Aether backend, one at a time elsewhere) | MASQUE | WIREGUARD | GOOL | " +
+        "protocol" to "AUTO (Smart: tests WireGuard and MASQUE side by side, measures and connects " +
+            "the best route and remembers it per network on the plain Aether backend; one at a time " +
+            "elsewhere) | MASQUE | WIREGUARD | GOOL | " +
             "MIM (MASQUE inside MASQUE)",
         "scanMode" to "TURBO | BALANCED | THOROUGH | STEALTH | IRONCLAD",
         "ipVersion" to "V4 | V6 | BOTH",

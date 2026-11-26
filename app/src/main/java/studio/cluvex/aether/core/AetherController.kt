@@ -132,7 +132,6 @@ object ProfileCodec {
         add("scan=${p.scanMode.name}")
         add("ip=${p.ipVersion.name}")
         add("quick=${p.quickReconnect}")
-        add("verifyConnection=${p.verifyConnection}")
         add("h2=${p.masqueHttp2}")
         add("share=${p.lanShare}")
         add("noize=${p.noize.name}")
@@ -254,7 +253,6 @@ object ProfileCodec {
                 scanMode = map["scan"]?.let { enumOr<ScanMode>(it) } ?: d.scanMode,
                 ipVersion = map["ip"]?.let { enumOr<IpVersion>(it) } ?: d.ipVersion,
                 quickReconnect = map["quick"]?.toBooleanStrictOrNull() ?: d.quickReconnect,
-                verifyConnection = map["verifyConnection"]?.toBooleanStrictOrNull() ?: true,
                 masqueHttp2 = map["h2"]?.toBooleanStrictOrNull() ?: d.masqueHttp2,
                 lanShare = map["share"]?.toBooleanStrictOrNull() ?: d.lanShare,
                 noize = map["noize"]?.let { enumOr<Noize>(it) } ?: d.noize,

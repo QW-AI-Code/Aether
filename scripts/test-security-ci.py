@@ -119,18 +119,18 @@ sys.exit(9)
     def test_both_security_floors(self):
         self.versions()
         self.assertEqual(self.patch().returncode, 0)
-        self.assertIn('0.11.18', self.lock.read_text())
+        self.assertIn('0.11.19', self.lock.read_text())
         self.assertIn('0.23.46', self.lock.read_text())
         self.assertEqual(len((self.root / 'calls').read_text().splitlines()), 2)
 
     def test_previous_tls_fix_is_upgraded_for_new_advisories(self):
-        self.versions('0.11.18', '0.23.45')
+        self.versions('0.11.19', '0.23.45')
         self.assertEqual(self.patch().returncode, 0)
         self.assertIn('0.23.46', self.lock.read_text())
         self.assertEqual(len((self.root / 'calls').read_text().splitlines()), 1)
 
     def test_fixed_lock_idempotent(self):
-        self.versions('0.11.18', '0.23.46')
+        self.versions('0.11.19', '0.23.46')
         self.assertEqual(self.patch().returncode, 0)
         self.assertFalse((self.root / 'calls').exists())
 
@@ -211,6 +211,60 @@ sys.exit(9)
         self.assertLess(build.index('patch-engine-dependencies.py'), build.index('cargo ndk'))
         self.assertIn('build --release --locked', build)
         self.assertIn('cp "${crate}/Cargo.lock" "${RUNNER_TEMP}/aether-audit/built-engine/Cargo.lock"', build)
+
+    def sqlite_lock(self, version='0.37.0', extra_dependent=False):
+        packages = [
+            ('libsqlite3-sys', version, []),
+            ('rusqlite', '0.39.0', ['libsqlite3-sys']),
+            ('tor-dirmgr', '0.46.0', ['rusqlite']),
+        ]
+        if extra_dependent:
+            packages.append(('other', '1.0.0', ['libsqlite3-sys']))
+        self.lock.write_text('version = 4\n' + ''.join(
+            f'[[package]]\nname = "{n}"\nversion = "{v}"\n' +
+            (('dependencies = [' + ', '.join(f'"{d}"' for d in deps) + ']\n') if deps else '')
+            for n, v, deps in packages))
+
+    def audited_ignores(self):
+        calls = self.root / 'audit-args'
+        self.mock.write_text(self.mock.read_text().replace(
+            "if sys.argv[1] == 'audit':\n",
+            "if sys.argv[1] == 'audit':\n    open(os.environ['MOCK_ARGS'], 'w').write(json.dumps(sys.argv[1:]))\n", 1))
+        self.env['MOCK_ARGS'] = str(calls)
+        self.assertEqual(self.audit(strict=True).returncode, 0)
+        return json.loads(calls.read_text())
+
+    def test_sqlite_risk_excepted_only_in_reviewed_shape(self):
+        self.sqlite_lock()
+        self.assertIn('RUSTSEC-2026-0459', self.audited_ignores())
+        self.assertIn('Scoped accepted risk verified', self.summary.read_text())
+
+    def test_sqlite_risk_not_excepted_with_other_dependent(self):
+        self.sqlite_lock(extra_dependent=True)
+        self.assertNotIn('RUSTSEC-2026-0459', self.audited_ignores())
+
+    def test_sqlite_risk_not_excepted_for_other_version(self):
+        self.sqlite_lock(version='0.38.0')
+        self.assertNotIn('RUSTSEC-2026-0459', self.audited_ignores())
+
+    def test_new_advisories_are_patched_by_floors(self):
+        self.lock.write_text('version = 4\n' + ''.join(
+            f'[[package]]\nname = "{n}"\nversion = "{v}"\n'
+            for n, v in [('quinn-proto', '0.11.18'), ('quinn-udp', '0.5.15'), ('url', '2.5.8'),
+                         ('cookie', '0.18.2'), ('cookie_store', '0.22.1')]))
+        self.assertEqual(self.patch().returncode, 0)
+        text = self.lock.read_text()
+        for expected in ('0.11.19', '0.5.16', '2.5.9', '0.18.3', '0.22.1'):
+            self.assertIn(expected, text)
+
+    def test_workflow_has_early_lockfile_gate_before_native_build(self):
+        workflow = (SCRIPTS.parent / '.github/workflows/build.yml').read_text()
+        early = workflow.index('name: Audit Rust dependencies early (lockfile gate)')
+        self.assertLess(workflow.index('Patch known-vulnerable engine dependencies'), early)
+        self.assertLess(early, workflow.index('name: Build engine (Aether, with Tor)'))
+        block = workflow[early:].split('\n      - name:', 1)[0]
+        self.assertIn('--strict', block)
+        self.assertNotIn('continue-on-error', block)
 
     def test_unreviewed_prerelease(self):
         self.versions('0.11.18-rc.1')

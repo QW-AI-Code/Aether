@@ -22,14 +22,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.sync.withLock
 import studio.cluvex.aether.AetherApp
 import studio.cluvex.aether.MainActivity
 import studio.cluvex.aether.R
 import studio.cluvex.aether.core.AetherController
 import studio.cluvex.aether.core.AetherProcess
 import studio.cluvex.aether.core.Diagnostics
+import studio.cluvex.aether.core.DpiBrain
+import studio.cluvex.aether.core.IdentityVault
+import studio.cluvex.aether.core.LiveDataProof
 import studio.cluvex.aether.core.DiagnosticsLog
 import studio.cluvex.aether.core.EngineMeta
+import studio.cluvex.aether.core.EngineReadiness
 import studio.cluvex.aether.core.AutoCandidate
 import studio.cluvex.aether.core.NetworkIdentity
 import studio.cluvex.aether.core.PingMonitor
@@ -527,10 +532,19 @@ class AetherVpnService : VpnService() {
         if (CustomConfigStore.state.value.enabled && custom == null) {
             throw IllegalStateException(getString(R.string.cc_err_active_tab_empty))
         }
+        // 1.7.0 (same version): FAST FIRST CONNECT. The old path measured every
+        // config and only then connected, so one dead or slow server held the
+        // whole connect for its full timeout. Now the measurement runs in the
+        // background, the session starts on the fastest server that has ALREADY
+        // answered, and the session monitor below switches to the overall
+        // fastest one as soon as the full run has finished.
+        var pendingRun: studio.cluvex.aether.custom.ConfigPingStore.Run? = null
         if (custom != null && CustomConfigStore.state.value.autoSelect) {
             AetherController.setState(ConnectionState.Selecting)
             updateNotification(getString(R.string.state_selecting))
-            chooseBestCustom(custom.config, initial = true)?.let {
+            val (pick, firstRun) = chooseFirstCustom(custom!!.config)
+            pendingRun = firstRun
+            pick?.let {
                 check(CustomConfigStore.selectInTab(this, it.id, selectedTab)) { getString(R.string.cc_err_active_tab_empty) }
                 custom = CustomConfigStore.selection(this)
             }
@@ -555,18 +569,51 @@ class AetherVpnService : VpnService() {
                 try {
                     kotlinx.coroutines.coroutineScope {
                         val session = launch { connectCustom(profile, selection!!) }
+                        val fullRun = pendingRun
+                        pendingRun = null
                         val monitor = launch {
-                            while (true) {
-                                delay(CustomConfigStore.state.value.healthIntervalSeconds * 1_000L)
-                                if (!CustomConfigStore.state.value.autoSelect ||
-                                    AetherController.state.value !is ConnectionState.Connected) continue
-                                val current = selection!!.config
-                                val best = chooseBestCustom(current) ?: continue
-                                if (best.id != current.id) {
-                                    if (!CustomConfigStore.selectInTab(this@AetherVpnService, best.id, selectedTab)) continue
+                            val decide = kotlinx.coroutines.sync.Mutex()
+                            // One decision at a time; the first switch ends the session.
+                            suspend fun consider(reason: String, measure: Boolean, eager: Boolean) {
+                                decide.withLock {
+                                    if (switched || !CustomConfigStore.state.value.autoSelect) return@withLock
+                                    val current = selection!!.config
+                                    val best = (if (measure) chooseBestCustom(current, eager = eager)
+                                        else chooseCachedCustom(current, eager)) ?: return@withLock
+                                    if (best.id == current.id) return@withLock
+                                    if (!CustomConfigStore.selectInTab(this@AetherVpnService, best.id, selectedTab)) return@withLock
+                                    DiagnosticsLog.i(TAG, "Auto-select ($reason): switching to the faster config ${best.name}")
                                     switched = true
                                     session.cancel()
-                                    break
+                                }
+                            }
+                            // 1. Periodic health check (unchanged behaviour, connected only).
+                            launch {
+                                while (true) {
+                                    delay(CustomConfigStore.state.value.healthIntervalSeconds * 1_000L)
+                                    if (AetherController.state.value !is ConnectionState.Connected) continue
+                                    consider("health check", measure = true, eager = false)
+                                }
+                            }
+                            // 2. The full run behind a fast first connect.
+                            if (fullRun != null) launch {
+                                runCatching { fullRun.done.await() }
+                                consider("all configs measured", measure = false, eager = true)
+                            }
+                            // 3. The user pressed "Test all": switch to the fastest right away.
+                            launch {
+                                studio.cluvex.aether.custom.ConfigPingStore.completed.collect { run ->
+                                    if (run.origin == studio.cluvex.aether.custom.ConfigPingStore.RunOrigin.MANUAL &&
+                                        selection!!.config.id in run.ids) {
+                                        consider("manual ping test", measure = false, eager = true)
+                                    }
+                                }
+                            }
+                            // 4. Wi-Fi <-> mobile data, another Wi-Fi or another SIM: measure again.
+                            launch {
+                                studio.cluvex.aether.custom.UnderlyingNetworks.changes(this@AetherVpnService).collect {
+                                    DiagnosticsLog.i(TAG, "Network changed - measuring the configs again for auto-select")
+                                    consider("network changed", measure = true, eager = false)
                                 }
                             }
                         }
@@ -832,7 +879,7 @@ class AetherVpnService : VpnService() {
         }
 
         val diagPort = if (profile.proxyMode) ShareBridge.socksPort.value ?: port else port
-        val healthy = probeOrFalse { verifyFinal(profile, diagPort, Diagnostics.EXTERNAL_GRACE_MS) }
+        val healthy = probeOrFalse { smartGateFinal(profile, diagPort, Diagnostics.EXTERNAL_GRACE_MS) }
         check(healthy) { getString(R.string.err_selftest) }
 
         // 1.3.1-r2 LABEL FIX: the ENGINE's transport only, never the pipeline.
@@ -1039,7 +1086,7 @@ class AetherVpnService : VpnService() {
         // The same grace an external stage gets. A Tor circuit is built lazily per
         // stream, so the first request through a freshly bootstrapped Tor is slow
         // in a way that says nothing about whether the session works.
-        val healthy = probeOrFalse { verifyFinal(profile, diagPort, Diagnostics.EXTERNAL_GRACE_MS) }
+        val healthy = probeOrFalse { smartGateFinal(profile, diagPort, Diagnostics.EXTERNAL_GRACE_MS) }
         check(healthy) { getString(R.string.err_selftest) }
 
         // Same fix as in the external-chain path above: the transport alone.
@@ -1144,7 +1191,12 @@ class AetherVpnService : VpnService() {
             stage.protocol == Protocol.AUTO -> {
                 AetherController.setState(ConnectionState.Launching)
                 updateNotification(getString(R.string.state_analyzing))
-                SmartAuto.buildPlan(stage, SmartAuto.fingerprint(this))
+                SmartAuto.buildPlan(
+                    stage,
+                    SmartAuto.fingerprint(this),
+                    onMobileData = NetworkIdentity.onMobileData(this),
+                    memory = SmartPlusMemory.recall(this, NetworkIdentity.key(this)),
+                )
             }
             else -> directPlan(stage)
         }
@@ -1254,39 +1306,33 @@ class AetherVpnService : VpnService() {
         listOfNotNull(profile.upstreamProxy).joinToString("").trim()
 
     /**
-     * SMART PLUS: remember what worked here, and race what is left.
+     * SMART MODE (1.7.0 rewrite): test every protocol fairly, measure the ones
+     * that work, connect the best.
      *
-     * The mode the protocol selector offers next to Smart. [SmartPlusPlan] decides
-     * WHAT to try; this decides HOW, and the two design rules that matter are both
-     * about not disturbing anything that already works:
+     * 1. FINGERPRINT the network ([SmartAuto.fingerprint]) - DPI class, UDP and
+     *    QUIC reachability - only to ORDER tactics, never to exclude a family.
+     * 2. RACE ([runRace]): one lane per identity family (WARP / MASQUE), both
+     *    starting at the same instant with the same budgets; each lane goes from
+     *    its cleanest tactic to its heaviest. Readiness is judged by the engine
+     *    really serving ([EngineReadiness]) and then carrying outbound TCP.
+     * 3. COMPARE: after the first proof the race runs on for
+     *    [SmartPlusPlan.QUALITY_WINDOW_MS]; every proven route is measured through
+     *    itself (latency, download, upload) and ranked with its overhead
+     *    ([SmartPlusPlan.rank]).
+     * 4. CONFIRM the best route as the session through [connectAttempt] - the same
+     *    path a hand-picked protocol takes - and, if that fails, the next proven
+     *    route, before anything else.
+     * 5. LAST RESORT: only if nothing proved itself, a deep scan of the two
+     *    cleanest carriers over the full built-in ranges.
      *
-     * **1. A race only SELECTS a strategy; it never becomes the session.** Each
-     * lane brings up a throwaway engine on a port of its own, proves it carries
-     * real outbound TCP, and is then killed - winner included. The session the user
-     * ends up with is established afterwards by [connectAttempt], the same call
-     * Smart and a hand-picked protocol go through, on the ordinary ports. So the
-     * TUN, the LAN bridge, the self-test, the supervisor and the notification
-     * behave identically in all three modes, and nothing in this method can leave
-     * the app in a state the other modes do not already handle.
-     *
-     * The cost of that decision is one extra engine start for the winner. It is
-     * small in practice and by construction: the winning engine saved its gateway
-     * to the engine's own `lastconn` file while it was proving itself, so the
-     * confirming connect takes the cached path (`[+] cached gateway ... still
-     * works; skipping scan`) rather than scanning again.
-     *
-     * **2. It can be slower than Smart, never worse.** If the race finds nothing,
-     * this hands over to the Smart ladder instead of failing. Smart Plus can
-     * therefore only ever add outcomes, which is what makes it safe to put a new
-     * button next to Smart for it.
+     * A race only SELECTS: each lane engine is a probe on a port of its own and is
+     * always killed before the session's engine starts (see [runRace]).
      */
     private suspend fun connectSmartPlus(userProfile: ConnectionProfile): ConnectionProfile {
-        // Excluded profiles are not an error and not a silent downgrade: the reason
-        // is named, once, in the log the user can read.
         if (!SmartPlusPlan.eligible(userProfile)) {
             DiagnosticsLog.i(
                 TAG,
-                "Smart Plus cannot race this profile (" +
+                "Smart race is not available for this profile (" +
                     "endpoint=${userProfile.endpointMode}, backend=${userProfile.backend.name}, " +
                     "zero-trust=${userProfile.teamAuth.name}) - using the Smart ladder instead.",
             )
@@ -1298,186 +1344,221 @@ class AetherVpnService : VpnService() {
         val fingerprint = SmartAuto.fingerprint(this)
         val networkKey = NetworkIdentity.key(this)
         val onMobileData = NetworkIdentity.onMobileData(this)
-        val memory = SmartPlusMemory.recall(this, networkKey)
-        val plan = SmartPlusPlan.plan(
+        // 1.7.0 (same version) SMART BRAIN: evidence of THIS network first; on a
+        // network seen for the first time, what worked on the same operator.
+        val operatorKey = DpiBrain.operatorKey(fingerprint.operatorName, fingerprint.iranSim)
+        val networkMemory = SmartPlusMemory.recall(this, networkKey)
+        val memory = networkMemory?.takeIf { it.isProvenAt(System.currentTimeMillis()) }
+            ?: operatorKey?.let { SmartPlusMemory.recall(this, it) }?.takeIf { it.isProvenAt(System.currentTimeMillis()) }
+                ?.let { op -> op.copy(failedAtMs = networkMemory?.failedAtMs.orEmpty()) }
+            ?: networkMemory
+        if (memory != null && memory !== networkMemory) {
+            DiagnosticsLog.i(TAG, "Smart brain: new network of a known operator - starting with '${memory.tacticId}', which worked there.")
+        }
+        val brain = DpiBrain.Board(DpiBrain.initialKnowledge(fingerprint))
+        val lanes = SmartPlusPlan.plan(
             dpi = fingerprint.dpiClass,
             onMobileData = onMobileData,
             memory = memory,
             nowMs = System.currentTimeMillis(),
+            quicReachable = fingerprint.quicReachable,
+            goolClassic = SmartPlusPlan.goolClassic(userProfile),
+            preferTcp = fingerprint.iranSim,
         )
         DiagnosticsLog.i(
             TAG,
-            "Smart Plus on network $networkKey (${fingerprint.dpiClass}, " +
-                "${if (onMobileData) "mobile data" else "local link"}): " +
-                plan.joinToString(" then ") { step ->
-                    when (step) {
-                        is SmartPlusPlan.Step.Remembered -> "remembered=${step.tactic.id}"
-                        is SmartPlusPlan.Step.Race ->
-                            "race[" + step.lanes.joinToString(" | ") { lane ->
-                                lane.tactics.joinToString(",") { it.id } + "@+${lane.startAfterMs / 1000}s"
-                            } + "]"
-                    }
-                },
+            "Smart on network $networkKey (${fingerprint.dpiClass}, " +
+                "${if (onMobileData) "mobile data" else "local link"}, quic=${fingerprint.quicReachable}, " +
+                "iranSim=${fingerprint.iranSim}): " +
+                "fair race[" + lanes.joinToString(" | ") { lane ->
+                    lane.tactics.joinToString(",") { it.id } + "@+${lane.startAfterMs / 1000}s"
+                } + "]",
         )
 
-        for (step in plan) {
+        val ranked = runRace(userProfile, lanes, networkKey, brain)
+        for ((index, tactic) in ranked.withIndex()) {
             currentCoroutineContext().ensureActive()
-            when (step) {
-                is SmartPlusPlan.Step.Remembered -> {
-                    // Evidence, so it gets the ordinary path directly rather than a
-                    // probe: if it still works this IS the session, with no second
-                    // engine started and no extra connect paid for.
-                    DiagnosticsLog.i(TAG, "Smart Plus: trying the remembered route first - ${step.tactic.label}")
-                    val profile = step.tactic.applyTo(userProfile)
-                    val ok = runCatching {
-                        connectAttempt(profile, step.tactic.budgetMs)
-                        true
-                    }.getOrElse { e ->
-                        if (e is CancellationException) throw e
-                        DiagnosticsLog.w(
-                            TAG,
-                            "Smart Plus: the remembered route did not come up (${e.message}) - racing.",
-                        )
-                        SmartPlusMemory.noteFailure(this, networkKey, step.tactic.id)
-                        cleanupNativeOnly("smartplus-remembered-failed")
-                        Diagnostics.resetChecks()
-                        false
-                    }
-                    if (ok) {
-                        SmartPlusMemory.remember(this, networkKey, step.tactic.id)
-                        return profile
-                    }
-                }
-
-                is SmartPlusPlan.Step.Race -> {
-                    val winner = runRace(userProfile, step.lanes) ?: continue
-                    DiagnosticsLog.i(TAG, "Smart Plus: ${winner.id} won the race - confirming it as the session.")
-                    updateNotification(getString(R.string.state_connecting))
-                    // The confirming connect gets the user's own scan mode, not the
-                    // lane's TURBO: the strategy is already proven, so this one is
-                    // allowed to take as long as the user's settings permit rather
-                    // than being cut short by a probe's budget.
-                    val profile = winner.applyTo(userProfile).copy(scanMode = userProfile.scanMode)
-                    val ok = runCatching {
-                        connectAttempt(profile, profile.connectTimeoutMs())
-                        true
-                    }.getOrElse { e ->
-                        if (e is CancellationException) throw e
-                        DiagnosticsLog.w(
-                            TAG,
-                            "Smart Plus: ${winner.id} proved itself but the session did not come up " +
-                                "(${e.message}) - falling back to the Smart ladder.",
-                        )
-                        cleanupNativeOnly("smartplus-confirm-failed")
-                        Diagnostics.resetChecks()
-                        false
-                    }
-                    if (ok) {
-                        SmartPlusMemory.remember(this, networkKey, winner.id)
-                        return profile
-                    }
-                }
+            DiagnosticsLog.i(
+                TAG,
+                "Smart: confirming ${tactic.id} as the session (choice ${index + 1}/${ranked.size}).",
+            )
+            updateNotification(getString(R.string.state_connecting))
+            // The user's own scan mode for the session (the supervisor restarts it
+            // with this profile); the lane's cached gateway makes the confirming
+            // connect take the quick path.
+            val profile = tactic.applyTo(userProfile).copy(scanMode = userProfile.scanMode)
+            val ok = runCatching {
+                connectAttempt(profile, profile.connectTimeoutMs().coerceAtMost(CONFIRM_MAX_MS))
+                true
+            }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                DiagnosticsLog.w(
+                    TAG,
+                    "Smart: ${tactic.id} proved itself in the race but the session did not come up " +
+                        "(${e.message}) - trying the next proven route.",
+                )
+                SmartPlusMemory.noteFailure(this, networkKey, tactic.id)
+                cleanupNativeOnly("smart-confirm-failed")
+                Diagnostics.resetChecks()
+                false
+            }
+            if (ok) {
+                SmartPlusMemory.remember(this, networkKey, tactic.id)
+                operatorKey?.let { SmartPlusMemory.remember(this, it, tactic.id) }
+                return profile
             }
         }
 
-        // Nothing won. Every tactic that ran is worth remembering as a failure, so
-        // the next attempt on this network does not open with the same order.
-        DiagnosticsLog.w(TAG, "Smart Plus found nothing - handing over to the Smart ladder.")
-        return connectSmartAuto(userProfile)
+        DiagnosticsLog.w(
+            TAG,
+            "Smart: no route proved itself in the race (${brain.now.describe()}) - running the deep last-resort scan.",
+        )
+        return connectSmartAuto(userProfile, fingerprint, lastResortOnly = true, brain = brain)
     }
 
+    /** A route that carried real traffic in the race, with the lane engine still holding it. */
+    private data class ProvenRoute(
+        val tactic: SmartPlusPlan.Tactic,
+        val port: Int,
+        val laneNumber: Int,
+        val provenAfterMs: Long,
+    )
+
     /**
-     * Runs the lanes side by side and returns the first tactic that carried real
-     * outbound TCP, or null.
+     * Runs the lanes side by side and returns every route that carried traffic,
+     * best first (empty if none did).
      *
-     * ## What a lane is allowed to touch
+     * ## Fairness
      *
-     * Nothing shared. A lane owns one [AetherProcess] and one port, and verifies
-     * with [Diagnostics.runProxyStage] - which takes the port as a parameter and,
-     * as its own comment says, deliberately leaves the four self-test circles
-     * alone. So two lanes cannot fight over the session's port, the session's
-     * engine field, the UI state or the self-test display.
+     * Both lanes start at the same instant; every tactic has a fixed budget that
+     * depends only on its weight (light / hardened / two-hop), never on its family.
+     * The race does not end with the first answer: it runs on for
+     * [SmartPlusPlan.QUALITY_WINDOW_MS] so that a slightly slower but better route
+     * can still prove itself, and the proven routes are then measured one after
+     * another under the same conditions.
      *
      * ## Why no lane is ever leaked
      *
-     * This is the failure mode that matters, because this project has already been
-     * bitten by exactly one stray engine: a cancelled ladder that had started a
-     * rung left an unsupervised `libaether.so` running after the user pressed
-     * Disconnect, i.e. traffic still going through a tunnel the user believed was
-     * gone. Three things together make that impossible here:
-     *
-     *  * every lane kills its engine in `finally`, which runs on a normal exit, on
-     *    an exception AND on cancellation;
-     *  * the winner's engine is killed too - it was only ever a probe;
-     *  * `coroutineScope` does not return until every child has finished, so the
-     *    race cannot outlive the call even by a millisecond.
-     *
-     * The ports come from [PortLease.leaseRacePorts], which keeps them clear of the
-     * five session roles; if it can only find one, one lane runs and the other is
-     * skipped rather than two engines being pointed at one port.
+     * A lane owns one [AetherProcess] and one port and kills its engine in
+     * `finally` - on failure, on cancellation, and after a win (a proven lane holds
+     * its engine only until the measurement is done). `coroutineScope` does not
+     * return before every lane's `finally` has run, and [raceEngines] is swept
+     * once more on the way out.
      */
     private suspend fun runRace(
         userProfile: ConnectionProfile,
         lanes: List<SmartPlusPlan.Lane>,
-    ): SmartPlusPlan.Tactic? {
-        if (lanes.isEmpty()) return null
+        networkKey: String,
+        brain: DpiBrain.Board = DpiBrain.Board(),
+    ): List<SmartPlusPlan.Tactic> {
+        if (lanes.isEmpty()) return emptyList()
         val ports = PortLease.leaseRacePorts(lanes.size)
         if (ports.isEmpty()) {
-            DiagnosticsLog.w(TAG, "Smart Plus: no free local port for a lane - not racing.")
-            return null
+            DiagnosticsLog.w(TAG, "Smart: no free local port for a lane - not racing.")
+            return emptyList()
         }
         val running = lanes.take(ports.size)
         if (running.size < lanes.size) {
             DiagnosticsLog.w(
                 TAG,
-                "Smart Plus: only ${ports.size} free local port(s), racing ${running.size} of ${lanes.size} lanes.",
+                "Smart: only ${ports.size} free local port(s), racing ${running.size} of ${lanes.size} lanes.",
             )
         }
         AetherController.setState(ConnectionState.Connecting)
         updateNotification(getString(R.string.state_smart_plus_racing))
 
-        val winner = CompletableDeferred<SmartPlusPlan.Tactic?>()
+        val proven = java.util.Collections.synchronizedList(mutableListOf<ProvenRoute>())
+        val searching = java.util.concurrent.atomic.AtomicInteger(running.size)
         val startedAt = SystemClock.elapsedRealtime()
         return try {
             coroutineScope {
-                running.forEachIndexed { index, lane ->
+                val laneJobs = running.mapIndexed { index, lane ->
                     launch {
-                        if (lane.startAfterMs > 0) {
-                            // A lane that is beaten before it starts never starts:
-                            // that is the whole point of staggering the second one.
-                            val early = withTimeoutOrNull(lane.startAfterMs) { winner.await() }
-                            if (early != null) return@launch
+                        if (lane.startAfterMs > 0) delay(lane.startAfterMs)
+                        runLane(userProfile, lane, ports[index], index + 1, startedAt, networkKey, searching, brain) {
+                            proven += it
                         }
-                        runLane(userProfile, lane, ports[index], index + 1, startedAt, winner)
                     }
                 }
-                // The ceiling is a backstop, not the normal end: a lane that runs
-                // out of tactics finishes on its own and the scope ends with it.
-                launch {
-                    delay(SmartPlusPlan.RACE_CEILING_MS)
-                    if (winner.isActive) {
-                        DiagnosticsLog.w(TAG, "Smart Plus: race ceiling reached with no winner.")
-                        winner.complete(null)
-                    }
+                val ceiling = startedAt + SmartPlusPlan.RACE_CEILING_MS
+                // Phase 1: until a route proves itself, or every lane is out of tactics.
+                while (proven.isEmpty() && searching.get() > 0 && SystemClock.elapsedRealtime() < ceiling) {
+                    delay(RACE_POLL_MS)
                 }
-                val result = winner.await()
-                // Ends every sibling, including the ceiling timer. `coroutineScope`
-                // then waits for their `finally` blocks, which is what guarantees no
-                // engine survives this call.
+                // Phase 2: the quality window - let the other lane prove a route too.
+                if (proven.isNotEmpty() && searching.get() > 0) {
+                    val windowEnd = minOf(SystemClock.elapsedRealtime() + SmartPlusPlan.QUALITY_WINDOW_MS, ceiling)
+                    while (searching.get() > 0 && SystemClock.elapsedRealtime() < windowEnd) delay(RACE_POLL_MS)
+                }
+                val routes = synchronized(proven) { proven.toList() }
+                // Lanes still searching are stopped NOW: they must not compete for
+                // the link while the proven routes are measured.
+                laneJobs.forEachIndexed { index, job ->
+                    if (routes.none { it.laneNumber == index + 1 }) job.cancel()
+                }
+                if (routes.isEmpty() && SystemClock.elapsedRealtime() >= ceiling) {
+                    DiagnosticsLog.w(TAG, "Smart: race ceiling reached with no route that carries traffic.")
+                }
+                val ranked = rankRoutes(routes)
+                // Ends every lane, including the proven ones holding their engine;
+                // coroutineScope then waits for their `finally` blocks.
                 coroutineContext.cancelChildren()
-                result
+                ranked
             }
         } finally {
-            // Belt and braces: whatever happened above, nothing from a lane may
-            // still be holding a port when the session's own engine starts.
             raceEngines.forEach { runCatching { it.stop() } }
             raceEngines.clear()
         }
     }
 
+    /** Measures every proven route through its own lane port and ranks them. */
+    private suspend fun rankRoutes(routes: List<ProvenRoute>): List<SmartPlusPlan.Tactic> {
+        if (routes.size <= 1) {
+            routes.firstOrNull()?.let {
+                DiagnosticsLog.i(TAG, "Smart: ${it.tactic.id} is the only route that carries traffic here.")
+            }
+            return routes.map { it.tactic }
+        }
+        updateNotification(getString(R.string.state_smart_comparing))
+        val measured = routes.map { route ->
+            val quality = withContext(Dispatchers.IO) {
+                runCatching {
+                    studio.cluvex.aether.core.NetProbe.measureTunnelQuality(
+                        SOCKS_HOST,
+                        route.port,
+                        SmartPlusPlan.MEASURE_MS,
+                    )
+                }.getOrNull()
+            }
+            DiagnosticsLog.i(
+                TAG,
+                "Smart: ${route.tactic.id} proved after ${route.provenAfterMs / 1000.0}s - " +
+                    (quality?.let { q ->
+                        "rtt=${q.rttMs}ms down=${q.downKbps}kbps up=${q.upKbps}kbps " +
+                            "overhead=${route.tactic.overhead} score=" +
+                            String.format(java.util.Locale.US, "%.0f", SmartPlusPlan.score(q, route.tactic.overhead))
+                    } ?: "could not be measured"),
+            )
+            route.tactic to quality
+        }
+        val ranked = SmartPlusPlan.rank(measured)
+        DiagnosticsLog.i(TAG, "Smart: ranking by latency, speed and overhead -> ${ranked.joinToString(" > ") { it.id }}")
+        return ranked
+    }
+
     /**
-     * One lane: its tactics, in order, on one port, until one proves itself or the
-     * lane runs out.
+     * One lane: its tactics on one port, until one carries traffic or the lane runs
+     * out. A proven tactic keeps its engine alive (for the measurement) until the
+     * race cancels the lane.
+     *
+     * 1.7.0 (same version) SMART BRAIN: the order is no longer fixed. After every
+     * failed tactic the engine's own output is diagnosed ([DpiBrain.diagnose]) and
+     * what both lanes learned ([brain]) re-plans the rest of this lane
+     * ([DpiBrain.adapt]): UDP carriers move behind TCP ones once UDP is known to
+     * be dropped, TCP carriers get TLS fragmentation once TLS is interfered with,
+     * a hopeless UDP rung is abandoned early, and a damaged identity is healed and
+     * the same tactic retried once. A route counts as proven only when real data
+     * crossed it ([LiveDataProof]), never on a bare SOCKS5 reply.
      */
     private suspend fun runLane(
         userProfile: ConnectionProfile,
@@ -1485,59 +1566,129 @@ class AetherVpnService : VpnService() {
         port: Int,
         laneNumber: Int,
         startedAt: Long,
-        winner: CompletableDeferred<SmartPlusPlan.Tactic?>,
+        networkKey: String,
+        searching: java.util.concurrent.atomic.AtomicInteger,
+        brain: DpiBrain.Board,
+        onProven: (ProvenRoute) -> Unit,
     ) {
-        for (tactic in lane.tactics) {
-            if (!winner.isActive) return
-            currentCoroutineContext().ensureActive()
-            val elapsed = SystemClock.elapsedRealtime() - startedAt
-            if (elapsed + tactic.budgetMs > SmartPlusPlan.RACE_CEILING_MS) {
-                DiagnosticsLog.d(TAG, "Smart Plus lane $laneNumber: no room left for ${tactic.id}.")
-                return
+        var provenHere = false
+        val queue = ArrayDeque(lane.tactics)
+        val tried = mutableSetOf<String>()
+        var healed = false
+        var healNext = false
+        try {
+            while (queue.isNotEmpty()) {
+                currentCoroutineContext().ensureActive()
+                if (healNext) {
+                    healNext = false
+                    IdentityVault.healCorrupt(filesDir)
+                }
+                // Re-plan what is left with everything learned so far (both lanes).
+                val planned = DpiBrain.adapt(queue.toList(), brain.now)
+                queue.clear()
+                queue.addAll(planned)
+                val tactic = queue.removeFirst()
+                if (!tried.add(DpiBrain.signature(tactic))) continue
+                val elapsed = SystemClock.elapsedRealtime() - startedAt
+                if (elapsed + tactic.budgetMs > SmartPlusPlan.RACE_CEILING_MS) {
+                    DiagnosticsLog.d(TAG, "Smart lane $laneNumber: no room left for ${tactic.id}.")
+                    break
+                }
+                val profile = tactic.applyTo(userProfile, bindPort = port)
+                DiagnosticsLog.i(TAG, "Smart lane $laneNumber on :$port -> ${tactic.label}")
+                val engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir)
+                raceEngines.add(engine)
+                try {
+                    engine.start(profile)
+                    val t0 = SystemClock.elapsedRealtime()
+                    var abandoned = false
+                    val opened = PortProbe.awaitOpen(SOCKS_HOST, port, tactic.budgetMs) { engine.isAlive() }
+                    val verdict: String? = if (!opened) {
+                        if (engine.isAlive()) "never bound :$port" else "engine exited (${engine.fatalLine ?: "no reason given"})"
+                    } else {
+                        val left = (tactic.budgetMs - (SystemClock.elapsedRealtime() - t0)).coerceAtLeast(3_000L)
+                        val outcome = EngineReadiness.await(
+                            engine,
+                            SOCKS_HOST,
+                            port,
+                            left,
+                            "lane $laneNumber ${tactic.id}",
+                            abort = {
+                                DpiBrain.shouldAbandon(
+                                    tactic,
+                                    brain.now,
+                                    SystemClock.elapsedRealtime() - t0,
+                                    engine.isServing,
+                                ).also { if (it) abandoned = true }
+                            },
+                        )
+                        when (outcome) {
+                            EngineReadiness.Outcome.READY -> {
+                                // Serving is not carrying: prove that real data crosses it.
+                                val proof = LiveDataProof.prove(
+                                    SOCKS_HOST,
+                                    port,
+                                    LANE_TCP_GRACE_MS,
+                                    alive = { engine.isAlive() },
+                                    label = "lane $laneNumber ${tactic.id}",
+                                    updateChecks = false,
+                                )
+                                if (proof.ok) null else "served SOCKS5 but carried no data"
+                            }
+                            EngineReadiness.Outcome.DIED -> "engine exited (${engine.fatalLine ?: "no reason given"})"
+                            EngineReadiness.Outcome.TIMEOUT ->
+                                if (abandoned) "abandoned early - UDP is dropped on this network"
+                                else "no working gateway within ${tactic.budgetMs / 1000}s"
+                        }
+                    }
+                    if (verdict != null) {
+                        val died = !engine.isAlive()
+                        val diagnosis = DpiBrain.diagnose(
+                            engine.dpiSignals,
+                            died,
+                            SystemClock.elapsedRealtime() - t0,
+                            DpiBrain.ridesUdp(tactic),
+                            engine.fatalLine,
+                        )
+                        // An attempt the brain abandoned itself is not new evidence: counting
+                        // it as another UDP strike would let one verdict reinforce itself.
+                        val knowledge = if (abandoned) brain.now else brain.learn(diagnosis)
+                        DiagnosticsLog.w(TAG, "Smart lane $laneNumber: ${tactic.id} - $verdict.")
+                        DiagnosticsLog.i(TAG, "Smart brain: ${tactic.id} -> $diagnosis | ${knowledge.describe()}")
+                        if (diagnosis == DpiBrain.Verdict.IDENTITY_DAMAGED && !healed) {
+                            // Not the network's fault: heal the identity (after this
+                            // engine is reaped, see `healNext`) and run the SAME tactic again.
+                            healed = true
+                            healNext = true
+                            tried.remove(DpiBrain.signature(tactic))
+                            queue.addFirst(tactic)
+                            DiagnosticsLog.w(TAG, "Smart brain: the engine's identity is damaged - healing it and retrying ${tactic.id}.")
+                        } else {
+                            SmartPlusMemory.noteFailure(this, networkKey, tactic.id)
+                        }
+                        continue
+                    }
+                    val after = SystemClock.elapsedRealtime() - startedAt
+                    DiagnosticsLog.i(TAG, "Smart lane $laneNumber: ${tactic.id} carries traffic after ${after / 1000.0}s.")
+                    provenHere = true
+                    searching.decrementAndGet()
+                    onProven(ProvenRoute(tactic, port, laneNumber, after))
+                    // Hold the engine for the measurement; the race cancels us.
+                    kotlinx.coroutines.awaitCancellation()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    DiagnosticsLog.w(TAG, "Smart lane $laneNumber: ${tactic.id} failed (${e.message}).")
+                    SmartPlusMemory.noteFailure(this, networkKey, tactic.id)
+                } finally {
+                    runCatching { engine.stop() }
+                    raceEngines.remove(engine)
+                }
             }
-            val profile = tactic.applyTo(userProfile, bindPort = port)
-            DiagnosticsLog.i(TAG, "Smart Plus lane $laneNumber on :$port -> ${tactic.label}")
-            val engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir)
-            raceEngines.add(engine)
-            try {
-                engine.start(profile)
-                val opened = PortProbe.awaitOpen(SOCKS_HOST, port, tactic.budgetMs) { engine.isAlive() }
-                if (!opened) {
-                    DiagnosticsLog.w(
-                        TAG,
-                        "Smart Plus lane $laneNumber: ${tactic.id} never opened :$port " +
-                            (if (engine.isAlive()) "(still scanning)" else "(engine exited)"),
-                    )
-                    continue
-                }
-                // An open port is not a working proxy - the same gate the chained
-                // stage uses, and for the same reason.
-                val carries = Diagnostics.runProxyStage(
-                    host = SOCKS_HOST,
-                    port = port,
-                    alive = { engine.isAlive() },
-                )
-                if (!carries) {
-                    DiagnosticsLog.w(TAG, "Smart Plus lane $laneNumber: ${tactic.id} opened :$port but carried nothing.")
-                    continue
-                }
-                if (winner.complete(tactic)) {
-                    DiagnosticsLog.i(TAG, "Smart Plus lane $laneNumber: ${tactic.id} carries traffic - claiming the race.")
-                }
-                return
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                DiagnosticsLog.w(TAG, "Smart Plus lane $laneNumber: ${tactic.id} failed (${e.message}).")
-            } finally {
-                // A probe is over the moment it has answered, win or lose. This runs
-                // on cancellation too, which is what stops a losing lane outliving
-                // the race.
-                runCatching { engine.stop() }
-                raceEngines.remove(engine)
-            }
+            if (!provenHere) DiagnosticsLog.d(TAG, "Smart lane $laneNumber: out of tactics.")
+        } finally {
+            if (!provenHere) searching.decrementAndGet()
         }
-        DiagnosticsLog.d(TAG, "Smart Plus lane $laneNumber: out of tactics.")
     }
 
     /**
@@ -1558,13 +1709,46 @@ class AetherVpnService : VpnService() {
      * self-test. Returns the strategy that won so the supervisor restarts the
      * engine with the SAME working configuration.
      */
-    private suspend fun connectSmartAuto(userProfile: ConnectionProfile): ConnectionProfile {
+    private suspend fun connectSmartAuto(
+        userProfile: ConnectionProfile,
+        knownFingerprint: studio.cluvex.aether.core.NetworkFingerprint? = null,
+        /** 1.7.0: after a fair race found nothing, only the deep full-range rungs are left to try. */
+        lastResortOnly: Boolean = false,
+        /** 1.7.0 (same version): what the Smart brain already learned (the race), or a fresh one. */
+        brain: DpiBrain.Board? = null,
+    ): ConnectionProfile {
         AetherController.setState(ConnectionState.Launching)
         updateNotification(getString(R.string.state_analyzing))
-        val fingerprint = SmartAuto.fingerprint(this)
-        val plan = SmartAuto.buildPlan(userProfile, fingerprint)
-        return runLadder(plan, getString(R.string.err_auto_failed))
+        val fingerprint = knownFingerprint ?: SmartAuto.fingerprint(this)
+        val networkKey = NetworkIdentity.key(this)
+        val operatorKey = DpiBrain.operatorKey(fingerprint.operatorName, fingerprint.iranSim)
+        val now = System.currentTimeMillis()
+        val networkMemory = SmartPlusMemory.recall(this, networkKey)
+        val memory = networkMemory?.takeIf { it.isProvenAt(now) }
+            ?: operatorKey?.let { SmartPlusMemory.recall(this, it) }?.takeIf { it.isProvenAt(now) }
+            ?: networkMemory
+        val board = brain ?: DpiBrain.Board(DpiBrain.initialKnowledge(fingerprint))
+        val full = SmartAuto.buildPlan(
+            userProfile,
+            fingerprint,
+            onMobileData = NetworkIdentity.onMobileData(this),
+            memory = memory,
+        )
+        val base = if (lastResortOnly) full.filter { it.lastResort }.ifEmpty { full } else full
+        // The serial ladder starts already adapted to what the race learned.
+        val plan = DpiBrain.adaptLadder(base, board.now)
+        val won = runLadder(plan, getString(R.string.err_auto_failed), brain = board)
+        val wonId = lastLadderWinner?.tacticId ?: plan.firstOrNull { it.profile == won }?.tacticId
+        wonId?.let { id ->
+            SmartPlusMemory.remember(this, networkKey, id)
+            operatorKey?.let { SmartPlusMemory.remember(this, it, id) }
+        }
+        return won
     }
+
+    /** 1.7.0 (same version): the rung [runLadder] connected with (it may have been adapted on the way). */
+    @Volatile
+    private var lastLadderWinner: AutoCandidate? = null
 
     /**
      * Two-pass plan for a protocol the user picked by hand (MASQUE, WireGuard
@@ -1577,63 +1761,90 @@ class AetherVpnService : VpnService() {
      * for minutes and then just fails, while Smart mode (which walks a ladder
      * of shorter, hardened attempts) connects in seconds. So the chosen
      * protocol now gets:
-     *   1. a first pass exactly as configured, on a capped budget, and
-     *   2. if that fails, the SAME protocol again with anti-DPI hardening
-     *      (obfuscation on, plus HTTP/2 + TLS fragmentation + ECH for MASQUE)
-     *      on the full budget.
+     *   1. a first pass exactly as configured, on a capped budget,
+     *   2. (MASQUE over HTTP/3 only, 1.7.0) the same protocol over HTTP/2 - the
+     *      TCP carrier that passes where QUIC is filtered, and
+     *   3. the SAME protocol again with anti-DPI hardening (obfuscation on, plus
+     *      HTTP/2 + TLS fragmentation for MASQUE) on the full budget. ECH is never
+     *      forced (1.7.0): without a fetchable key it stops the engine at start.
      * The protocol the user chose is never swapped for another one.
      */
     private fun directPlan(profile: ConnectionProfile): List<AutoCandidate> {
         val fullBudget = profile.connectTimeoutMs()
         val hardenedNoize = if (profile.noize == Noize.OFF) Noize.FIREWALL else profile.noize
         val masque = profile.protocol == Protocol.MASQUE
-        val hardened = profile.copy(
-            noize = hardenedNoize,
-            masqueHttp2 = profile.masqueHttp2 || masque,
-            fragment = profile.fragment || masque,
-            ech = profile.ech || masque,
-        )
-        if (hardened == profile) {
-            return listOf(
-                AutoCandidate(profile, fullBudget, "${profile.protocol.name} · as configured"),
-            )
-        }
-        return listOf(
+        // 1.7.0 (Tehran field log, manual MASQUE): the anti-DPI pass used to turn ECH
+        // on by itself. Where no ECH key can be fetched the engine refuses to start
+        // ("ECH is on but there is no ECH key to offer ... stopping rather than send
+        // the server name in the clear") and died 0.4 s into its 150 s budget, so
+        // the "hardened" pass could never work. ECH stays exactly what the user set.
+        val candidates = mutableListOf(
             AutoCandidate(
                 profile,
                 fullBudget.coerceAtMost(FIRST_PASS_MAX_MS),
                 "${profile.protocol.name} · as configured",
             ),
-            AutoCandidate(
-                hardened,
-                fullBudget,
-                "${profile.protocol.name} · noize=${hardenedNoize.name.lowercase()}" +
-                    (if (masque) " · h2 · fragment · ech" else "") + " (anti-DPI pass)",
-            ),
         )
+        if (masque && !profile.masqueHttp2) {
+            // MASQUE over HTTP/2 (TCP): the carrier that passes where QUIC/UDP is
+            // filtered - which is what made MASQUE work in Tehran when it worked.
+            candidates += AutoCandidate(
+                profile.copy(masqueHttp2 = true),
+                fullBudget.coerceAtMost(QUICK_PASS_MAX_MS),
+                "MASQUE · h2 (TCP carrier)",
+            )
+        }
+        val hardened = profile.copy(
+            noize = hardenedNoize,
+            masqueHttp2 = profile.masqueHttp2 || masque,
+            fragment = profile.fragment || masque,
+        )
+        candidates += AutoCandidate(
+            hardened,
+            fullBudget,
+            "${profile.protocol.name} · noize=${hardenedNoize.name.lowercase()}" +
+                (if (masque) " · h2 · fragment" else "") + " (anti-DPI pass)",
+        )
+        return candidates.distinctBy { it.profile }
     }
 
     /**
-     * Walks a ladder of strategies until one comes up and passes the full
-     * self-test. Each failed rung is torn down before the next is tried.
+     * Walks a ladder of strategies until one comes up and passes the smart data
+     * gate. Each failed rung is torn down before the next is tried.
+     *
+     * 1.7.0 (same version): with a [brain] the ladder is adaptive - every failed
+     * rung is diagnosed from the engine's own output and the rungs still to come
+     * are re-planned ([DpiBrain.adaptLadder]). Without one (a hand-picked protocol)
+     * it still heals a damaged engine identity once and retries the same rung,
+     * instead of failing every rung on the same broken file.
      */
     private suspend fun runLadder(
         plan: List<AutoCandidate>,
         failureMessage: String,
         /** Chained stage 1: bring the engine up as a proxy only, no TUN, no exit check. */
         stageOnly: Boolean = false,
+        brain: DpiBrain.Board? = null,
     ): ConnectionProfile {
         var lastError: Exception? = null
+        lastLadderWinner = null
+        val queue = ArrayDeque(plan)
+        val total = plan.size
+        var index = 0
+        var healed = false
+        var lastFault: Pair<String, Protocol>? = null
 
-        plan.forEachIndexed { index, candidate ->
+        while (queue.isNotEmpty()) {
             // A cancelled session must not climb to the next rung: starting an
             // engine here is what left an unsupervised libaether.so running after
             // the user pressed Disconnect. See [probeOrFalse].
             currentCoroutineContext().ensureActive()
-            DiagnosticsLog.i(TAG, "Attempt ${index + 1}/${plan.size} → ${candidate.label}")
+            val candidate = queue.removeFirst()
+            index++
+            DiagnosticsLog.i(TAG, "Attempt $index/${maxOf(total, index)} → ${candidate.label}")
             try {
                 connectAttempt(candidate.profile, candidate.timeoutMs, stageOnly)
                 DiagnosticsLog.i(TAG, "Connected using ${candidate.label}")
+                lastLadderWinner = candidate
                 return candidate.profile
             } catch (e: CancellationException) {
                 // 1.6.0: the one exit that used to leave no trace at all. Field log
@@ -1641,7 +1852,7 @@ class AetherVpnService : VpnService() {
                 // in, inside a 180 s wait, with no verdict line.
                 ChainTrace.warn(
                     "ladder-cancelled",
-                    "candidate=${index + 1}/${plan.size} label=${candidate.label} " +
+                    "candidate=$index/${maxOf(total, index)} label=${candidate.label} " +
                         "(cancelled from outside this attempt - see the cleanup-native reason that follows)",
                 )
                 throw e
@@ -1649,14 +1860,55 @@ class AetherVpnService : VpnService() {
                 lastError = e
                 ChainTrace.warn(
                     "ladder-fail",
-                    "candidate=${index + 1}/${plan.size} label=${candidate.label} error=${e.message}",
+                    "candidate=$index/${maxOf(total, index)} label=${candidate.label} error=${e.message}",
                 )
+                // Read the failed engine's own account BEFORE it is cleaned up.
+                val failed = engine
+                val signals = failed?.dpiSignals ?: 0
+                val fatal = failed?.fatalLine
+                val died = failed?.isAlive() != true
+                val aliveMs = failed?.let { SystemClock.elapsedRealtime() - it.startedAtMs } ?: 0L
+                val diagnosis = DpiBrain.diagnose(signals, died, aliveMs, DpiBrain.ridesUdp(candidate.profile), fatal)
                 DiagnosticsLog.w(
                     TAG,
                     "${candidate.label} failed (${e.message}) — moving to the next strategy.",
                 )
                 cleanupNativeOnly("ladder-next-candidate (${candidate.label})")
                 Diagnostics.resetChecks()
+                if (diagnosis == DpiBrain.Verdict.IDENTITY_DAMAGED && !healed) {
+                    healed = true
+                    IdentityVault.healCorrupt(filesDir)
+                    DiagnosticsLog.w(TAG, "Smart brain: the engine's identity was damaged - healed, retrying the same strategy.")
+                    queue.addFirst(candidate)
+                    continue
+                }
+                val previousFault = lastFault
+                if (diagnosis == DpiBrain.Verdict.ENGINE_FAULT && fatal != null && healed && previousFault != null &&
+                    previousFault.first == fatal && previousFault.second != candidate.profile.protocol
+                ) {
+                    // The same start-up fault on two different strategies, after a
+                    // heal: nothing on the network side can fix it, so stop here
+                    // instead of failing every remaining rung the same way.
+                    DiagnosticsLog.e(TAG, "Smart brain: the engine fails to start the same way on every strategy ($fatal).")
+                    throw IllegalStateException(failureMessage, lastError)
+                }
+                if (diagnosis == DpiBrain.Verdict.ENGINE_FAULT && !healed) {
+                    // A start-up fault can be a damaged identity the engine did not
+                    // name; one heal costs nothing when everything is fine.
+                    healed = IdentityVault.healCorrupt(filesDir) > 0 || healed
+                }
+                lastFault = if (diagnosis == DpiBrain.Verdict.ENGINE_FAULT && fatal != null) {
+                    fatal to candidate.profile.protocol
+                } else {
+                    null
+                }
+                if (brain != null) {
+                    val knowledge = brain.learn(diagnosis)
+                    DiagnosticsLog.i(TAG, "Smart brain: ${candidate.label} -> $diagnosis | ${knowledge.describe()}")
+                    val adapted = DpiBrain.adaptLadder(queue.toList(), knowledge)
+                    queue.clear()
+                    queue.addAll(adapted)
+                }
             }
         }
 
@@ -1740,20 +1992,56 @@ class AetherVpnService : VpnService() {
             throw IllegalStateException(getString(R.string.err_engine_timeout))
         }
         ChainTrace.stage("engine-socks-open", "after=${waited}ms")
-        DiagnosticsLog.i(TAG, "SOCKS5 port is up.")
+        DiagnosticsLog.i(TAG, "SOCKS5 port is bound; waiting for the engine to start serving it.")
+
+        // 1.7.0 ROOT-CAUSE FIX (Tehran field logs): a bound port is NOT a ready
+        // engine. The engine binds at start-up and serves only once its tunnel is
+        // validated, so the self-test that used to start here gave every attempt a
+        // single 4 s handshake and killed engines that were still verifying their
+        // cached gateway or scanning. Wait for the engine to really serve, for the
+        // rest of THIS attempt's budget, ending at once if it exits. Tor-fronted
+        // stages and engines dialled through a custom upstream keep their own,
+        // bootstrap-aware waits below.
+        val torOwnsReadiness = profile.backend.torMode == TorMode.ONLY || profile.backend.torMode == TorMode.REVERSE
+        if (!torOwnsReadiness && upstream.isBlank()) {
+            val session = engine ?: throw IllegalStateException(getString(R.string.err_engine_died))
+            val remaining = (timeoutMs - (SystemClock.elapsedRealtime() - launchedAt)).coerceAtLeast(MIN_SERVE_WAIT_MS)
+            when (EngineReadiness.await(session, SOCKS_HOST, SOCKS_PORT, remaining, "engine")) {
+                EngineReadiness.Outcome.READY -> ChainTrace.stage(
+                    "engine-serving",
+                    "after=${SystemClock.elapsedRealtime() - launchedAt}ms",
+                )
+                EngineReadiness.Outcome.DIED -> {
+                    val reason = session.fatalLine
+                    ChainTrace.warn(
+                        "engine-fail",
+                        "category=died-before-serving after=${SystemClock.elapsedRealtime() - launchedAt}ms" +
+                            (reason?.let { " reason=$it" } ?: ""),
+                    )
+                    DiagnosticsLog.e(TAG, "Engine exited before it could serve SOCKS5" + (reason?.let { ": $it" } ?: "."))
+                    throw IllegalStateException(getString(R.string.err_engine_died))
+                }
+                EngineReadiness.Outcome.TIMEOUT -> {
+                    ChainTrace.warn(
+                        "engine-fail",
+                        "category=timeout-before-serving after=${SystemClock.elapsedRealtime() - launchedAt}ms budget=${timeoutMs}ms",
+                    )
+                    DiagnosticsLog.e(TAG, "Engine found no working gateway within ${timeoutMs / 1000}s for this strategy.")
+                    throw IllegalStateException(getString(R.string.err_engine_timeout))
+                }
+            }
+        }
 
         if (stageOnly) {
-            if (!profile.verifyConnection && profile.backend.torMode !in listOf(TorMode.ONLY, TorMode.REVERSE)) {
-                DiagnosticsLog.i(TAG, "Optional stage verification skipped; listener and process remain required.")
-                return
-            }
+            // 1.7.0 (same version): no switch skips this any more - a chained stage
+            // that cannot open outbound connections is never handed to stage 2.
             // CHAINED STAGE 1. An open port is not a working proxy: the engine's
             // inner tunnel can still be building, and handing a half-ready proxy
             // to Psiphon makes stage 2 fail for a reason that looks like
             // stage 2's fault. Gate on real outbound TCP, then stop -- no TUN,
             // no DNS/geo lookup, because the exit belongs to stage 2.
-            AetherController.setState(if (profile.verifyConnection) ConnectionState.Verifying else ConnectionState.Connecting)
-            updateNotification(getString(if (profile.verifyConnection) R.string.state_verifying else R.string.state_connecting))
+            AetherController.setState(ConnectionState.Proving)
+            updateNotification(getString(R.string.state_smart_gate))
             // 1.3.0 FIELD FIX. When stage 1 IS Tor (`Tor`, `Tor -> Psiphon`, and
             // the reverse chain), the listener exists from the first millisecond
             // but cannot answer until the bootstrap has reached the network. The
@@ -1878,13 +2166,10 @@ class AetherVpnService : VpnService() {
             }
         }
 
-        // GATING FIX: the app used to report Connected the moment the TUN /
-        // proxy was up while the 5-step self-test still ran in the background —
-        // users saw "Connected" long before the tunnel could actually carry
-        // traffic (and before the IP + flag appeared). The state is now held at
-        // Verifying, and Connected is reported ONLY after all four checks pass,
-        // so Connected == genuinely ready to browse.
-        DiagnosticsLog.i(TAG, "Local tunnel/proxy started; applying configured readiness policy.")
+        // GATING: Connected is never reported the moment the TUN / proxy is up.
+        // The state is held at Proving until the smart gate has seen real data
+        // cross the tunnel, so Connected == genuinely ready to browse.
+        DiagnosticsLog.i(TAG, "Local tunnel/proxy started; the smart gate proves the data path.")
 
         // In proxy mode, test THROUGH the shared SOCKS5 listener — the exact
         // endpoint external apps connect to — so a dead bridge can no longer
@@ -1893,7 +2178,7 @@ class AetherVpnService : VpnService() {
             if (profile.proxyMode) ShareBridge.socksPort.value ?: exitPort
             else exitPort
         val healthy = probeOrFalse {
-            verifyFinal(profile, diagPort)
+            smartGateFinal(profile, diagPort)
         }
         if (!healthy) {
             DiagnosticsLog.e(TAG, "Self-test failed — refusing to report Connected.")
@@ -1978,10 +2263,22 @@ class AetherVpnService : VpnService() {
             delay(backoff)
 
             engine = AetherProcess(applicationInfo.nativeLibraryDir, filesDir).also { it.start(profile, studio.cluvex.aether.custom.CustomChainPolicy.runtimeEnvironment(profile, customSelection?.mode)) }
-            if (PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, profile.connectTimeoutMs()) { engine?.isAlive() == true }) {
+            // 1.7.0: the same readiness rule as the first connect - a bound port is
+            // not a serving engine, so wait for it to serve before the self-test.
+            val restarted = engine
+            if (restarted != null &&
+                PortProbe.awaitOpen(SOCKS_HOST, SOCKS_PORT, profile.connectTimeoutMs()) { restarted.isAlive() } &&
+                EngineReadiness.await(
+                    restarted,
+                    SOCKS_HOST,
+                    SOCKS_PORT,
+                    profile.connectTimeoutMs(),
+                    "restarted engine",
+                ) == EngineReadiness.Outcome.READY
+            ) {
                 // Same gate as the initial connect: never claim Connected after
                 // a silent engine restart until traffic really flows again.
-                if (probeOrFalse { verifyFinal(profile, sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT) }) {
+                if (probeOrFalse { smartGateFinal(profile, sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT) }) {
                     attempt = 0
                     ChainTrace.end("ok", "reconnected exit=$SOCKS_HOST:${sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT}")
                     AetherController.setState(ConnectionState.Connected("$SOCKS_HOST:${sessionExitPort.takeIf { it > 0 } ?: SOCKS_PORT}"))
@@ -2009,47 +2306,119 @@ class AetherVpnService : VpnService() {
     // back into its own tunnel.
     // ------------------------------------------------------------------------
 
+    /** The configs automatic selection may pick from: the active tab, usable here. */
+    private fun selectionCandidates(snapshot: CustomConfigStore.State, current: CustomConfig,
+        excludeCurrent: Boolean): List<CustomConfig> = snapshot.configs.filter {
+        studio.cluvex.aether.custom.ConfigCatalog.contains(snapshot.activeTab, it) &&
+            !it.isExpired() && (!it.mobileOnly || onMobileData()) &&
+            (!excludeCurrent || it.id != current.id)
+    }
+
     /** Direct-outbound ranking; never compares TCP-connect-only fallback values. */
     private suspend fun chooseBestCustom(current: CustomConfig, initial: Boolean = false,
-        excludeCurrent: Boolean = false): CustomConfig? {
+        excludeCurrent: Boolean = false, eager: Boolean = false): CustomConfig? {
         val snapshot = CustomConfigStore.state.value
-        val candidates = snapshot.configs.filter {
-            studio.cluvex.aether.custom.ConfigCatalog.contains(snapshot.activeTab, it) &&
-                !it.isExpired() && (!it.mobileOnly || onMobileData()) &&
-                (!excludeCurrent || it.id != current.id)
-        }
+        val candidates = selectionCandidates(snapshot, current, excludeCurrent)
         val reports = studio.cluvex.aether.custom.ConfigPingStore.measureForSelection(this, candidates)
         if (CustomConfigStore.state.value.activeTab != snapshot.activeTab) return null
         val live = CustomConfigStore.state.value.configs
         return studio.cluvex.aether.custom.AutoSelectPolicy.choose(
             candidates.filter { it in live }, reports,
             if (initial || excludeCurrent) null else current.id,
+            minGainMs = if (eager) studio.cluvex.aether.custom.AutoSelectPolicy.EAGER_GAIN_MS
+                else studio.cluvex.aether.custom.AutoSelectPolicy.STEADY_GAIN_MS,
+            minGainDivisor = if (eager) studio.cluvex.aether.custom.AutoSelectPolicy.EAGER_GAIN_DIVISOR
+                else studio.cluvex.aether.custom.AutoSelectPolicy.STEADY_GAIN_DIVISOR,
         )
     }
 
-    private suspend fun verifyFinal(profile: ConnectionProfile, port: Int, graceMs: Long? = null,
-        alive: () -> Boolean = { xray?.isAlive() == true }): Boolean {
-        val enabled = studio.cluvex.aether.model.VerificationPolicy.enabled(profile,
-            if (customSelection != null) CustomConfigStore.state.value.verifyConnection else null)
-        if (!enabled) {
-            DiagnosticsLog.i(TAG, "Optional connection verification skipped; exit-IP lookup and liveness remain active.")
-            return true
-        }
-        AetherController.setState(ConnectionState.Verifying)
-        updateNotification(getString(R.string.state_verifying))
-        return if (customSelection != null) customReady(port, alive)
-            else if (graceMs != null) Diagnostics.run(port = port, graceMs = graceMs)
-            else Diagnostics.run(port = port)
+    /** Same ranking on the results already measured (manual run / finished background run). */
+    private fun chooseCachedCustom(current: CustomConfig, eager: Boolean): CustomConfig? {
+        val snapshot = CustomConfigStore.state.value
+        return studio.cluvex.aether.custom.AutoSelectPolicy.choose(
+            selectionCandidates(snapshot, current, excludeCurrent = false),
+            studio.cluvex.aether.custom.ConfigPingStore.results.value, current.id,
+            minGainMs = if (eager) studio.cluvex.aether.custom.AutoSelectPolicy.EAGER_GAIN_MS
+                else studio.cluvex.aether.custom.AutoSelectPolicy.STEADY_GAIN_MS,
+            minGainDivisor = if (eager) studio.cluvex.aether.custom.AutoSelectPolicy.EAGER_GAIN_DIVISOR
+                else studio.cluvex.aether.custom.AutoSelectPolicy.STEADY_GAIN_DIVISOR,
+        )
     }
 
-    private suspend fun customReady(port: Int, alive: () -> Boolean): Boolean {
-        if (!CustomConfigStore.state.value.verifyConnection) return true
-        // A small HTTP GET through the actual outbound is sufficient for custom
-        // configs. Geo-IP services and UDP support are NOT readiness gates here.
-        // Each socket operation has a timeout; a peer drip-feeding bytes is also
-        // stopped by an absolute deadline inside the probe.
-        return studio.cluvex.aether.custom.CustomReadiness.check(port, alive)
+    /**
+     * 1.7.0 fast first connect: starts measuring every candidate in the background
+     * and returns as soon as the first ones answered (plus a short grace so near
+     * ties are compared), with the still-running measurement. When nobody answers
+     * within [FIRST_PICK_TIMEOUT_MS] it falls back to waiting for the full run.
+     */
+    private suspend fun chooseFirstCustom(current: CustomConfig):
+        Pair<CustomConfig?, studio.cluvex.aether.custom.ConfigPingStore.Run?> {
+        val snapshot = CustomConfigStore.state.value
+        val candidates = selectionCandidates(snapshot, current, excludeCurrent = false)
+        if (candidates.isEmpty()) return null to null
+        val handle = studio.cluvex.aether.custom.ConfigPingStore.startRun(this, candidates)
+        val since = handle.startedAt
+        val answered = withTimeoutOrNull(FIRST_PICK_TIMEOUT_MS) {
+            studio.cluvex.aether.custom.ConfigPingStore.results.first { map ->
+                handle.done.isCompleted || candidates.any { c ->
+                    val r = map[c.id]
+                    r != null && r.ok && r.ms >= 1 && r.at >= since
+                }
+            }
+        }
+        if (answered != null && !handle.done.isCompleted) delay(FIRST_PICK_GRACE_MS)
+        if (handle.done.isCompleted || answered == null) {
+            val all = runCatching { handle.done.await() }.getOrDefault(emptyMap())
+            if (CustomConfigStore.state.value.activeTab != snapshot.activeTab) return null to null
+            return studio.cluvex.aether.custom.AutoSelectPolicy.choose(
+                candidates.filter { it in CustomConfigStore.state.value.configs }, all, null) to null
+        }
+        val first = studio.cluvex.aether.custom.AutoSelectPolicy.fastestSoFar(
+            candidates, studio.cluvex.aether.custom.ConfigPingStore.results.value, since)
+        DiagnosticsLog.i(TAG, "Auto-select: connecting to the first fast config (${first?.name ?: "none"}); " +
+            "the full test keeps running and the fastest one is applied when it ends")
+        return first to handle
     }
+
+    /**
+     * 1.7.0 (same version): the final gate before Connected - the SMART GATE.
+     *
+     * Every session (Aether, Psiphon, Tor, their chains AND custom configs) passes
+     * the smart data gate ([LiveDataProof]); there is no switch any more, anywhere.
+     * The old optional verification demanded a geolocation answer AND device DNS
+     * over UDP for up to 90 s: it kept MASQUE from ever connecting while it was on,
+     * and proved nothing at all while it was off. The smart gate connects the
+     * moment real data crosses the tunnel (usually within a second) and never
+     * accepts a fake connection: a bare SOCKS5 reply does not count.
+     */
+    private suspend fun smartGateFinal(profile: ConnectionProfile, port: Int, graceMs: Long? = null,
+        alive: () -> Boolean = { xray?.isAlive() == true }): Boolean {
+        AetherController.setState(ConnectionState.Proving)
+        updateNotification(getString(R.string.state_smart_gate))
+        val processAlive: () -> Boolean = if (customSelection != null) alive else {
+            { engine?.isAlive() != false }
+        }
+        val budget = graceMs ?: if (customSelection != null) CUSTOM_GATE_BUDGET_MS else LiveDataProof.DIRECT_BUDGET_MS
+        val label = if (customSelection != null) "custom session" else "session"
+        DiagnosticsLog.d(TAG, "Smart gate for ${profile.backend.name} on :$port (budget ${budget / 1000}s).")
+        return LiveDataProof.prove(SOCKS_HOST, port, budget, alive = processAlive, label = label).ok
+    }
+
+    /**
+     * The smart gate for a custom config's own SOCKS5 listener before anything is
+     * chained to it: real data must cross the config's outbound (no geo-IP, no
+     * UDP requirement), bounded by [CUSTOM_GATE_BUDGET_MS] and ended at once when
+     * Xray exits.
+     */
+    private suspend fun customGate(port: Int, alive: () -> Boolean): Boolean =
+        LiveDataProof.prove(
+            SOCKS_HOST,
+            port,
+            CUSTOM_GATE_BUDGET_MS,
+            alive = alive,
+            label = "custom config",
+            updateChecks = false,
+        ).ok
 
     private suspend fun connectCustom(profile: ConnectionProfile, selection: CustomSelection) {
         val cfg = selection.config
@@ -2079,7 +2448,7 @@ class AetherVpnService : VpnService() {
                 cleanupNativeOnly("custom-first-prestart")
                 ChainTrace.stage("xray-launch", "placement=first config=${cfg.protocol.short}")
                 val port = startXray(runner, cfg, dialVia = null)
-                val reachable = customReady(port) { runner.isAlive() }
+                val reachable = customGate(port) { runner.isAlive() }
                 if (!reachable) {
                     ChainTrace.warn("xray-unreachable", "socks5=$SOCKS_HOST:$port")
                     DiagnosticsLog.e(TAG, "The custom config opens no outbound connection.")
@@ -2119,7 +2488,7 @@ class AetherVpnService : VpnService() {
         cleanupNativeOnly("custom-solo-prestart")
         lockdownTunActive = false
         val port = startXray(runner, cfg, dialVia = null)
-        val reachable = customReady(port) { runner.isAlive() }
+        val reachable = customGate(port) { runner.isAlive() }
         if (!reachable) {
             DiagnosticsLog.e(TAG, "The custom config opens no outbound connection.")
             throw IllegalStateException(getString(R.string.cc_err_unreachable))
@@ -2209,7 +2578,7 @@ class AetherVpnService : VpnService() {
         if (selection.mode.placement != ChainPlacement.LAST) return enginePort
         val runner = xray ?: throw IllegalStateException(getString(R.string.cc_err_no_core))
         val port = startXray(runner, selection.config, dialVia = enginePort)
-        val reachable = customReady(port) { runner.isAlive() }
+        val reachable = customGate(port) { runner.isAlive() }
         if (!reachable) {
             DiagnosticsLog.e(TAG, "The custom config answers nothing through $SOCKS_HOST:$enginePort.")
             throw IllegalStateException(getString(R.string.cc_err_unreachable))
@@ -2334,7 +2703,7 @@ class AetherVpnService : VpnService() {
         }
 
         val diagPort = if (profile.proxyMode) ShareBridge.socksPort.value ?: port else port
-        val healthy = verifyFinal(profile, diagPort, graceMs, alive)
+        val healthy = smartGateFinal(profile, diagPort, graceMs, alive)
         check(healthy) { getString(R.string.err_selftest) }
 
         PingMonitor.setTunnelPort(port)
@@ -3216,6 +3585,10 @@ class AetherVpnService : VpnService() {
     }
 
     companion object {
+        /** Longest wait for the first answering config before the full run decides. */
+        private const val FIRST_PICK_TIMEOUT_MS = 15_000L
+        /** After the first answer: a short window so near-simultaneous answers are compared. */
+        private const val FIRST_PICK_GRACE_MS = 700L
         /**
          * The local SOCKS5 port the device's traffic is forwarded to while a
          * session runs, 0 otherwise. The app itself is excluded from its own VPN,
@@ -3430,6 +3803,27 @@ class AetherVpnService : VpnService() {
          * budget before the hardened second pass is even tried.
          */
         private const val FIRST_PASS_MAX_MS = 75_000L
+
+        /**
+         * 1.7.0: the least time an attempt waits for its engine to SERVE after the
+         * port is bound, even when the port itself took most of the budget.
+         */
+        private const val MIN_SERVE_WAIT_MS = 8_000L
+
+        /** 1.7.0: budget of one fast single-hop pass of a hand-picked protocol. */
+        private const val QUICK_PASS_MAX_MS = 45_000L
+
+        /** 1.7.0 Smart: longest the confirming connect of a PROVEN route may take. */
+        private const val CONFIRM_MAX_MS = 60_000L
+
+        /** 1.7.0 (same version): smart-gate budget for a custom config (was 3 x 12 s HTTP checks). */
+        private const val CUSTOM_GATE_BUDGET_MS = 40_000L
+
+        /** 1.7.0 Smart: how long a lane may take to prove outbound TCP once it serves. */
+        private const val LANE_TCP_GRACE_MS = 12_000L
+
+        /** 1.7.0 Smart: poll period of the race supervisor. */
+        private const val RACE_POLL_MS = 100L
 
         /**
          * 1.6.0: rung 1 of [customUpstreamPlan] - TURBO's engine scan plus the

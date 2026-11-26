@@ -30,7 +30,7 @@ import studio.cluvex.aether.model.ConnectionState
  * because a broadcast receiver has to answer synchronously and cannot suspend.
  *
  * The rule: **a transient state does not survive a process death.** `Connecting`,
- * `Verifying`, `Launching`, `Reconnecting` and `Disconnecting` all describe work
+ * `Proving`, `Launching`, `Reconnecting` and `Disconnecting` all describe work
  * that some thread was doing. If that thread's process is gone, the work is gone
  * with it, and the honest answer is `Idle` - so [restore] maps every transient
  * value to `Idle` and only `Connected` survives a cold read. This is what stops a
@@ -57,7 +57,7 @@ internal object WidgetStateCache {
             is ConnectionState.Selecting,
             is ConnectionState.Launching,
             is ConnectionState.Connecting,
-            is ConnectionState.Verifying,
+            is ConnectionState.Proving,
             -> CONNECTING
             is ConnectionState.Reconnecting -> RECONNECTING
             is ConnectionState.Disconnecting -> DISCONNECTING

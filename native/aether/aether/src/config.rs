@@ -125,7 +125,34 @@ pub fn load(path: &str) -> Result<Option<Identity>> {
         return Ok(None);
     }
 
-    let text = std::fs::read_to_string(path)?;
+    // >>> AETHER-APP-PATCH identity-not-utf8 (mobile 1.7.0 / desktop 1.5.0)
+    // Field logs (1.6.0, IR-MCI): an identity file that is not valid UTF-8
+    // (a torn write, a shredded-then-resealed copy) made `read_to_string` fail
+    // with `Io(InvalidData, "stream did not contain valid UTF-8")`. That error
+    // was returned as it is, so `main` exited 0.4 s after every start - every
+    // protocol, every retry, forever, because nothing ever moved the file away.
+    // A damaged identity is now treated exactly like an unparsable one: it is
+    // quarantined and a fresh identity is provisioned.
+    let bytes = std::fs::read(path)?;
+    let text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            match quarantine(path) {
+                Some(target) => log::warn!(
+                    "[-] identity file {path} is not valid UTF-8; moved it to {} and provisioning a fresh identity",
+                    target.display()
+                ),
+                None => {
+                    let _ = std::fs::remove_file(path);
+                    log::warn!(
+                        "[-] identity file {path} is not valid UTF-8; removed it and provisioning a fresh identity"
+                    );
+                }
+            }
+            return Ok(None);
+        }
+    };
+    // <<< AETHER-APP-PATCH identity-not-utf8
 
     let persisted: PersistedIdentity = match toml::from_str(&text) {
         Ok(value) => value,
@@ -223,7 +250,8 @@ pub fn save_masque_creds(
         return Ok(());
     }
 
-    let text = std::fs::read_to_string(path)?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| AetherError::Other(format!("config read {path}: {e}")))?;
     let mut persisted: PersistedIdentity =
         toml::from_str(&text).map_err(|e| AetherError::Other(format!("config parse: {e}")))?;
 
@@ -424,6 +452,23 @@ wg_peer_public_key = \"AAAA\"
         std::fs::write(&path, body).expect("write");
 
         assert!(load(path_str).is_err());
+    }
+
+    #[test]
+    fn an_identity_that_is_not_utf8_is_set_aside_and_reprovisioned() {
+        let dir = scratch("notutf8");
+        let path = dir.join("aether.toml");
+        let path_str = path.to_str().unwrap();
+
+        std::fs::write(&path, [0xffu8, 0xfe, 0x00, 0x9c, 0x80, 0x41]).expect("write");
+
+        let outcome = load(path_str).expect("a damaged identity must not stop the engine");
+        assert!(outcome.is_none(), "a fresh identity has to be provisioned");
+        assert!(!path.exists(), "the damaged file should have been moved aside");
+        assert!(
+            dir.join("aether.toml.corrupt").exists(),
+            "the quarantined copy should exist"
+        );
     }
 
     #[test]

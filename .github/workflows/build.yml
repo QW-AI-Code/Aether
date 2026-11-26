@@ -420,6 +420,23 @@ jobs:
       - name: Patch known-vulnerable engine dependencies
         run: python3 scripts/patch-engine-dependencies.py native/aether/aether
 
+      # 1.7.0: the same strict audit as the final one, run on the patched lockfile
+      # BEFORE the ~40 minute native build. New RustSec advisories are published
+      # between releases (the 1.7.0 run of 2026-11-23 failed only in the last audit,
+      # after every APK input had been built). This gate fails in minutes instead;
+      # the final audit of the lock that really built the engine still runs below.
+      # Same semantics as the final audit: only Cargo.lock is copied, exactly as
+      # build-natives.sh does for the built engine.
+      - name: Audit Rust dependencies early (lockfile gate)
+        run: |
+          set -euo pipefail
+          cargo install --locked cargo-audit --version 0.22.2
+          mkdir -p "${RUNNER_TEMP}/aether-audit-early/engine"
+          cp native/aether/aether/Cargo.lock "${RUNNER_TEMP}/aether-audit-early/engine/Cargo.lock"
+          python3 scripts/audit-rust.py --strict \
+            --crate "${RUNNER_TEMP}/aether-audit-early/engine" \
+            --report "${RUNNER_TEMP}/aether-audit-early/cargo-audit.json"
+
       - name: Fetch native sources
         run: bash scripts/fetch-natives.sh
         env:
@@ -921,7 +938,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Validation-Evidence-1.6.0
+          name: Validation-Evidence-1.7.0
           path: ${{ runner.temp }}/Validation_Evidence.zip
           if-no-files-found: warn
 

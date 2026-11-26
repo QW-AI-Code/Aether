@@ -6,9 +6,9 @@ import org.json.JSONObject
 /**
  * SMART PLUS — what worked on which network.
  *
- * The half of Smart Plus that makes the SECOND connect on a network quick: the
- * route that carried traffic here is tried first next time, as one short attempt,
- * before anything is raced.
+ * The half of Smart mode that makes the SECOND connect on a network quick: the
+ * route that carried traffic here leads its lane next time (1.7.0: inside the
+ * fair race, not as a separate serial attempt before it).
  *
  * ## Keyed per network, and why that is the whole point
  *
@@ -110,7 +110,7 @@ object SmartPlusMemory {
         edit(context) { map ->
             val old = map[networkKey]
             // Clearing a proven id that has now failed matters: otherwise the
-            // next connect still puts it in the 45 s slot at the front.
+            // next connect still puts it at the front of its lane.
             val stillProven = old?.tacticId?.takeIf { it != tacticId }
             map[networkKey] = Entry(
                 tacticId = stillProven,

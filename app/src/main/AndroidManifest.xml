@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 1.7.0 (same version): per-app traffic on the connection card. A special
+         access the USER grants in system settings ("Usage access"); nothing is
+         read until then, and the numbers never leave the device. -->
+    <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
     <!-- 1.5.0 custom configs: scanning a config QR code. Asked for only when the
          user taps "Scan a QR code"; the camera is optional hardware. -->
     <uses-permission android:name="android.permission.CAMERA" />

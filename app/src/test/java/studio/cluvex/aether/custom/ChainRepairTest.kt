@@ -67,10 +67,10 @@ class ChainRepairTest {
         }
     }
     @Test fun `notice is for actual release and retains troubleshooting`() {
-        val news=Announcements.forVersion("1.6.0")
-        assertEquals("1.6.0",news.version)
-        val text=news.blocks.toString();assertTrue(text.contains("حالت پرواز"));assertTrue(text.contains("Tor"))
-        assertTrue(text.contains("۳ تا ۴ دقیقه"));assertTrue(text.contains("1.6.0"))
+        val news=Announcements.forVersion("1.7.0")
+        assertEquals("1.7.0",news.version)
+        val text=news.blocks.toString();assertTrue(text.contains("حالت پرواز"));assertTrue(text.contains("اگر به هیچ وجه متصل نشدید"))
+        assertTrue(text.contains("1.7.0"));assertTrue(!text.contains("1.6.0"));assertEquals(1,Announcements.all.size)
     }
     @Test fun `private samples export actual session json for isolated chain probes`() {
         val root=System.getenv("AETHER_CHAIN_FIXTURES")?.let(::File)

@@ -23,6 +23,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -185,6 +186,9 @@ fun ConnectionCard(
     // Only alive while connected: no frame subscription when there is nothing
     // to show off.
     val cycle = if (connected && LocalHomeVisible.current && LocalHomeAnimationsEnabled.current) rememberGlowCycle() else null
+    val traffic = rememberTrafficStats(connectedSince = connectedSince, connected = connected)
+    var detail by remember { mutableStateOf(DETAIL_NONE) }
+    var chainLabel by remember { mutableStateOf("") }
 
     Box(
         modifier = modifier
@@ -216,11 +220,27 @@ fun ConnectionCard(
             StatusBlock(title = statusTitle, caption = statusCaption, accent = accent)
             TimerBlock(connectedSince = connectedSince, connected = connected)
             ServerIpPill(connected = connected, ipInfo = ipInfo, ipLoading = ipLoading)
-            SpeedStrip(connectedSince = connectedSince, connected = connected)
-            MetaSlides(connected = connected, backend = backend)
+            SpeedStrip(stats = traffic, onClick = { detail = DETAIL_TRAFFIC })
+            MetaSlides(connected = connected, backend = backend,
+                onPing = { detail = DETAIL_PING },
+                onChain = { label -> chainLabel = label; detail = DETAIL_CHAIN })
         }
     }
+
+    // 1.7.0 (same version): the rows open their details.
+    when (detail) {
+        DETAIL_PING -> PingDetailsDialog(connected = connected, onDismiss = { detail = DETAIL_NONE })
+        DETAIL_CHAIN -> ChainDetailsDialog(chain = chainLabel, ipInfo = ipInfo, connected = connected,
+            onDismiss = { detail = DETAIL_NONE })
+        DETAIL_TRAFFIC -> TrafficDetailsDialog(connected = connected, sinceMs = connectedSince,
+            downTotal = traffic.downTotal, upTotal = traffic.upTotal, onDismiss = { detail = DETAIL_NONE })
+    }
 }
+
+private const val DETAIL_NONE = 0
+private const val DETAIL_PING = 1
+private const val DETAIL_CHAIN = 2
+private const val DETAIL_TRAFFIC = 3
 
 // --------------------------------------------------------------- 1. status
 
@@ -467,12 +487,12 @@ private fun copyToClipboard(context: Context, text: String) {
 // --------------------------------------------------------------- 4. speeds
 
 @Composable
-private fun SpeedStrip(connectedSince: Long?, connected: Boolean) {
-    val stats = rememberTrafficStats(connectedSince = connectedSince, connected = connected)
-
+private fun SpeedStrip(stats: TrafficStats, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(SUB_SHAPE)
+            .clickable(onClick = onClick)
             .background(color = CardSubSurface, shape = SUB_SHAPE)
             .subEdge(SUB_SHAPE)
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -555,7 +575,12 @@ private fun SpeedCell(
  * [connected], exactly as the old three-column strip had it.
  */
 @Composable
-private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
+private fun MetaSlides(
+    connected: Boolean,
+    backend: TransportBackend,
+    onPing: () -> Unit = {},
+    onChain: (String) -> Unit = {},
+) {
     val meta by EngineMeta.state.collectAsState()
     val ping by PingMonitor.state.collectAsState()
 
@@ -618,6 +643,7 @@ private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
             label = stringResource(R.string.meta_pipeline),
             value = pipelineForms.first(),
             forms = pipelineForms,
+            onClick = { onChain(pipelineForms.first()) },
         )
         // r4: the Endpoint slide is gone. The engine's gateway address told the
         // user nothing they could act on (it is picked and rotated by the scan),
@@ -627,6 +653,7 @@ private fun MetaSlides(connected: Boolean, backend: TransportBackend) {
             value = latency,
             below = { PingStrength(connected = connected, ms = if (stale) -1L else lastMs) },
             stale = stale,
+            onClick = onPing,
         )
     }
 }
@@ -648,6 +675,8 @@ private fun MetaSlide(
     forms: List<String> = listOf(value),
     /** 1.6.0: dims the value when it is a retained reading, not a fresh one. */
     stale: Boolean = false,
+    /** 1.7.0: opens this row's details popup. */
+    onClick: (() -> Unit)? = null,
 ) {
     val valueStyle = MaterialTheme.typography.bodySmall.copy(
         fontSize = 13.sp,
@@ -661,6 +690,8 @@ private fun MetaSlide(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clip(SUB_SHAPE)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
             .background(color = CardSubSurface, shape = SUB_SHAPE)
             .subEdge(SUB_SHAPE)
             .padding(horizontal = 14.dp, vertical = 9.dp),

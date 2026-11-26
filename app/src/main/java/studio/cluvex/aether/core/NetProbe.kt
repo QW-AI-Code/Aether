@@ -905,4 +905,121 @@ object NetProbe {
 
     /** Turns a 2-letter ISO country code into its flag emoji; [FLAG_UNKNOWN] for anything else. */
     fun flagEmoji(countryCode: String?): String = flagEmojiOrNull(countryCode) ?: FLAG_UNKNOWN
+
+    // ---- 1.7.0 Smart mode: quality of a WORKING tunnel --------------------
+
+    /** Host of the throughput probes (Cloudflare's public speed test, reached through the tunnel). */
+    private const val SPEED_HOST = "speed.cloudflare.com"
+    private const val DOWN_PROBE_BYTES = 393_216
+    private const val UP_PROBE_BYTES = 131_072
+
+    /**
+     * Measures latency, download and upload THROUGH the SOCKS5 proxy at
+     * [socksHost]:[socksPort] within [budgetMs] in total.
+     *
+     * Used by Smart mode to compare every route that proved itself, under the
+     * same conditions, before one of them becomes the session:
+     *
+     *  * **latency** - best of three fresh HTTP round trips to `1.1.1.1:80`
+     *    (an IP literal, so no DNS time is mixed in);
+     *  * **download** - a ~384 KB HTTPS download from [SPEED_HOST];
+     *  * **upload** - a 128 KB HTTPS upload to [SPEED_HOST].
+     *
+     * Both transfers are verified TLS (hostname checked) and small on purpose:
+     * the goal is to RANK routes, not to benchmark a line. A transfer that fails
+     * reports 0 and the ranking falls back to latency for it. Returns null when
+     * not even one latency sample got through - such a route does not carry.
+     */
+    fun measureTunnelQuality(socksHost: String, socksPort: Int, budgetMs: Int = 8_000): TunnelQuality? {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(budgetMs.toLong())
+        var best = Long.MAX_VALUE
+        repeat(3) {
+            val left = remainingMs(deadline)
+            if (left < 400) return@repeat
+            runCatching {
+                val timeout = left.coerceAtMost(2_500L).toInt()
+                val t0 = System.nanoTime()
+                socks5Connect(socksHost, socksPort, "1.1.1.1", 80, useDomain = false, timeout).use { s ->
+                    s.getOutputStream().apply {
+                        write(
+                            ("HEAD /cdn-cgi/trace HTTP/1.1\r\nHost: 1.1.1.1\r\n" +
+                                "User-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n")
+                                .toByteArray(Charsets.US_ASCII),
+                        )
+                        flush()
+                    }
+                    if (s.getInputStream().read() < 0) throw IOException("no reply")
+                }
+                best = minOf(best, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0))
+            }
+        }
+        if (best == Long.MAX_VALUE) return null
+        val downKbps = runCatching { measureDownKbps(socksHost, socksPort, deadline) }.getOrDefault(0L)
+        val upKbps = runCatching { measureUpKbps(socksHost, socksPort, deadline) }.getOrDefault(0L)
+        return TunnelQuality(rttMs = best, downKbps = downKbps, upKbps = upKbps)
+    }
+
+    private fun measureDownKbps(socksHost: String, socksPort: Int, deadline: Long): Long {
+        val left = remainingMs(deadline)
+        if (left < 1_000) return 0L
+        val timeout = left.toInt()
+        socks5Connect(socksHost, socksPort, SPEED_HOST, 443, useDomain = true, timeout).use { raw ->
+            tlsWrap(raw, SPEED_HOST, 443, timeout).use { tls ->
+                tls.getOutputStream().apply {
+                    write(
+                        ("GET /__down?bytes=$DOWN_PROBE_BYTES HTTP/1.1\r\nHost: $SPEED_HOST\r\n" +
+                            "User-Agent: Mozilla/5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n")
+                            .toByteArray(Charsets.US_ASCII),
+                    )
+                    flush()
+                }
+                val input = tls.getInputStream()
+                val buf = ByteArray(16 * 1024)
+                var total = 0L
+                var firstByteAt = 0L
+                while (remainingMs(deadline) > 0) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    if (firstByteAt == 0L) firstByteAt = System.nanoTime()
+                    total += n
+                    if (total >= DOWN_PROBE_BYTES) break
+                }
+                val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - firstByteAt)
+                if (firstByteAt == 0L || total < 32 * 1024 || elapsedMs <= 0) return 0L
+                return total * 8 / elapsedMs // bits per ms == kbit/s
+            }
+        }
+    }
+
+    private fun measureUpKbps(socksHost: String, socksPort: Int, deadline: Long): Long {
+        val left = remainingMs(deadline)
+        if (left < 1_000) return 0L
+        val timeout = left.toInt()
+        socks5Connect(socksHost, socksPort, SPEED_HOST, 443, useDomain = true, timeout).use { raw ->
+            tlsWrap(raw, SPEED_HOST, 443, timeout).use { tls ->
+                val out = tls.getOutputStream()
+                out.write(
+                    ("POST /__up HTTP/1.1\r\nHost: $SPEED_HOST\r\nUser-Agent: Mozilla/5.0\r\n" +
+                        "Content-Type: application/octet-stream\r\nContent-Length: $UP_PROBE_BYTES\r\n" +
+                        "Connection: close\r\n\r\n").toByteArray(Charsets.US_ASCII),
+                )
+                out.flush()
+                val chunk = ByteArray(16 * 1024)
+                val t0 = System.nanoTime()
+                var sent = 0
+                while (sent < UP_PROBE_BYTES && remainingMs(deadline) > 0) {
+                    val n = minOf(chunk.size, UP_PROBE_BYTES - sent)
+                    out.write(chunk, 0, n)
+                    sent += n
+                }
+                out.flush()
+                if (sent < UP_PROBE_BYTES) return 0L
+                // The upload is complete when the server answers it.
+                if (tls.getInputStream().read() < 0) return 0L
+                val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - t0)
+                if (elapsedMs <= 0) return 0L
+                return sent.toLong() * 8 / elapsedMs
+            }
+        }
+    }
 }

@@ -112,8 +112,8 @@ data class ConnectionProfile(
     val scanMode: ScanMode = ScanMode.BALANCED,
     val ipVersion: IpVersion = IpVersion.V4,
     val quickReconnect: Boolean = true,
-    /** Optional app-side initial readiness gate. Never disables bootstrap, TLS checks or supervision. */
-    val verifyConnection: Boolean = true,
+    // 1.7.0 (same version): the optional connection-check switch was removed - every session passes
+    // the always-on smart connection gate (core/LiveDataProof.kt).
     val masqueHttp2: Boolean = false,
     /**
      * Share the tunnel with other devices on the same Wi-Fi / hotspot via the

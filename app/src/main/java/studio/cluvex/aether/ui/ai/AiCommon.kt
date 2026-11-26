@@ -606,7 +606,12 @@ fun aiErrorText(kind: AiErrorKind, detail: String): String = when (kind) {
     AiErrorKind.TRUNCATED -> stringResource(R.string.ai_error_truncated)
     AiErrorKind.BLOCKED -> stringResource(R.string.ai_error_blocked)
 }.let { headline ->
-    if (detail.isBlank() || detail == kind.name || isBoilerplate(kind, detail)) {
+    if (detail.isBlank() || detail == kind.name || isBoilerplate(kind, detail) ||
+        // 1.7.0 (same version): in Persian, Google's or the app's own English
+        // diagnostic text is not appended to the translated sentence (it stays in
+        // the diagnostics log), so a Persian screen shows Persian only.
+        (headline.any { it in '\u0600'..'\u06FF' } && detail.none { it in '\u0600'..'\u06FF' })
+    ) {
         headline
     } else {
         "$headline ($detail)"

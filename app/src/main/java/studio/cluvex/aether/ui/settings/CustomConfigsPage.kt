@@ -66,6 +66,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
@@ -129,6 +130,11 @@ internal fun CustomConfigsPage(
     var speedFor by remember { mutableStateOf<CustomConfig?>(null) }
     val scanState by studio.cluvex.aether.scanner.CleanIpScanManager.state.collectAsState()
     var pingSort by rememberSaveable { mutableStateOf(ConfigCatalog.PingSort.ASC) }
+    // 1.7.0 (same version): order by ping, download or upload speed.
+    var sortBy by rememberSaveable { mutableStateOf(ConfigCatalog.SortKey.PING) }
+    val speeds by ConfigSpeedTest.results.collectAsState()
+    val speedTestingAll by ConfigSpeedTest.testingAll.collectAsState()
+    var speedAll by remember { mutableStateOf(false) }
 
     var busy by remember { mutableStateOf(false) }
     var pasteOpen by remember { mutableStateOf(false) }
@@ -233,7 +239,7 @@ internal fun CustomConfigsPage(
 
     val tabs = ConfigCatalog.tabs(st, stringResource(R.string.cc_tab_all))
     val effectiveTab = selectedTab
-    val visibleRows = ConfigCatalog.rows(st, effectiveTab, pings = pings, pingSort = pingSort)
+    val visibleRows = ConfigCatalog.rows(st, effectiveTab, pings = pings, pingSort = pingSort, speeds = speeds, sortBy = sortBy)
     val visibleConfigs = visibleRows.mapNotNull { it.config }
     // Server numbers (S1, S2, ...) are dense and per tab: a tab with N servers always
     // shows S1..SN. They follow the stored order, never the row position, so sorting
@@ -287,16 +293,14 @@ internal fun CustomConfigsPage(
             GroupFooter(stringResource(R.string.cc_chain_footer))
         }
 
+        // 1.7.0 (same version): the custom "Verify connection" switch was replaced
+        // by the always-on smart connection gate - same card as Settings → Connection.
+        settingsSection {
+            SmartGateCard(aiTopic = AiTopic.CUSTOM_SMART_GATE)
+        }
+
         settingsSection {
             SettingsGroup {
-                SettingsSwitchRow(
-                    title = stringResource(R.string.cc_verify), aiTopic = AiTopic.CUSTOM_VERIFY,
-                    summary = stringResource(R.string.cc_verify_desc),
-                    icon = Icons.Rounded.Info, checked = st.verifyConnection, enabled = editable,
-                    onCheckedChange = { CustomConfigStore.setVerify(context, it) },
-                )
-                // 1.6.0: same inset divider as the Enable/Chain card above.
-                RowDivider()
                 SettingsSwitchRow(
                     title = stringResource(R.string.cc_auto), aiTopic = AiTopic.CUSTOM_PING,
                     summary = stringResource(R.string.cc_auto_desc),
@@ -318,6 +322,20 @@ internal fun CustomConfigsPage(
                         icon = Icons.Rounded.Speed,
                         checked = pingSort == ConfigCatalog.PingSort.DESC,
                         onCheckedChange = { pingSort = if (it) ConfigCatalog.PingSort.DESC else ConfigCatalog.PingSort.ASC })
+                    RowDivider()
+                    SettingsChoiceRow(
+                        title = stringResource(R.string.cc_sort_by), aiTopic = AiTopic.CUSTOM_PING,
+                        summary = stringResource(R.string.cc_sort_by_desc),
+                        icon = Icons.Rounded.Speed,
+                        options = ConfigCatalog.SortKey.entries.toList(),
+                        selected = sortBy,
+                        label = { key -> stringResource(when (key) {
+                            ConfigCatalog.SortKey.PING -> R.string.cc_sort_ping
+                            ConfigCatalog.SortKey.DOWNLOAD -> R.string.cc_sort_download
+                            ConfigCatalog.SortKey.UPLOAD -> R.string.cc_sort_upload
+                        }) },
+                        onSelect = { sortBy = it },
+                    )
                 }
             }
         }
@@ -345,6 +363,14 @@ internal fun CustomConfigsPage(
                         Icon(Icons.Rounded.Add, null, Modifier.size(18.dp))
                         Text(stringResource(R.string.cc_add_config), Modifier.padding(start = 6.dp))
                     }
+                }
+                OutlinedButton(enabled = !testingAll && !speedTestingAll && !scanState.running && visibleConfigs.isNotEmpty() && !busy,
+                    onClick = { speedAll = true },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp).testTag("speed-all")) {
+                    if (speedTestingAll) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Rounded.Speed, null, Modifier.size(18.dp))
+                    Text(stringResource(if (speedTestingAll) R.string.cc_speed_all_running else R.string.cc_speed_all),
+                        Modifier.padding(start = 6.dp))
                 }
                 OutlinedButton(enabled = if (scanState.running) true else editable && !busy && !testingAll &&
                     visibleConfigs.any { studio.cluvex.aether.scanner.CleanIpScanManager.supported(it) },
@@ -377,7 +403,10 @@ internal fun CustomConfigsPage(
                         serverNumbers = serverNumbers, scanning = scanState.running,
                         scanTargetId = scanState.targetId, scanProgress = scanState.progress,
                         scanValidating = scanState.validating,
-                        onScanIp = { studio.cluvex.aether.scanner.CleanIpScanManager.scanServer(context, it) })
+                        onScanIp = { studio.cluvex.aether.scanner.CleanIpScanManager.scanServer(context, it) },
+                        onPing = { cfg -> scope.launch { ConfigPingStore.test(context, cfg) } },
+                        onSpeed = { cfg -> speedFor = cfg },
+                        onDelete = if (editable && !busy) ({ cfg: CustomConfig -> deleting = cfg }) else null)
                 }
             }
         }
@@ -731,6 +760,20 @@ internal fun CustomConfigsPage(
                 TextButton(onClick = { actionsFor = null }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
+    }
+
+    if (speedAll) {
+        ConfigDialog(onDismissRequest = { speedAll = false },
+            title = { Text(stringResource(R.string.cc_speed_all)) },
+            text = { Text(stringResource(R.string.cc_speed_all_consent, visibleConfigs.size)) },
+            confirmButton = { TextButton(onClick = {
+                speedAll = false
+                val targets = visibleConfigs
+                scope.launch { ConfigSpeedTest.measureAll(context, targets) }
+            }) { Text(stringResource(R.string.cc_speed_start)) } },
+            dismissButton = { TextButton(onClick = { speedAll = false }) {
+                Text(stringResource(R.string.action_cancel))
+            } })
     }
 
     speedFor?.let { cfg ->

@@ -40,7 +40,6 @@ class ProfileStore(private val context: Context) {
         val scan = stringPreferencesKey("scan")
         val ip = stringPreferencesKey("ip")
         val quick = booleanPreferencesKey("quick")
-        val verifyConnection = booleanPreferencesKey("verifyConnection")
         val h2 = booleanPreferencesKey("h2")
         val share = booleanPreferencesKey("share")
         // Added in 1.2.0
@@ -148,7 +147,6 @@ class ProfileStore(private val context: Context) {
             ipVersion = prefs[Keys.ip]
                 ?.let { runCatching { IpVersion.valueOf(it) }.getOrNull() } ?: IpVersion.V4,
             quickReconnect = prefs[Keys.quick] ?: true,
-            verifyConnection = prefs[Keys.verifyConnection] ?: true,
             masqueHttp2 = prefs[Keys.h2] ?: false,
             lanShare = prefs[Keys.share] ?: false,
             noize = prefs[Keys.noize]
@@ -258,7 +256,6 @@ class ProfileStore(private val context: Context) {
             prefs[Keys.scan] = profile.scanMode.name
             prefs[Keys.ip] = profile.ipVersion.name
             prefs[Keys.quick] = profile.quickReconnect
-            prefs[Keys.verifyConnection] = profile.verifyConnection
             prefs[Keys.h2] = profile.masqueHttp2
             prefs[Keys.share] = profile.lanShare
             prefs[Keys.noize] = profile.noize.name

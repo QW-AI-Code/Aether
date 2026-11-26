@@ -34,7 +34,7 @@ enum class AiTopic(
     val profileKey: String? = null,
 ) {
     CUSTOM_CONFIGS("customConfigs", "Custom configs, tabs and imports",
-        "Aether 1.6.0 imports VLESS, VMess, Trojan, Shadowsocks, Xray JSON and NPVT/NPVS files via link, text, file or QR. " +
+        "Aether 1.7.0 imports VLESS, VMess, Trojan, Shadowsocks, Xray JSON and NPVT/NPVS files via link, text, file or QR. " +
         "All, V2Ray and Npvt are automatic tabs with stable internal keys; names can be edited. User tabs support create, rename, move and delete. " +
         "The selected tab persists across navigation and restart; automatic selection is restricted to it. Tab deletion is confirmed and removes its members. Locked NPVT authors' credentials and endpoints must stay hidden. " +
         "Never ask for private config links, passwords or API keys in chat. Explain steps; you cannot mutate the custom vault."),
@@ -46,9 +46,10 @@ enum class AiTopic(
         "Numeric real delay is measured through each actual config. Below 150 ms is green, 150 through 300 ms amber, above 300 ms red. " +
         "Failures are muted and labelled; they are not latency values. Successful entries can sort by increasing or decreasing delay; failures stay last. " +
         "Auto-select tests eligible configs and periodic health checks use the configured interval. A failed probe alone cannot prove censorship."),
-    CUSTOM_VERIFY("customVerify", "Verify custom connection",
-        "Enabled by default. This optional bounded HTTP readiness check does not measure upload speed. Turning it off skips only the initial check, " +
-        "not core startup, TLS authentication, tunnel supervision or exit-IP lookup. It does not make an unreachable server work."),
+    CUSTOM_SMART_GATE("customSmartGate", "Smart connection gate for custom configs",
+        "Since 1.7.0 there is no verification switch for custom configs either: a custom session (alone or chained) is reported Connected only after " +
+        "a real HTTP request crossed the config's outbound and its answer came back, within a bounded 40 s budget that ends at once when Xray exits. " +
+        "No geo-IP or UDP requirement and no upload test. It does not make an unreachable server work."),
     CLEAN_IP_SCANNER("cleanIpScanner", "Clean-IP scanner for custom servers",
         "This UI scanner is separate from the engine WARP endpoint scan. It scans supported, unlocked TLS custom servers only, while disconnected. " +
         "It preserves credentials, SNI and transport; a candidate must pass actual proxy traffic and three stability confirmations before being applied. " +
@@ -71,8 +72,8 @@ enum class AiTopic(
         "Manual mode accepts the first candidate passing the ceiling AND three actual proxy confirmations. " +
         "Automatic mode ranks the passing measured candidates by latency and confirms the fastest stable one without the manual ceiling. " +
         "Failed probes never count as low ping. AI can explain these separate preferences but cannot change them or start a scan."),
-    VERIFY_CONNECTION("verifyConnection", "Initial connection verification",
-        "Disabling skips only the optional initial HTTP readiness check, not startup, TLS, supervision or exit-IP lookup. It cannot make an unreachable server work."),
+    SMART_GATE("smartGate", "Smart connection gate",
+        "Since 1.7.0 there is no switch: every engine session is reported Connected only after real data crossed the tunnel (an HTTP answer through it), usually within a second. A bare SOCKS5 reply never counts, and device DNS over UDP is measured but no longer blocks the connection."),
     GAME_DNS("gameDns", "Game DNS override",
         "When game mode is on, valid comma-separated game DNS IPs replace the regular tunnel resolvers. Empty or invalid input falls back to regular DNS. It does not guarantee lower game latency."),
     BYPASS_IRAN("bypassIran", "Bypass Iranian destinations",

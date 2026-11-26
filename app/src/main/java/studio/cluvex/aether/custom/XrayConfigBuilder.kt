@@ -120,7 +120,7 @@ object XrayConfigBuilder {
             // Field log, `Npvt -> Tor`: every relay dial the engine pushed through
             // this hop died as "Network IO error, or TLS error, in TLS negotiation
             // ... tls handshake eof" or "Channel for [relay] timed out", Tor sat at
-            // 93 %, and the session never left Verifying. Sniffing was already off
+            // 93 %, and the session never left the connecting state. Sniffing was already off
             // (1.5.0), so the address was right - the connection was being CUT.
             //
             // `handshake` is the budget Xray gives ONE connection to finish being

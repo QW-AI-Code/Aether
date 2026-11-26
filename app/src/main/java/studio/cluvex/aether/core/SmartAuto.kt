@@ -50,6 +50,19 @@ data class NetworkFingerprint(
     val iranCellular: Boolean,
     /** WARP range CIDR -> TCP connect latency in ms (-1 = unreachable). */
     val edgeLatencyMs: Map<String, Long>,
+    /**
+     * 1.7.0: whether a QUIC packet to Cloudflare's MASQUE gateways on UDP/443 got
+     * a Version Negotiation answer. `false` puts MASQUE over HTTP/2 (TCP) ahead
+     * of HTTP/3; `null` = not measured (no evidence either way).
+     */
+    val quicReachable: Boolean? = null,
+    /**
+     * 1.7.0: the phone's SIM is on an Iranian network (MCC 432), whatever link
+     * carries data right now. On Iranian networks QUIC to Cloudflare is routinely
+     * throttled while MASQUE over HTTP/2 (TCP) passes - it is the carrier that
+     * SNI-spoofing tools get through in Tehran - so h2 is tried before h3 there.
+     */
+    val iranSim: Boolean = false,
 )
 
 /** One concrete, ready-to-launch strategy in the Smart Auto ladder. */
@@ -57,6 +70,10 @@ data class AutoCandidate(
     val profile: ConnectionProfile,
     val timeoutMs: Long,
     val label: String,
+    /** 1.7.0: the [SmartPlusPlan.Tactic.id] this rung came from, for per-network memory. */
+    val tacticId: String? = null,
+    /** 1.7.0: a deep full-range rung, kept for when a fair race found nothing. */
+    val lastResort: Boolean = false,
 )
 
 /**
@@ -104,7 +121,7 @@ object SmartAuto {
     // ---- Stage 1+2: probe the network and classify its DPI ----------------
 
     suspend fun fingerprint(context: Context): NetworkFingerprint = withContext(Dispatchers.IO) {
-        val (operatorName, iranCellular) = readOperator(context)
+        val (operatorName, iranCellular, iranSim) = readOperator(context)
         DiagnosticsLog.i(
             TAG,
             "Fingerprinting the network — operator=\"$operatorName\"" +
@@ -116,19 +133,24 @@ object SmartAuto {
             val udpCf = async { udpDnsProbe("1.1.1.1") }
             val udpGoog = async { udpDnsProbe("8.8.8.8") }
             val tls = async { tlsSniProbe() }
+            // 1.7.0: is UDP/443 to the MASQUE gateways answered at all? Two
+            // gateways, either one answering is enough.
+            val quicA = async { quicVersionProbe("162.159.198.1") }
+            val quicB = async { quicVersionProbe("162.159.198.2") }
             val edgeJobs = EDGES.map { (cidr, probeIp) ->
                 async { cidr to tcpLatencyMs(probeIp, 443) }
             }
             val udpOk = udpCf.await() || udpGoog.await()
             val tlsOk = tls.await()
             val edges = edgeJobs.awaitAll().toMap()
+            val quicOk = quicA.await() || quicB.await()
             val cls = when {
                 udpOk && tlsOk -> DpiClass.OPEN
                 udpOk -> DpiClass.SNI_FILTERING
                 tlsOk -> DpiClass.UDP_THROTTLED
                 else -> DpiClass.HOSTILE
             }
-            NetworkFingerprint(cls, udpOk, tlsOk, operatorName, iranCellular, edges)
+            NetworkFingerprint(cls, udpOk, tlsOk, operatorName, iranCellular, edges, quicOk, iranSim)
         }
         val edgeSummary = fp.edgeLatencyMs.entries.joinToString(", ") { (range, ms) ->
             "$range=${if (ms < 0) "unreachable" else "${ms}ms"}"
@@ -136,97 +158,90 @@ object SmartAuto {
         DiagnosticsLog.i(
             TAG,
             "DPI fingerprint ready in ${System.currentTimeMillis() - started} ms: " +
-                "udp=${fp.udpOk} tlsSni=${fp.tlsSniOk} → ${fp.dpiClass} | edges: $edgeSummary",
+                "udp=${fp.udpOk} tlsSni=${fp.tlsSniOk} quic=${fp.quicReachable} → ${fp.dpiClass} | edges: $edgeSummary",
         )
         fp
     }
 
     // ---- Stage 3: turn the fingerprint into an ordered strategy ladder ----
 
-    fun buildPlan(user: ConnectionProfile, fp: NetworkFingerprint): List<AutoCandidate> {
-        // Prefer the ranges that actually answered, fastest first. Narrowing
-        // the scan to live ranges is what makes each attempt FAST; the last
-        // resort below still covers the full built-in ranges.
+    /**
+     * The serial Smart ladder, for profiles that cannot race (chains, Tor-fronted
+     * stages, pinned endpoints - see [SmartPlusPlan.eligible]).
+     *
+     * 1.7.0: built from the SAME tactic catalogue as the race
+     * ([SmartPlusPlan.ladder]), with the two identity families interleaved so the
+     * light tactics of both come before the heavy tactics of either. Three bugs of
+     * the 1.6 ladder are gone with it:
+     *
+     *  * MASQUE over HTTP/2 was missing from the OPEN ladder altogether, although
+     *    it is the one carrier that passed in Tehran;
+     *  * MASQUE and gool scans were narrowed to the ranges measured for
+     *    WireGuard (e.g. `8.6.112.0/24`, not a MASQUE range at all) - narrowing is
+     *    now applied to WireGuard only, MASQUE uses the engine's own gateway list;
+     *  * hardened MASQUE rungs forced ECH, which kills the engine at start-up
+     *    wherever no ECH key can be fetched.
+     */
+    fun buildPlan(
+        user: ConnectionProfile,
+        fp: NetworkFingerprint,
+        onMobileData: Boolean = false,
+        memory: SmartPlusMemory.Entry? = null,
+        nowMs: Long = System.currentTimeMillis(),
+    ): List<AutoCandidate> {
+        // Prefer the WireGuard ranges that actually answered, fastest first.
         val reachable = fp.edgeLatencyMs.filterValues { it >= 0 }.entries.sortedBy { it.value }
         val bestRanges = reachable.take(2).joinToString(", ") { it.key }
         // NEVER override an endpoint the user pinned manually in Settings.
         val keepUserEndpoint = user.endpointMode != EndpointMode.AUTO
 
-        fun cand(
-            proto: Protocol,
-            noize: Noize,
-            h2: Boolean = false,
-            frag: Boolean = false,
-            ech: Boolean = false,
-        ): AutoCandidate {
-            // Respect a stronger user-chosen obfuscation; bias bare profiles to
-            // LIGHT noize on Iranian cellular where fingerprinting is routine.
-            var mergedNoize = if (user.noize.ordinal >= noize.ordinal) user.noize else noize
-            if (mergedNoize == Noize.OFF && fp.iranCellular) mergedNoize = Noize.LIGHT
-            var p = user.copy(
-                protocol = proto,
-                noize = mergedNoize,
-                masqueHttp2 = user.masqueHttp2 || (h2 && proto == Protocol.MASQUE),
-                fragment = user.fragment || frag,
-                ech = user.ech || ech,
-                // TURBO per attempt: the ladder's speed comes from trying the
-                // NEXT strategy quickly, not from one long exhaustive scan.
-                scanMode = ScanMode.TURBO,
-            )
-            if (!keepUserEndpoint && bestRanges.isNotEmpty()) {
-                p = p.copy(endpointMode = EndpointMode.MANUAL_RANGE, manualRange = bestRanges)
-            }
+        val tactics = SmartPlusPlan.ladder(
+            dpi = fp.dpiClass,
+            onMobileData = onMobileData,
+            memory = memory,
+            nowMs = nowMs,
+            quicReachable = fp.quicReachable,
+            goolClassic = SmartPlusPlan.goolClassic(user),
+            preferTcp = fp.iranSim,
+        )
+        val ladder = tactics.map { t ->
+            var p = t.applyTo(user)
+            // Bias bare profiles to LIGHT noize on Iranian cellular, where
+            // protocol fingerprinting is routine.
+            if (p.noize == Noize.OFF && fp.iranCellular) p = p.copy(noize = Noize.LIGHT)
+            val narrowed = !keepUserEndpoint && bestRanges.isNotEmpty() && t.protocol == Protocol.WIREGUARD
+            if (narrowed) p = p.copy(endpointMode = EndpointMode.MANUAL_RANGE, manualRange = bestRanges)
             val label = buildString {
-                append(proto.name)
+                append(t.protocol.name)
                 append(" · noize=").append(p.noize.name.lowercase())
-                if (p.masqueHttp2) append(" · h2")
+                if (p.masqueHttp2 && t.family == SmartPlusPlan.Family.MASQUE) append(" · h2")
                 if (p.fragment) append(" · fragment")
                 if (p.ech) append(" · ech")
-                if (!keepUserEndpoint && bestRanges.isNotEmpty()) append(" · ranges[").append(bestRanges).append("]")
+                if (narrowed) append(" · ranges[").append(bestRanges).append("]")
                 append(" · scan=turbo")
             }
-            return AutoCandidate(p, p.connectTimeoutMs(), label)
+            AutoCandidate(p, t.budgetMs, label, t.id)
         }
 
-        val ladder = when (fp.dpiClass) {
-            DpiClass.OPEN -> listOf(
-                cand(Protocol.WIREGUARD, Noize.OFF),
-                cand(Protocol.MASQUE, Noize.OFF),
-                cand(Protocol.GOOL, Noize.LIGHT),
-            )
-            DpiClass.SNI_FILTERING -> listOf(
-                cand(Protocol.WIREGUARD, Noize.BALANCED),
-                cand(Protocol.GOOL, Noize.BALANCED),
-                cand(Protocol.MASQUE, Noize.FIREWALL, frag = true, ech = true),
-            )
-            DpiClass.UDP_THROTTLED -> listOf(
-                cand(Protocol.MASQUE, Noize.LIGHT, h2 = true, frag = true, ech = true),
-                cand(Protocol.GOOL, Noize.AGGRESSIVE),
-                cand(Protocol.WIREGUARD, Noize.GFW),
-            )
-            DpiClass.HOSTILE -> listOf(
-                cand(Protocol.MASQUE, Noize.GFW, h2 = true, frag = true, ech = true),
-                cand(Protocol.GOOL, Noize.AGGRESSIVE),
-                cand(Protocol.WIREGUARD, Noize.AGGRESSIVE),
+        // Last resort: the two cleanest single-hop carriers again, scanning the
+        // engine's FULL built-in ranges in the user's own scan mode - covers the
+        // case where a short turbo pass was simply not enough on a slow network.
+        // A deep pass is never TURBO: that is what every rung above already was.
+        val deepScan = if (user.scanMode == ScanMode.TURBO) ScanMode.BALANCED else user.scanMode
+        val lastResort = listOf("masque.h2", "wg").mapNotNull { id -> tactics.firstOrNull { it.id == id } }.map { t ->
+            var p = t.applyTo(user).copy(scanMode = deepScan)
+            if (!keepUserEndpoint) p = p.copy(endpointMode = EndpointMode.AUTO, manualRange = user.manualRange)
+            AutoCandidate(
+                p,
+                p.connectTimeoutMs(),
+                "${t.protocol.name}${if (t.http2) " · h2" else ""} · full built-in ranges " +
+                    "· scan=${deepScan.name.lowercase()} (last resort)",
+                t.id,
+                lastResort = true,
             )
         }
 
-        // Last resort: the top strategy again, but scanning the engine's FULL
-        // built-in ranges with the user's own scan mode — covers the rare case
-        // where the probe-narrowed ranges themselves were the problem.
-        val first = ladder.first()
-        var fbProfile = first.profile.copy(scanMode = user.scanMode)
-        if (!keepUserEndpoint) {
-            fbProfile = fbProfile.copy(endpointMode = EndpointMode.AUTO, manualRange = user.manualRange)
-        }
-        val fallback = AutoCandidate(
-            fbProfile,
-            fbProfile.connectTimeoutMs(),
-            "${fbProfile.protocol.name} · noize=${fbProfile.noize.name.lowercase()} · full built-in ranges " +
-                "· scan=${user.scanMode.name.lowercase()} (last resort)",
-        )
-
-        val plan = (ladder + fallback).distinctBy { it.profile }
+        val plan = (ladder + lastResort).distinctBy { it.profile }
         DiagnosticsLog.i(TAG, "Strategy ladder for ${fp.dpiClass} (${plan.size} steps):")
         plan.forEachIndexed { i, c -> DiagnosticsLog.i(TAG, "  ${i + 1}. ${c.label}") }
         return plan
@@ -262,6 +277,37 @@ object SmartAuto {
         }
     }.getOrElse {
         DiagnosticsLog.d(TAG, "udp53 probe $server → no answer (${it.message})")
+        false
+    }
+
+    /**
+     * 1.7.0: sends one QUIC long-header packet with a reserved version
+     * (`0x1a2a3a4a`, of the `0x?a?a?a?a` form RFC 9000 §15 sets aside for exactly
+     * this) to [ip]:443. A QUIC server answers such a packet with a Version
+     * Negotiation packet, without any handshake or key, so an answer proves that
+     * UDP/443 to the MASQUE gateway round-trips on this network. The 1200-byte
+     * size is the minimum a server responds to (anti-amplification).
+     */
+    private fun quicVersionProbe(ip: String, port: Int = 443, timeoutMs: Int = 1_500): Boolean = runCatching {
+        DatagramSocket().use { sock ->
+            sock.soTimeout = timeoutMs
+            val packet = ByteArray(1200)
+            java.security.SecureRandom().nextBytes(packet)
+            packet[0] = (0xC0 or (packet[0].toInt() and 0x0F)).toByte()
+            packet[1] = 0x1a; packet[2] = 0x2a; packet[3] = 0x3a; packet[4] = 0x4a
+            packet[5] = 8 // destination connection id length (8 random bytes follow)
+            packet[14] = 8 // source connection id length (8 random bytes follow)
+            sock.send(DatagramPacket(packet, packet.size, InetAddress.getByName(ip), port))
+            val buf = ByteArray(1500)
+            val reply = DatagramPacket(buf, buf.size)
+            sock.receive(reply)
+            val ok = reply.length >= 7 && (buf[0].toInt() and 0x80) != 0 &&
+                buf[1].toInt() == 0 && buf[2].toInt() == 0 && buf[3].toInt() == 0 && buf[4].toInt() == 0
+            DiagnosticsLog.d(TAG, "quic probe $ip → ${if (ok) "version negotiation" else "unexpected reply"}")
+            ok
+        }
+    }.getOrElse {
+        DiagnosticsLog.d(TAG, "quic probe $ip → no answer (${it.message})")
         false
     }
 
@@ -317,7 +363,7 @@ object SmartAuto {
      * used here. If neither id is valid (no SIM, Wi-Fi only) the default manager
      * is used exactly as before.
      */
-    private fun readOperator(context: Context): Pair<String, Boolean> = runCatching {
+    private fun readOperator(context: Context): Triple<String, Boolean, Boolean> = runCatching {
         val default = context.getSystemService(Context.TELEPHONY_SERVICE) as? TelephonyManager
         val tm = default?.let { forActiveDataSim(it) } ?: default
         val name = tm?.networkOperatorName?.takeIf { it.isNotBlank() } ?: "unknown"
@@ -325,8 +371,8 @@ object SmartAuto {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val caps = cm?.activeNetwork?.let { cm.getNetworkCapabilities(it) }
         val cellular = caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
-        name to (cellular && mcc == "432")
-    }.getOrDefault("unknown" to false)
+        Triple(name, cellular && mcc == "432", mcc == "432")
+    }.getOrDefault(Triple("unknown", false, false))
 
     /**
      * [TelephonyManager] for the subscription carrying mobile data, or null to

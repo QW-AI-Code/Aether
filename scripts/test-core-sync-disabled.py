@@ -36,9 +36,9 @@ class CoreSyncDisabled(unittest.TestCase):
         self.assertEqual(self.read('native/aether/CORE_VERSION').strip(), '2.4.0')
 
     def test_app_version_unchanged(self):
-        self.assertEqual(self.read('PATCHLEVEL').strip(), '1.6.0')
+        self.assertEqual(self.read('PATCHLEVEL').strip(), '1.7.0')
         g = self.read('app/build.gradle.kts')
-        self.assertRegex(g, r'versionName\s*=\s*"1\.6\.0"')
+        self.assertRegex(g, r'versionName\s*=\s*"1\.7\.0"')
 
 
 if __name__ == '__main__':

@@ -1,3 +1,97 @@
+## 1.7.0 — auto-select on by default, Persian AI errors (same version)
+
+- `CustomConfigStore.State.autoSelect` defaults to `true` (missing key decodes as `true`).
+- `aiErrorText` no longer appends English diagnostic detail to a Persian headline.
+
+## 1.7.0 — smart gate everywhere, custom switch removed, security audit (same version)
+
+- The custom-config "Verify connection" switch is removed as well; `VerificationPolicy`, `CustomReadiness`,
+  the `verifyConnection` preference fields, the `Verifying` state (now `Proving`) and every verification
+  string are gone. Custom configs pass the same smart gate (`customGate`, 40 s budget).
+- New `SmartGateCard` (same block as the desktop app) in Settings → Connection and Custom configs.
+- Status text: "Smart gate: waiting for real data…".
+- Chained stage 1 (`Diagnostics.runProxyStage`) is proven by `LiveDataProof` (real data) instead of a bare TCP CONNECT.
+- Brain fixes: an attempt the brain abandoned is not counted as new evidence; a recovered-identity
+  line is not read as a damaged identity.
+- Security audit 89/100 (table in `.github/release-notes.md` / `release-notes.md`). Signing unchanged.
+- What's new revision `r5`. Version 1.7.0 / 20 unchanged.
+
+## 1.7.0 — Smart anti-DPI brain, smart connection gate, damaged-identity fix (same version)
+
+- Smart brain (`DpiBrain`): engine output is diagnosed per attempt (UDP dropped, TLS reset, gateways
+  filtered, API blocked, identity damaged); both race lanes share the knowledge and the remaining tactics
+  are re-planned (TCP before UDP, TLS fragmentation / stronger obfuscation, early abandon of hopeless UDP
+  rungs, no equivalent tactic twice); the serial ladder adapts the same way; success is remembered per
+  network and per operator (hashed key).
+- "Verify connection" switch removed: every engine session passes the always-on smart data gate
+  (`LiveDataProof`): Connected only after a real HTTP answer crossed the tunnel; UDP DNS informational only.
+  Race lanes are proven the same way. Chained stage 1 can no longer be skipped. The custom-config switch was removed too: custom sessions pass the same smart gate (40 s budget).
+- Root cause of `stream did not contain valid UTF-8` (engine died on every start): serialised
+  `IdentityVault`, UTF-8 validation on seal/restore, `healCorrupt`, single release of the running count per
+  `AetherProcess`; core `config.rs` quarantines a non-UTF-8 identity (`AETHER-APP-PATCH identity-not-utf8`).
+- Smart quality window 2.5 s, measurement 4.5 s. What's new revision `r5`. Version 1.7.0 / 20 unchanged.
+
+## 1.7.0 — chain builder and smart-text fixes (same version)
+
+- Chain builder: changing the number of nodes (or a node) never adds a config node by itself any more
+  (`ChainBuilderPolicy.complete`); a config chain chosen before a config exists stays on screen and
+  switches on as soon as one is selected (`ChainDraft`); 3-node chains explain why they always include
+  a config (the engine runs at most two of Aether / Psiphon / Tor in a row).
+- Smart text: the ping/status chip of every config shows the whole text and shrinks its font instead of
+  "..." (`FitLineText`, white text); the one-tap actions moved to their own row; the chain diagram stays on
+  one line and scales to the width (`FitToWidth`).
+
+## 1.7.0 — same-version improvements (version code 20)
+
+- Auto-select: fast first connect (`ConfigPingStore.startRun`, `AutoSelectPolicy.fastestSoFar`), switch
+  to the overall fastest when the full run ends, immediate switch after a manual "Test all"
+  (`ConfigPingStore.completed`), re-test after a real-network change (`UnderlyingNetworks`).
+- Config capsules: one-tap ping / speed / delete; "Speed test all" (`ConfigSpeedTest.measureAll`);
+  sort by ping, download or upload (`ConfigCatalog.SortKey`).
+- Connection card: latency details (`PingMonitor.history`, `PingStats`), chain details, traffic details
+  with per-app usage (`AppTraffic`, needs the user-granted "Usage access").
+- Settings → Connection: unified chain builder (`ChainBuilderPolicy`, `ChainBuilder.kt`).
+- Send diagnostics (`DiagnosticsReporter`): redacted report, clipboard + GitHub issue page; prompt after a
+  failed connection and on the crash screen; switch in Settings. What's new: revision `r3`.
+- Tests: `ImprovementsTest`, `PingStatsTest`, `test-functional-wiring.py` updated.
+
+## 1.7.0 — connect-button fix (same version, version code 20)
+
+- **Connect button did not respond on some phones** (field report: Galaxy S24 Ultra; 1.5.0 and 1.6.0
+  behaved the same there, a tablet was fine). Root cause: `MainActivity`'s VPN-consent callback
+  ignored every result except `RESULT_OK`. When Android refuses the consent without showing it -
+  another app is the *Always-on VPN*, a work profile / Secure Folder / device policy forbids VPN
+  changes, or a screen overlay blocks the *OK* button - nothing changed on screen and nothing was
+  logged. Now: Error state on the home screen, a Diagnostics line (`refused by the system without a
+  dialog after N ms` vs. `not granted`), and a dialog with the cause and an *Open VPN settings* button.
+- A consent granted after the activity was recreated (rotation, display-size change, activity killed
+  behind the consent screen) is no longer dropped: the connect runs with the current profile.
+- What's-new dialog: new bullet for this fix; notice revision `r2` so it is shown once more (also to
+  users who had ticked "don't show again"). Version stays 1.7.0 / 20.
+
+## 1.7.0 — connection reliability and Smart-mode rewrite (engine core 2.4.0)
+
+- **Readiness root cause fixed:** the app no longer treats the engine's bound SOCKS5 port as a ready
+  engine. New `EngineReadiness` waits for the engine to really serve (its `socks5 server listening`
+  line plus a real handshake) for the attempt's whole budget and fails at once when it exits. The
+  single 4 s handshake killed every attempt that needed longer - the main cause of failed connects,
+  in Tehran in particular.
+- **Smart mode rewritten:** WARP and MASQUE lanes start together with equal budgets, light tactics
+  before heavy ones; every route that proves itself is measured (latency, download, upload) and
+  ranked with a per-protocol overhead; the best one is confirmed, then the next proven one.
+- MASQUE over HTTP/2 leads on mobile data, Iranian SIMs, UDP-throttled networks and when a new QUIC
+  Version-Negotiation probe is unanswered.
+- Gool (WireGuard inside MASQUE) moved to the MASQUE lane (identity/cache clash fixed).
+- ECH is never forced by anti-DPI passes any more (engine refused to start without an ECH key).
+- Serial ladder rebuilt from the race catalogue; MASQUE scans no longer narrowed to WireGuard ranges.
+- Manual MASQUE: as configured → HTTP/2 → anti-DPI pass.
+- What's-new dialog shows 1.7.0 and keeps the troubleshooting steps; presets export as 1.7.0 and
+  still import 1.6.0 files. Version 1.7.0, version code 20. Details: `docs/RELEASE_1.7.0.md`.
+- **CI audit fix:** security floors `quinn-proto` 0.11.19, `quinn-udp` 0.5.16, `url` 2.5.9, `cookie` 0.18.3
+  (RUSTSEC-2026-0523/0524/0538/0592/0594); scoped, lockfile-verified exception for RUSTSEC-2026-0459
+  (`libsqlite3-sys` 0.37.0 via rusqlite → tor-dirmgr only, no compatible fix); new early audit gate
+  before the native build so a new advisory fails in minutes, not after the full build.
+
 ## 1.6.0 — engine core 2.4.0 (same app version)
 
 - Vendored engine upgraded from 2.3.0 to 2.4.0 (manual three-way merge).

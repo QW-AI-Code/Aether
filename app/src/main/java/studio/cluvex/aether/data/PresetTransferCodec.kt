@@ -10,6 +10,9 @@ import studio.cluvex.aether.model.ConnectionProfile
 /** Portable, non-secret settings only. Local preset storage is separately encrypted. */
 object PresetTransferCodec {
     const val MAX_BYTES = 256 * 1024
+
+    /** App versions whose portable preset exports this build accepts. */
+    private val SUPPORTED_APP_VERSIONS = setOf("1.6.0", "1.7.0")
     private val privateKeys = setOf("upstream", "teamAuth", "team", "accessId", "accessEmail", "gateway")
     private val allowedKeys = ProfileCodec.encode(ConnectionProfile()).lineSequence()
         .map { it.substringBefore('=') }.filter { it !in privateKeys }.toSet()
@@ -25,7 +28,7 @@ object PresetTransferCodec {
     fun encode(presets: List<ConnectionPreset>): String {
         require(presets.isNotEmpty() && presets.size <= 20) { "Invalid preset count" }
         val text = buildJsonObject {
-            put("schemaVersion", 1); put("appVersion", "1.6.0")
+            put("schemaVersion", 1); put("appVersion", "1.7.0")
             put("presets", JsonArray(presets.map { p -> buildJsonObject {
                 put("name", p.name); put("profile", portable(p.profile))
                 // Only a reference to the custom config (id/name) and routing switches;
@@ -52,7 +55,8 @@ object PresetTransferCodec {
         }
         val obj = Json.parseToJsonElement(text).jsonObject
         require(obj["schemaVersion"]?.jsonPrimitive?.intOrNull == 1) { "Unsupported preset schema" }
-        require(obj["appVersion"]?.jsonPrimitive?.content == "1.6.0") { "Unsupported app version" }
+        // 1.7.0 reads its own exports and those of 1.6.0: the portable schema did not change.
+        require((obj["appVersion"]?.jsonPrimitive?.content ?: "") in SUPPORTED_APP_VERSIONS) { "Unsupported app version" }
         val list = obj["presets"]?.jsonArray ?: error("Presets missing")
         require(list.size in 1..20) { "Invalid preset count" }
         return list.map { item ->

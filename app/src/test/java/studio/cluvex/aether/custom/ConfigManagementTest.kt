@@ -7,11 +7,10 @@ class ConfigManagementTest {
     private fun config(id: String) = CustomConfig(id, id, ConfigProtocol.VLESS, ConfigFormat.URI,
         ConfigSource.LINK, "{}")
 
-    @Test fun `v1 data migrates with verification enabled and automatic switching disabled`() {
+    @Test fun `v1 data migrates with automatic switching enabled by default`() {
         val old = """{"v":1,"configs":[],"enabled":false,"mode":"SOLO"}"""
         val state = requireNotNull(CustomConfigStore.decode(old))
-        assertTrue(state.verifyConnection)
-        assertFalse(state.autoSelect)
+        assertTrue(state.autoSelect)
         assertEquals(300, state.healthIntervalSeconds)
         assertTrue(state.groups.isEmpty())
         assertTrue(state.subscriptions.isEmpty())
@@ -23,7 +22,7 @@ class ConfigManagementTest {
             activeId = "a", enabled = true,
             groups = listOf(CustomConfigStore.Group("g", "سرورهای آلمان")),
             subscriptions = listOf(CustomConfigStore.Subscription("s", "test", "https://example.invalid/sub", 12)),
-            verifyConnection = false, autoSelect = true, healthIntervalSeconds = 180,
+            autoSelect = true, healthIntervalSeconds = 180,
         )
         assertEquals(state, CustomConfigStore.decode(CustomConfigStore.encode(state)))
     }

@@ -29,14 +29,60 @@ class FunctionalWiring(unittest.TestCase):
         self.assertLess(service.index('ConnectionState.Selecting'), service.index('chooseBestCustom('))
         self.assertIn('ConnectionState.Selecting -> stringResource(R.string.state_selecting)', self.source('ui/HomeScreen.kt'))
 
-    def test_verification_persists_and_has_ordinary_setting(self):
-        store = self.source('data/ProfileStore.kt')
-        self.assertIn('verifyConnection = prefs[Keys.verifyConnection] ?: true', store)
-        self.assertIn('prefs[Keys.verifyConnection] = profile.verifyConnection', store)
-        self.assertIn('profile.copy(verifyConnection = it)', self.source('ui/settings/SettingsScreen.kt'))
+    def test_smart_gate_replaces_every_verification_switch(self):
+        # 1.7.0 (same version): no verification switch, field, policy or state is
+        # left - every session (built-in AND custom) passes the smart data gate.
+        import pathlib
+        for path in pathlib.Path(BASE).rglob('*.kt'):
+            text = path.read_text()
+            for gone in ['verifyConnection', 'VerificationPolicy', 'CustomReadiness',
+                         'ConnectionState.Verifying', 'state_verifying', 'cc_verify', 'verify_connection_',
+                         'CUSTOM_VERIFY', 'VERIFY_CONNECTION', 'setVerify(']:
+                self.assertFalse(gone in text, f'{path.name} still contains {gone}')
+        for res in ['values', 'values-fa']:
+            xml = (ROOT / 'app/src/main/res' / res / 'strings.xml').read_text()
+            self.assertNotIn('name="cc_verify', xml)
+            self.assertNotIn('name="verify_connection_', xml)
+            self.assertNotIn('name="state_verifying"', xml)
+            self.assertIn('name="state_smart_gate"', xml)
+            self.assertIn('name="smart_gate_title"', xml)
+            self.assertIn('name="smart_gate_desc"', xml)
         service = self.source('vpn/AetherVpnService.kt')
-        self.assertIn('VerificationPolicy.enabled(profile', service)
-        self.assertIn('verifyFinal(profile, sessionExitPort.takeIf', service)
+        self.assertIn('smartGateFinal(profile, sessionExitPort.takeIf', service)
+        self.assertIn('LiveDataProof.prove(SOCKS_HOST, port, budget', service)
+        self.assertIn('label = "custom config"', service)
+        self.assertNotIn('Optional stage verification skipped', service)
+        self.assertNotIn('Diagnostics.run(port = port', service)
+        self.assertIn('SmartGateCard(aiTopic = AiTopic.SMART_GATE)', self.source('ui/settings/SettingsScreen.kt'))
+        self.assertIn('SmartGateCard(aiTopic = AiTopic.CUSTOM_SMART_GATE)', self.source('ui/settings/CustomConfigsPage.kt'))
+        stage = self.source('core/Diagnostics.kt').split('suspend fun runProxyStage(', 1)[1].split('private fun failRemaining', 1)[0]
+        self.assertIn('LiveDataProof.prove(', stage)
+        self.assertNotIn('checkTcpViaProxy', stage)
+        proof = self.source('core/LiveDataProof.kt')
+        self.assertIn('"HTTP/"', proof)
+        self.assertIn('not a gate', proof)
+
+    def test_smart_brain_drives_race_and_ladder(self):
+        service = self.source('vpn/AetherVpnService.kt')
+        self.assertIn('DpiBrain.adapt(queue.toList(), brain.now)', service)
+        self.assertIn('DpiBrain.adaptLadder(queue.toList(), knowledge)', service)
+        self.assertIn('DpiBrain.shouldAbandon(', service)
+        self.assertIn('IdentityVault.healCorrupt(filesDir)', service)
+        self.assertIn('DpiBrain.operatorKey(fingerprint.operatorName, fingerprint.iranSim)', service)
+        brain = self.source('core/DpiBrain.kt')
+        for verdict in ['IDENTITY_DAMAGED', 'UDP_BLOCKED', 'TLS_INTERFERENCE', 'GATEWAYS_FILTERED']:
+            self.assertIn(verdict, brain)
+
+    def test_identity_vault_never_seals_damage(self):
+        vault = self.source('core/IdentityVault.kt')
+        self.assertIn('synchronized(lock) { sealLocked(dir) }', vault)
+        self.assertIn('synchronized(lock) { unsealLocked(dir) }', vault)
+        self.assertIn('if (!isUtf8Text(bytes))', vault)
+        process = self.source('core/AetherProcess.kt')
+        self.assertIn('counted.compareAndSet(true, false)', process)
+        core = (ROOT / 'native/aether/aether/src/config.rs').read_text()
+        self.assertIn('AETHER-APP-PATCH identity-not-utf8', core)
+        self.assertIn('String::from_utf8(bytes)', core)
 
     def test_capsules_are_bounded_keyed_and_technical_text_is_ltr(self):
         source = self.source('ui/settings/ConfigDataTable.kt')
@@ -62,7 +108,7 @@ class FunctionalWiring(unittest.TestCase):
 
     def test_tab_projection_and_password_destination(self):
         source = self.source('ui/settings/CustomConfigsPage.kt')
-        self.assertIn('ConfigCatalog.rows(st, effectiveTab, pings = pings, pingSort = pingSort)', source)
+        self.assertIn('ConfigCatalog.rows(st, effectiveTab, pings = pings, pingSort = pingSort', source)
         self.assertIn('checked = pingSort == ConfigCatalog.PingSort.DESC', source)
         self.assertIn('runImport(password, p.destination, p.retry)', source)
         self.assertIn('importDestination = ConfigCatalog.groupFor(effectiveTab)', source)
@@ -94,6 +140,22 @@ class FunctionalWiring(unittest.TestCase):
         self.assertNotIn('Onboarding', activity)
         self.assertIn('WhatsNewGate()', activity)
 
+    def test_refused_vpn_consent_is_never_silent(self):
+        activity = self.source('MainActivity.kt')
+        callback = activity.split('private val vpnPermissionLauncher =', 1)[1].split('private fun openVpnSettings()', 1)[0]
+        self.assertIn('if (result.resultCode == RESULT_OK)', callback)
+        self.assertIn('ConnectionState.Error(getString(R.string.err_vpn_consent_denied))', callback)
+        self.assertIn('vpnConsentNotice = silent', callback)
+        self.assertIn('pendingProfile ?: uiProfile.value', callback)
+        self.assertIn('toggleInFlight.set(false)', callback)
+        self.assertIn('android.provider.Settings.ACTION_VPN_SETTINGS', activity)
+        self.assertIn('consentLaunchedAt = SystemClock.elapsedRealtime()', activity)
+        for res in ['values/strings.xml', 'values-fa/strings.xml']:
+            text = (ROOT / 'app/src/main/res' / res).read_text(encoding='utf-8')
+            for name in ['err_vpn_consent_denied', 'vpn_consent_title', 'vpn_consent_body_silent',
+                         'vpn_consent_body_cancelled', 'vpn_consent_open_settings', 'vpn_consent_close']:
+                self.assertIn('name="%s"' % name, text)
+
     def test_scanner_is_independent_and_has_ordinary_settings(self):
         page = self.source('ui/settings/SettingsScreen.kt')
         self.assertIn('SettingsRoute.CLEAN_IP_SETTINGS', page)
@@ -109,7 +171,7 @@ class FunctionalWiring(unittest.TestCase):
         page = self.source('ui/settings/CustomConfigsPage.kt')
         self.assertIn('SettingsMenuAction(', page)
         self.assertIn('ConfigDialog(', page)
-        for topic in ['CUSTOM_CONFIGS', 'CUSTOM_CHAIN', 'CUSTOM_PING', 'CUSTOM_VERIFY']:
+        for topic in ['CUSTOM_CONFIGS', 'CUSTOM_CHAIN', 'CUSTOM_PING', 'CUSTOM_SMART_GATE']:
             self.assertIn('AiTopic.' + topic, page)
         helper = self.source('ui/settings/ConfigMenuUi.kt')
         self.assertIn('AiTopicIcon(topic)', helper)
@@ -162,9 +224,9 @@ class FunctionalWiring(unittest.TestCase):
 
     def test_version_unchanged(self):
         gradle = (ROOT / 'app/build.gradle.kts').read_text()
-        self.assertIn('versionName = "1.6.0"', gradle)
-        self.assertIn('versionCode = 19', gradle)
-        self.assertEqual('1.6.0', (ROOT / 'PATCHLEVEL').read_text().strip())
+        self.assertIn('versionName = "1.7.0"', gradle)
+        self.assertIn('versionCode = 20', gradle)
+        self.assertEqual('1.7.0', (ROOT / 'PATCHLEVEL').read_text().strip())
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

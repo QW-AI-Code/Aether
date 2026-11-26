@@ -85,7 +85,17 @@ class AnnouncementStore(context: Context) {
          * rebuilt release with a bumped code counts as an upgrade too.
          */
         val currentVersion: String
-            get() = versionKey(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE)
+            get() = versionKey(BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE) + NEWS_REVISION
+
+        /**
+         * Content revision of the current version's notice. The version itself
+         * must not change (1.7.0 / 20), but the 1.7.0 notice was extended with the
+         * connect-button fix and the same-version improvements; a new revision shows it once more, also to users who
+         * had ticked "don't show again" for the first 1.7.0 text. r4: the Smart anti-DPI brain, the smart
+         * connection gate that replaced "Verify connection", and the damaged-identity (UTF-8) fix. r5: the
+         * custom-config switch removed too, and the smart-gate information card.
+         */
+        const val NEWS_REVISION = " r5"
 
         fun versionKey(name: String, code: Int): String = "$name ($code)"
 

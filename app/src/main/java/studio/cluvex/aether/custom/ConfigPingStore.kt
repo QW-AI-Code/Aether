@@ -1,7 +1,14 @@
 package studio.cluvex.aether.custom
 
 import android.content.Context
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -39,6 +46,64 @@ object ConfigPingStore {
 
     fun report(id: String): ConfigPing.Report = _results.value[id] ?: ConfigPing.Report()
 
+    // ------------------------------------------------------------------
+    // 1.7.0 (same version) - progressive selection.
+    //
+    // Who asked for a run decides what the VPN service does with its result:
+    // a MANUAL run (the "Test all" button) switches the live session to the
+    // fastest server as soon as it ends; an AUTO run started at connect time
+    // lets the service connect to the first server that answers and switch to
+    // the overall fastest one once every server has been measured.
+    // ------------------------------------------------------------------
+    enum class RunOrigin { MANUAL, AUTO }
+
+    /** A finished run: who started it, which configs it covered and what they returned. */
+    data class RunResult(
+        val origin: RunOrigin,
+        val ids: Set<String>,
+        val startedAt: Long,
+        val reports: Map<String, ConfigPing.Report>,
+    )
+
+    /** A run in progress. [done] completes with the run's reports. */
+    class Run(
+        val startedAt: Long,
+        val ids: Set<String>,
+        val done: CompletableDeferred<Map<String, ConfigPing.Report>>,
+    )
+
+    private val _completed = MutableSharedFlow<RunResult>(extraBufferCapacity = 8)
+    /** Every finished multi-config run, as it ends. */
+    val completed: SharedFlow<RunResult> = _completed.asSharedFlow()
+
+    /** Runs started with [startRun] outlive the caller's coroutine (they feed the cache). */
+    private val runScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * Starts measuring [configs] in the background and returns at once.
+     * Results appear in [results] one by one as servers answer (failures at the
+     * end), so a caller can act on the first answers without waiting for all.
+     */
+    fun startRun(context: Context, configs: List<CustomConfig>, origin: RunOrigin = RunOrigin.AUTO): Run {
+        val app = context.applicationContext
+        val ids = configs.map { it.id }.toSet()
+        val handle = Run(now(), ids, CompletableDeferred())
+        runScope.launch {
+            try {
+                val reports = running.withLock {
+                    if (configs.isNotEmpty()) run(app, configs)
+                    _results.value.filterKeys { it in ids }
+                }
+                handle.done.complete(reports)
+                _completed.tryEmit(RunResult(origin, ids, handle.startedAt, reports))
+            } catch (e: Exception) {
+                handle.done.complete(emptyMap())
+                DiagnosticsLog.w(TAG, "Background real-delay run failed: ${e.javaClass.simpleName}")
+            }
+        }
+        return handle
+    }
+
     /** Drops every result, e.g. when the network changed. */
     @Synchronized fun retain(ids: Set<String>) { _results.value = _results.value.filterKeys { it in ids } }
 
@@ -55,10 +120,15 @@ object ConfigPingStore {
     suspend fun testAll(context: Context, configs: List<CustomConfig>) {
         if (configs.isEmpty() || _testingAll.value) return
         _testingAll.value = true
+        val startedAt = now()
         try {
             running.withLock { run(context.applicationContext, configs) }
             val ok = _results.value.count { (id, r) -> configs.any { it.id == id } && r.ok }
             DiagnosticsLog.i(TAG, "Real-delay test of ${configs.size} config(s): $ok answered.")
+            val ids = configs.map { it.id }.toSet()
+            // The VPN service listens: a manual "Test all" switches a live session
+            // to the fastest server right away (see AetherVpnService).
+            _completed.tryEmit(RunResult(RunOrigin.MANUAL, ids, startedAt, _results.value.filterKeys { it in ids }))
         } finally {
             _testingAll.value = false
         }

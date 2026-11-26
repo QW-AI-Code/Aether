@@ -52,7 +52,7 @@
     -->
     <string name="notif_action_disconnect">Disconnect</string>
 
-    <string name="err_engine_timeout">The engine did not open the local proxy in time.</string>
+    <string name="err_engine_timeout">No working gateway was found in time for this strategy.</string>
     <string name="err_engine_died">The engine stopped unexpectedly.</string>
     <string name="err_proxy_ports">Could not open the local proxy ports — they may already be in use by another app.</string>
 
@@ -173,9 +173,9 @@
     <string name="section_routing">Routing</string>
 
     <!-- Readiness gating + settings reset (v1.2.1) -->
-    <string name="state_verifying">Verifying connection…</string>
+    <string name="state_smart_gate">Smart gate: waiting for real data…</string>
     <string name="state_analyzing">Analyzing your network (Smart mode)…</string>
-    <string name="err_auto_failed">Smart mode tried every strategy, but none could connect on this network. Try picking a protocol manually.</string>
+    <string name="err_auto_failed">Smart mode tested every protocol fairly, but none could reach the internet on this network right now. Turn airplane mode on for a minute, then try again.</string>
     <string name="err_protocol_failed">This protocol could not connect on this network, even with obfuscation. Try Smart mode or another protocol.</string>
     <string name="err_selftest">Tunnel started, but the end-to-end self-test failed. Please try again.</string>
     <string name="section_reset">Reset</string>
@@ -645,9 +645,10 @@
          the engine's transport - see TransportBackend.pipelineLabel. -->
     <string name="meta_pipeline">Connection</string>
 
-    <string name="state_smart_plus_racing">Trying several routes at once…</string>
+    <string name="state_smart_plus_racing">Testing every protocol side by side…</string>
+    <string name="state_smart_comparing">Comparing the working routes (ping and speed)…</string>
 
-    <string name="protocol_auto_race">Smart tries two routes at the same time here and remembers which one worked on this network, so the next connect is quick.</string>
+    <string name="protocol_auto_race">Smart tests WireGuard and MASQUE side by side, from the same moment, measures the ping and speed of every route that works, connects the best one and remembers it for this network.</string>
     <string name="protocol_auto_ladder">Smart tries one route at a time on this backend. Racing needs the plain Aether backend and automatic endpoint selection.</string>
     <!-- 1.4.0-r5: VPN sharing rewrite -->
     <string name="share_status_live">Sharing live · %1$d connection(s)</string>
@@ -873,8 +874,6 @@
     <string name="announcements_desc">What\'s new in this version and the connection guide, any time</string>
     <string name="announcements_version">Version %1$s</string>
     <string name="announcements_footer">Every update message is kept here. Tap one to read it again.</string>
-    <string name="cc_verify">Verify connection</string>
-    <string name="cc_verify_desc">Custom configs only. Off skips readiness checks, not core startup or liveness.</string>
     <string name="cc_auto">Auto-select / Best ping</string>
     <string name="cc_auto_desc">While connected: periodically test eligible configs in the active group (or imported link) and reconnect to a faster healthy server. Brief interruptions are expected.</string>
     <string name="cc_health_interval">Health-check interval</string>
@@ -907,8 +906,6 @@
     <string name="cc_sub_delete_confirm">Delete %1$s and its downloaded configs?</string>
     <string name="cc_table_footer">Ping and server actions stay visible. Swipe the middle columns for type, protocol and port. Failed tests show the diagnostic status; locked server ports remain hidden.</string>
     <string name="state_selecting">Selecting the best server…</string>
-    <string name="verify_connection_title">Verify connection</string>
-    <string name="verify_connection_desc">Default on for all six built-in modes. Turning off skips optional initial connection checks, not engine startup, Tor bootstrap, exit-IP lookup or ongoing health monitoring.</string>
     <string name="cc_custom_tab">Custom user tab</string>
     <string name="cc_server_ping">Server / ping</string>
     <string name="cc_link_source">Imported link</string>
@@ -1025,4 +1022,84 @@
     <string name="no_ticket_desc">Leave out the session_ticket extension.</string>
     <string name="no_perm_title">Disable extension permutation</string>
     <string name="no_perm_desc">Keep one fixed order of the extensions instead of Chrome\'s per-handshake shuffle.</string>
+<string name="err_vpn_consent_denied">Android did not grant the VPN permission. Tap Connect to try again.</string>
+<string name="vpn_consent_title">VPN permission was not granted</string>
+<string name="vpn_consent_body_silent">Android closed the VPN permission screen before it could be shown, so Aether could not start.\n\nThis almost always means another VPN app is set as \"Always-on VPN\", or a work profile, Secure Folder or device policy does not allow VPN changes.\n\nOpen the VPN settings (on Samsung: Settings › Connections › More connection settings › VPN), open the other VPN app\'s settings, turn off \"Always-on VPN\" and \"Block connections without VPN\", then tap Connect again.</string>
+<string name="vpn_consent_body_cancelled">The VPN permission request was closed without OK, so Aether could not start.\n\nIf the OK button did not react, an app that draws over the screen is blocking it (blue-light filter, screen dimmer, floating bubbles, screen recorder). Turn that off for a moment and tap Connect again.\n\nIf another VPN app is set as \"Always-on VPN\", turn that option off in the VPN settings first.</string>
+<string name="vpn_consent_open_settings">Open VPN settings</string>
+<string name="vpn_consent_close">Close</string>
+<string name="cc_quick_ping">Test ping</string>
+<string name="cc_quick_speed">Speed test</string>
+<string name="cc_quick_delete">Delete</string>
+<string name="cc_sort_by">Sort servers by</string>
+<string name="cc_sort_by_desc">Ping, or the download / upload speed measured by the speed test (fastest first).</string>
+<string name="cc_sort_ping">Ping</string>
+<string name="cc_sort_download">Download speed</string>
+<string name="cc_sort_upload">Upload speed</string>
+<string name="cc_speed_all">Speed test all</string>
+<string name="cc_speed_all_running">Testing speeds…</string>
+<string name="cc_speed_all_consent">Downloads and uploads test data through each of the %1$d servers in this tab, one after another (about 10 MB per server). Servers whose last ping failed are skipped. Mobile data charges may apply.</string>
+<string name="app_traffic_self">Aether (tunnel)</string>
+<string name="app_traffic_removed">Removed apps</string>
+<string name="app_traffic_tethering">Hotspot / tethering</string>
+<string name="app_traffic_system">Android system</string>
+<string name="cd_ping_title">Latency details</string>
+<string name="cd_ping_last">Last</string>
+<string name="cd_ping_min">Minimum</string>
+<string name="cd_ping_max">Maximum</string>
+<string name="cd_ping_avg">Average</string>
+<string name="cd_ping_jitter">Jitter</string>
+<string name="cd_ping_loss">Packet loss</string>
+<string name="cd_ping_samples">Answered / probes</string>
+<string name="cd_ping_note">Measured through the live tunnel with a certificate-checked HTTPS request, since this connection started. A probe without an answer counts as lost.</string>
+<string name="cd_ping_burst">Measure 10 times</string>
+<string name="cd_ping_measuring">Measuring…</string>
+<string name="cd_close">Close</string>
+<string name="cd_node_aether">Aether engine: Cloudflare WARP / MASQUE tunnel</string>
+<string name="cd_node_tor">Tor network: three relays</string>
+<string name="cd_node_psiphon">Psiphon network</string>
+<string name="cd_node_config">Your own config (Xray)</string>
+<string name="cd_chain_title">Connection chain</string>
+<string name="cd_chain_offline">Not connected. Connect to see the nodes your traffic passes through.</string>
+<string name="cd_chain_device">This device</string>
+<string name="cd_chain_internet">Internet</string>
+<string name="cd_role_single">The only node: your network sees it and websites see its address</string>
+<string name="cd_role_first">First node: the only one your network (and its DPI) sees</string>
+<string name="cd_role_exit">Exit node: websites see this node\'s address</string>
+<string name="cd_role_middle">Middle node: carries the traffic between the others</string>
+<string name="cd_traffic_title">Traffic details</string>
+<string name="cd_traffic_apps">Apps using the internet</string>
+<string name="cd_traffic_access_needed">Android shares per-app traffic only after you allow \"Usage access\" for Aether. The figures stay on this device.</string>
+<string name="cd_traffic_grant">Allow usage access</string>
+<string name="cd_traffic_none">No traffic recorded yet.</string>
+<string name="cd_traffic_note">Figures come from Android\'s network statistics, which update with a short delay and are counted in time blocks. \"Now\" marks apps whose traffic grew in the last few seconds.</string>
+<string name="cd_traffic_active">Now</string>
+<string name="chain_core_config">Config</string>
+<string name="chain_core_config_desc">Your own V2Ray / Xray / NapsternetV server</string>
+<string name="chain_core_aether_desc">Cloudflare WARP or MASQUE, with Smart mode and anti-DPI</string>
+<string name="chain_core_psiphon_desc">Psiphon network, exit country automatic or chosen</string>
+<string name="chain_core_tor_desc">Tor network, bridges when it is blocked</string>
+<string name="chain_builder_title">Connection chain</string>
+<string name="chain_node_count">Number of nodes</string>
+<string name="chain_nodes_n">%1$d</string>
+<string name="chain_node_title">Node %1$d</string>
+<string name="chain_node_settings">%1$s settings</string>
+<string name="chain_node_shown">Shown below</string>
+<string name="chain_need_config">This chain needs a custom config. Add or select one in Custom configs.</string>
+<string name="chain_aether_transport">Transport &amp; anti-DPI</string>
+<string name="chain_aether_transport_desc">MASQUE over HTTP/2 or HTTP/3, obfuscation strength and TLS fragmentation</string>
+<string name="chain_show_all">Show all connection settings</string>
+<string name="chain_builder_footer">Pick how many nodes the chain has and which core runs on each node, in the order traffic leaves the phone. Tap a node\'s settings to see only that core\'s options.</string>
+<string name="diag_share_title">Send diagnostics</string>
+<string name="diag_share_desc">Offer to report crashes and failed connections to the developers on GitHub. The report is redacted (no IPs, servers or keys) and is only sent when you submit it.</string>
+<string name="diag_share_now">Send a diagnostics report now</string>
+<string name="diag_share_send">Send report</string>
+<string name="diag_share_not_now">Not now</string>
+<string name="diag_share_failed_title">Connection failed</string>
+<string name="diag_share_failed_body">Send a diagnostics report to the developers? It contains the redacted log of this attempt, no IPs, servers or keys. You can turn this off in Settings.</string>
+<string name="diag_share_paste_hint">The full redacted report was copied to your clipboard. Paste it here before submitting.</string>
+<string name="chain_three_needs_config">A 3-node chain always contains a config: the engine runs at most two of Aether, Psiphon and Tor one after the other, and the third node is your own config (first or last).</string>
+    <!-- 1.7.0 (same version): the smart connection gate replaced "Verify connection". -->
+    <string name="smart_gate_title">Smart connection gate</string>
+    <string name="smart_gate_desc">Always on, nothing to set. Connected is shown only after real data has crossed the tunnel, usually within a second, so a fake connection cannot pass. The old optional verification is gone: it kept MASQUE from connecting and made connects slow.</string>
 </resources>

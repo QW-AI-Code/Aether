@@ -40,7 +40,7 @@ class PresetTransferTest {
     @Test fun `invalid schema version values and sensitive injection reject atomically`() {
         val good=PresetTransferCodec.encode(listOf(ConnectionPreset("a","A",ProfileCodec.encode(ConnectionProfile()))))
         val bad=listOf(good.replace("\"schemaVersion\":1","\"schemaVersion\":9"),
-            good.replace("1.6.0","1.4.0"),good.replace("mtu=1280","mtu=-9"),
+            good.replace("1.7.0","1.4.0"),good.replace("mtu=1280","mtu=-9"),
             good.replace("backend=AETHER","upstream=secret\\nbackend=AETHER"))
         bad.forEach { text -> try { PresetTransferCodec.decode(text);fail("Bad settings accepted") } catch(_:Exception){} }
     }

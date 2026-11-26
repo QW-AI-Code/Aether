@@ -45,6 +45,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -232,7 +233,7 @@ fun SettingsHost(
         SettingsRoute.HOME -> SettingsHomePage(profile, editable, open, onProfileChange, onClose, modifier)
         SettingsRoute.QUICK ->
             SettingsHomePage(profile, editable, open, onProfileChange, onClose, modifier, quick = true)
-        SettingsRoute.CONNECTION -> ConnectionPage(profile, editable, onProfileChange, back, modifier)
+        SettingsRoute.CONNECTION -> ConnectionPage(profile, editable, onProfileChange, back, modifier, onOpen = open)
         SettingsRoute.TRANSPORT -> TransportPage(profile, editable, onProfileChange, back, modifier)
         SettingsRoute.DNS_ROUTING -> DnsRoutingPage(profile, editable, onProfileChange, back, modifier)
         SettingsRoute.UPSTREAM -> UpstreamPage(profile, editable, onProfileChange, back, modifier)
@@ -446,6 +447,34 @@ private fun SettingsHomePage(
                     onClick = { onOpen(SettingsRoute.DIAGNOSTICS) },
                     aiTopic = AiTopic.DIAGNOSTICS,
                 )
+                // 1.7.0 (same version): Send diagnostics - on by default, one switch off.
+                RowDivider()
+                var shareDiagnostics by remember {
+                    mutableStateOf(studio.cluvex.aether.core.DiagnosticsReporter.isEnabled(context))
+                }
+                SettingsSwitchRow(
+                    title = stringResource(R.string.diag_share_title),
+                    summary = stringResource(R.string.diag_share_desc),
+                    icon = Icons.Rounded.BugReport,
+                    checked = shareDiagnostics,
+                    onCheckedChange = {
+                        shareDiagnostics = it
+                        studio.cluvex.aether.core.DiagnosticsReporter.setEnabled(context, it)
+                    },
+                    aiTopic = AiTopic.DIAGNOSTICS,
+                )
+                if (shareDiagnostics) {
+                    RowDivider()
+                    SettingsActionRow(
+                        title = stringResource(R.string.diag_share_now),
+                        icon = Icons.Rounded.BugReport,
+                        onClick = {
+                            studio.cluvex.aether.core.DiagnosticsReporter.send(context,
+                                studio.cluvex.aether.core.DiagnosticsReporter.Kind.MANUAL, "Report sent from Settings")
+                        },
+                        aiTopic = AiTopic.DIAGNOSTICS,
+                    )
+                }
                 RowDivider()
                 SettingsNavRow(
                     title = stringResource(R.string.section_engine_tuning),
@@ -578,8 +607,19 @@ private fun ConnectionPage(
     onProfileChange: (ConnectionProfile) -> Unit,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-) = SettingsScaffold(stringResource(R.string.cat_connection), onBack, modifier) {
+    onOpen: (SettingsRoute) -> Unit = {},
+) {
+    // 1.7.0 (same version): the chain builder decides which node's settings show.
+    var focus by rememberSaveable { mutableStateOf(FOCUS_ALL) }
+    val cc by studio.cluvex.aether.custom.CustomConfigStore.state.collectAsState()
+    val showAether = focus == FOCUS_ALL || focus == studio.cluvex.aether.custom.ChainBuilderPolicy.Core.AETHER.name
+    val showTor = focus == FOCUS_ALL || focus == studio.cluvex.aether.custom.ChainBuilderPolicy.Core.TOR.name
+    val showExit = focus == FOCUS_ALL || focus == studio.cluvex.aether.custom.ChainBuilderPolicy.Core.PSIPHON.name
+    SettingsScaffold(stringResource(R.string.cat_connection), onBack, modifier) {
     settingsSection {
+        ChainBuilderCard(profile, cc, editable, focus, { focus = it }, onProfileChange, onOpen)
+    }
+    if (showExit) settingsSection {
         GroupCaption(stringResource(R.string.backend_label), aiTopic = AiTopic.BACKEND)
         SettingsGroup {
             SettingsChoiceRow(
@@ -618,13 +658,13 @@ private fun ConnectionPage(
         GroupFooter(backendHelp(profile.backend))
     }
 
-    settingsSection {
-        SettingsGroup {
-            SettingsSwitchRow(aiTopic = AiTopic.VERIFY_CONNECTION, title = stringResource(R.string.verify_connection_title),
-                summary = stringResource(R.string.verify_connection_desc), icon = Icons.Rounded.Info,
-                checked = profile.verifyConnection, enabled = editable,
-                onCheckedChange = { onProfileChange(profile.copy(verifyConnection = it)) })
-        }
+    // 1.7.0 (same version): the "Verify connection" switch is gone. Every
+    // session now passes the always-on smart data gate (core/LiveDataProof.kt):
+    // Connected the moment real data crosses the tunnel, never a fake connection,
+    // and no 90 s wait for a UDP DNS answer that kept MASQUE from connecting. The
+    // card below (same block as the desktop app) tells the user so.
+    if (showAether) settingsSection {
+        SmartGateCard(aiTopic = AiTopic.SMART_GATE)
     }
 
     // ---- Tor (engine core 2.0.0) -------------------------------------------
@@ -632,7 +672,7 @@ private fun ConnectionPage(
     // Shown only when the chosen mode actually contains Tor. A settings group that
     // does nothing is worse than a missing one: it invites the user to change
     // something and then silently ignores it.
-    if (profile.backend.usesTor) {
+    if (profile.backend.usesTor && showTor) {
         settingsSection {
             GroupCaption(stringResource(R.string.section_tor), aiTopic = AiTopic.TOR_BRIDGES)
             SettingsGroup {
@@ -729,7 +769,7 @@ private fun ConnectionPage(
         }
     }
 
-    settingsSection {
+    if (showAether) settingsSection {
         GroupCaption(stringResource(R.string.section_core), aiTopic = AiTopic.PROTOCOL)
         SettingsGroup {
             SettingsBlock(title = stringResource(R.string.protocol), aiTopic = AiTopic.PROTOCOL) {
@@ -817,6 +857,7 @@ private fun ConnectionPage(
                 )
             }
         }
+    }
     }
 }
 

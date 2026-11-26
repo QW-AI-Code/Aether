@@ -10,11 +10,12 @@ sealed interface ConnectionState {
     data object Selecting : ConnectionState
 
     /**
-     * Tunnel/proxy is up but the 5-step end-to-end self-test is still
-     * running. The UI must NOT present this as ready — Connected is only
-     * reported once checks pass, or the user explicitly disables the optional initial gate.
+     * 1.7.0 (same version): tunnel/proxy is up and the SMART GATE is proving
+     * that real data crosses it (replaces the old "Verifying" state). The UI
+     * must NOT present this as ready - Connected is only reported once data has
+     * really flowed. There is no switch that skips it.
      */
-    data object Verifying : ConnectionState
+    data object Proving : ConnectionState
     /** Epoch prevents same-port reconnects from being conflated with the previous session. */
     data class Connected(val socksAddr: String, val epoch: Long = connectionEpoch.incrementAndGet()) : ConnectionState
     data class Reconnecting(val attempt: Int, val maxAttempts: Int) : ConnectionState
@@ -77,6 +78,6 @@ val ConnectionState.isBusy: Boolean
     get() = this is ConnectionState.Launching ||
         this is ConnectionState.Selecting ||
         this is ConnectionState.Connecting ||
-        this is ConnectionState.Verifying ||
+        this is ConnectionState.Proving ||
         this is ConnectionState.Reconnecting ||
         this is ConnectionState.Disconnecting

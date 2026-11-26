@@ -6,7 +6,14 @@ import re
 import subprocess
 import tomllib
 
-FIXES = (("quinn-proto", (0, 11), (0, 11, 18), "RUSTSEC-2026-0338"),
+# 1.7.0 (CI run of 2026-11-23): RUSTSEC-2026-0523/0524 (quinn-proto < 0.11.19),
+# RUSTSEC-2026-0538 (quinn-udp < 0.5.16), RUSTSEC-2026-0592 (url < 2.5.9) and
+# RUSTSEC-2026-0594 (cookie < 0.18.3) were published after 1.6.0 and blocked the
+# release in the final audit. All four are lockfile-only, semver-compatible bumps.
+FIXES = (("quinn-proto", (0, 11), (0, 11, 19), "RUSTSEC-2026-0338/0523/0524"),
+         ("quinn-udp", (0, 5), (0, 5, 16), "RUSTSEC-2026-0538"),
+         ("url", (2, 5), (2, 5, 9), "RUSTSEC-2026-0592"),
+         ("cookie", (0, 18), (0, 18, 3), "RUSTSEC-2026-0594"),
          ("rustls", (0, 23), (0, 23, 46), "RUSTSEC-2026-0346/0347/0348/0349 (and 0285)"),
          ("rustls-webpki", (0, 103), (0, 103, 16), "RUSTSEC-2026-0382"),
          ("webpki-roots", (1, 0), (1, 0, 10), "RUSTSEC-2026-0381"),

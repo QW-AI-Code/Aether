@@ -38,7 +38,7 @@ class TabPingRepairTest {
         }
     }
     @Test fun topicsAreGroundedAndNotVaultMutationPatches() {
-        for(topic in listOf(AiTopic.CUSTOM_CONFIGS,AiTopic.CUSTOM_CHAIN,AiTopic.CUSTOM_PING,AiTopic.CUSTOM_VERIFY)) {
+        for(topic in listOf(AiTopic.CUSTOM_CONFIGS,AiTopic.CUSTOM_CHAIN,AiTopic.CUSTOM_PING,AiTopic.CUSTOM_SMART_GATE)) {
             assertEquals(topic,AiTopic.byId(topic.id));assertNull(topic.profileKey)
             assertTrue(AiPrompts.explain(false,topic,null).contains(topic.detail))
         }

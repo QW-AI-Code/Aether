@@ -3,6 +3,8 @@ package studio.cluvex.aether.custom
 /** One projection for tabs, counters, filters, moves and ping ordering. No Android/UI state. */
 object ConfigCatalog {
     enum class PingSort { ASC, DESC }
+    /** 1.7.0 (same version): what the list is ordered by. Speed orders are fastest first. */
+    enum class SortKey { PING, DOWNLOAD, UPLOAD }
     const val ALL = "all"
     const val V2RAY = "format:v2ray"
     const val NPVT = "format:npvt"
@@ -42,6 +44,8 @@ object ConfigCatalog {
     filter: Filter = Filter.ALL,
     pings: Map<String, ConfigPing.Report> = emptyMap(),
     pingSort: PingSort = PingSort.ASC,
+    speeds: Map<String, ConfigSpeedTest.Report> = emptyMap(),
+    sortBy: SortKey = SortKey.PING,
 ): List<Row> {
 
     fun validMs(c: CustomConfig): Long? =
@@ -54,13 +58,24 @@ object ConfigCatalog {
         .thenBy { it.name.lowercase(java.util.Locale.ROOT) }
         .thenBy { it.id }
 
+    fun validBps(c: CustomConfig): Long? = speeds[c.id]?.takeIf { !it.running }?.let { r ->
+        if (sortBy == SortKey.UPLOAD) r.uploadBps else r.downloadBps
+    }?.takeIf { it > 0 }
+
+    // Measured speeds first, fastest at the top; then the ping order for the rest.
+    val bySpeed = compareBy<CustomConfig> { if (validBps(it) == null) 1 else 0 }
+        .thenBy { c -> validBps(c)?.let { -it } ?: 0L }
+        .then(byPing)
+
+    val order = if (sortBy == SortKey.PING) byPing else bySpeed
+
     val configs = state.configs.filter {
         contains(tab, it) && when (filter) {
             Filter.ALL -> true
             Filter.MANUAL -> it.subscriptionId == null
             Filter.SUBSCRIPTIONS -> it.subscriptionId != null
         }
-    }.sortedWith(byPing)
+    }.sortedWith(order)
 
     val subscriptions = if (filter == Filter.MANUAL) emptyList() else state.subscriptions.filter { sub ->
         when (tab) {

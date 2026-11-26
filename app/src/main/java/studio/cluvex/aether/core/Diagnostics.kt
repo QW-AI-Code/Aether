@@ -273,16 +273,22 @@ object Diagnostics {
             DiagnosticsLog.e(TAG, "stage 1: $host:$port does not speak SOCKS5")
             return@withContext false
         }
-        val deadline = System.currentTimeMillis() + graceMs
-        var ok = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80, TCP_PROBE_TIMEOUT_MS)
-        while (!ok && System.currentTimeMillis() < deadline) {
-            delay(OUTBOUND_RETRY_DELAY_MS)
-            ok = NetProbe.checkTcpViaProxy(host, port, "1.1.1.1", 80, TCP_PROBE_TIMEOUT_MS)
-        }
+        // 1.7.0 (same version) SMART GATE for stage 1: a bare "CONNECT succeeded"
+        // reply is not proof (some carriers acknowledge before they dial), so stage
+        // 2 is only started once real data crossed stage 1 ([LiveDataProof]). A
+        // stalled Tor bootstrap ([abort]) ends the wait exactly like a dead engine.
+        val ok = LiveDataProof.prove(
+            host,
+            port,
+            graceMs,
+            alive = { alive() && !abort() },
+            label = "stage 1",
+            updateChecks = false,
+        ).ok
         DiagnosticsLog.log(
             TAG,
             if (ok) LogLevel.INFO else LogLevel.ERROR,
-            "stage 1: outbound TCP via $host:$port = $ok",
+            "stage 1: real data via $host:$port = $ok",
         )
         ok
     }

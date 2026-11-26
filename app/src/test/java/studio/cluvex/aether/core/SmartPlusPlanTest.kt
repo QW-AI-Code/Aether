@@ -6,6 +6,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import studio.cluvex.aether.model.ConnectionProfile
 import studio.cluvex.aether.model.EndpointMode
+import studio.cluvex.aether.model.GoolMode
 import studio.cluvex.aether.model.Noize
 import studio.cluvex.aether.model.Protocol
 import studio.cluvex.aether.model.ScanMode
@@ -13,100 +14,117 @@ import studio.cluvex.aether.model.TeamAuth
 import studio.cluvex.aether.model.TransportBackend
 
 /**
- * The rules Smart Plus plans by.
+ * The rules Smart mode (1.7.0) plans and chooses by.
  *
- * Every case here is a rule that cannot be checked on a phone without a network
- * that behaves in a particular way — which is the whole reason the planner holds
- * no Android types and does no I/O. The invariant in
- * [lanes never mix identity families] is the important one: it is what stops two
- * engines writing the same `aether*.toml`, and a regression there would not show
- * up as a crash but as a WARP identity that has to re-enrol.
+ * The invariant in [lanes never mix identity families] is the important one: it
+ * is what stops two engines writing the same `aether*.toml`. 1.6.0 broke it for
+ * gool, which core 2.4.0 runs inside MASQUE on the MASQUE identity.
  */
 class SmartPlusPlanTest {
 
     private val now = 1_758_000_000_000L
 
-    private fun race(steps: List<SmartPlusPlan.Step>): SmartPlusPlan.Step.Race =
-        steps.filterIsInstance<SmartPlusPlan.Step.Race>().single()
+    private fun lanes(
+        dpi: DpiClass = DpiClass.OPEN,
+        mobile: Boolean = false,
+        memory: SmartPlusMemory.Entry? = null,
+        quic: Boolean? = null,
+        classic: Boolean = false,
+    ) = SmartPlusPlan.plan(dpi, mobile, memory, now, quic, classic)
 
-    private fun remembered(steps: List<SmartPlusPlan.Step>): SmartPlusPlan.Step.Remembered? =
-        steps.filterIsInstance<SmartPlusPlan.Step.Remembered>().singleOrNull()
+    private fun masqueLane(lanes: List<SmartPlusPlan.Lane>) =
+        lanes.first { it.tactics.first().family == SmartPlusPlan.Family.MASQUE }
+
+    private fun warpLane(lanes: List<SmartPlusPlan.Lane>) =
+        lanes.first { it.tactics.first().family == SmartPlusPlan.Family.WARP }
 
     // ------------------------------------------------------- the core invariant
 
     @Test
     fun `lanes never mix identity families`() {
-        for (dpi in DpiClass.entries) {
-            for (mobile in listOf(true, false)) {
-                val lanes = race(SmartPlusPlan.plan(dpi, mobile, null, now)).lanes
-                assertEquals("two lanes on $dpi/mobile=$mobile", 2, lanes.size)
-                for (lane in lanes) {
-                    assertEquals(
-                        "one family per lane on $dpi/mobile=$mobile",
-                        1,
-                        lane.tactics.map { it.family }.distinct().size,
-                    )
-                }
-                assertEquals(
-                    "the two lanes are different families",
-                    2,
-                    lanes.map { it.tactics.first().family }.distinct().size,
-                )
+        for (dpi in DpiClass.entries) for (mobile in listOf(true, false)) for (classic in listOf(true, false)) {
+            val plan = lanes(dpi, mobile, classic = classic)
+            assertEquals("two lanes on $dpi/mobile=$mobile", 2, plan.size)
+            for (lane in plan) {
+                assertEquals(1, lane.tactics.map { it.family }.distinct().size)
             }
+            assertEquals(2, plan.map { it.tactics.first().family }.distinct().size)
         }
+    }
+
+    @Test
+    fun `modern gool rides the MASQUE identity and classic gool the WARP one`() {
+        val modern = lanes(classic = false)
+        assertTrue(masqueLane(modern).tactics.any { it.protocol == Protocol.GOOL })
+        assertTrue(warpLane(modern).tactics.none { it.protocol == Protocol.GOOL })
+        val classic = lanes(classic = true)
+        assertTrue(warpLane(classic).tactics.any { it.protocol == Protocol.GOOL })
+        assertTrue(masqueLane(classic).tactics.none { it.protocol == Protocol.GOOL })
+        assertTrue(SmartPlusPlan.goolClassic(ConnectionProfile(goolMode = GoolMode.CLASSIC)))
+        assertFalse(SmartPlusPlan.goolClassic(ConnectionProfile()))
     }
 
     @Test
     fun `every offered tactic appears exactly once`() {
-        val lanes = race(SmartPlusPlan.plan(DpiClass.OPEN, false, null, now)).lanes
-        val ids = lanes.flatMap { lane -> lane.tactics.map { it.id } }
+        val ids = lanes().flatMap { lane -> lane.tactics.map { it.id } }
         assertEquals(ids.size, ids.distinct().size)
         assertEquals(SmartPlusPlan.allTactics(DpiClass.OPEN, false).map { it.id }.sorted(), ids.sorted())
     }
 
-    // ------------------------------------------------------------ lane ordering
+    // ---------------------------------------------------------------- fairness
 
     @Test
-    fun `the first lane starts at once and the second is staggered`() {
-        val lanes = race(SmartPlusPlan.plan(DpiClass.OPEN, false, null, now)).lanes
-        assertEquals(0L, lanes[0].startAfterMs)
-        assertEquals(SmartPlusPlan.SECOND_LANE_AFTER_MS, lanes[1].startAfterMs)
-    }
-
-    @Test
-    fun `MASQUE leads where UDP is throttled and WireGuard cannot work`() {
-        for (dpi in listOf(DpiClass.UDP_THROTTLED, DpiClass.HOSTILE)) {
-            val lanes = race(SmartPlusPlan.plan(dpi, false, null, now)).lanes
-            assertEquals(SmartPlusPlan.Family.MASQUE, lanes[0].tactics.first().family)
+    fun `both lanes start at the same instant`() {
+        for (dpi in DpiClass.entries) {
+            assertTrue(lanes(dpi).all { it.startAfterMs == 0L })
         }
     }
 
     @Test
-    fun `the WARP family leads on an open network`() {
-        for (dpi in listOf(DpiClass.OPEN, DpiClass.SNI_FILTERING)) {
-            val lanes = race(SmartPlusPlan.plan(dpi, false, null, now)).lanes
-            assertEquals(SmartPlusPlan.Family.WARP, lanes[0].tactics.first().family)
+    fun `budgets depend on the weight of a tactic, never on its family`() {
+        val all = SmartPlusPlan.allTactics(DpiClass.OPEN, false)
+        assertEquals(SmartPlusPlan.LIGHT_MS, all.first { it.id == "wg" }.budgetMs)
+        assertEquals(SmartPlusPlan.LIGHT_MS, all.first { it.id == "masque.h3" }.budgetMs)
+        assertEquals(SmartPlusPlan.LIGHT_MS, all.first { it.id == "masque.h2" }.budgetMs)
+        assertEquals(SmartPlusPlan.TWO_HOP_MS, all.first { it.id == "gool" }.budgetMs)
+        assertEquals(SmartPlusPlan.TWO_HOP_MS, all.first { it.id == "mim" }.budgetMs)
+    }
+
+    @Test
+    fun `each lane goes from its lightest tactic to its heaviest`() {
+        for (dpi in DpiClass.entries) for (mobile in listOf(true, false)) {
+            for (lane in lanes(dpi, mobile)) {
+                val hops = lane.tactics.map { if (it.protocol == Protocol.GOOL || it.protocol == Protocol.MIM) 2 else 1 }
+                assertEquals("single-hop before two-hop on $dpi", hops.sorted(), hops)
+            }
+            assertEquals("mim", masqueLane(lanes(dpi, mobile)).tactics.last().id)
         }
     }
 
     // --------------------------------------------------------- framing ordering
 
     @Test
-    fun `HTTP2 leads on mobile data and HTTP3 leads elsewhere`() {
-        val mobile = SmartPlusPlan.tacticsFor(SmartPlusPlan.Family.MASQUE, DpiClass.OPEN, onMobileData = true)
-        assertEquals("masque.h2", mobile.first().id)
-        val wifi = SmartPlusPlan.tacticsFor(SmartPlusPlan.Family.MASQUE, DpiClass.OPEN, onMobileData = false)
-        assertEquals("masque.h3", wifi.first().id)
+    fun `HTTP2 leads on mobile data, where QUIC is unanswered, and HTTP3 otherwise`() {
+        assertEquals("masque.h2", masqueLane(lanes(mobile = true)).tactics.first().id)
+        assertEquals("masque.h2", masqueLane(lanes(quic = false)).tactics.first().id)
+        assertEquals("masque.h3", masqueLane(lanes(quic = true)).tactics.first().id)
+        assertEquals("masque.h3", masqueLane(lanes(quic = null)).tactics.first().id)
+        val iranSim = SmartPlusPlan.plan(DpiClass.OPEN, false, null, now, quicReachable = true, preferTcp = true)
+        assertEquals("an Iranian SIM puts MASQUE over TCP first", "masque.h2", masqueLane(iranSim).tactics.first().id)
+        assertEquals(SmartPlusPlan.Family.MASQUE, iranSim.first().tactics.first().family)
     }
 
     @Test
-    fun `nested MASQUE is never tried first`() {
-        for (dpi in DpiClass.entries) {
-            for (mobile in listOf(true, false)) {
-                val masque = SmartPlusPlan.tacticsFor(SmartPlusPlan.Family.MASQUE, dpi, mobile)
-                assertEquals("mim", masque.last().id)
-                val warp = SmartPlusPlan.tacticsFor(SmartPlusPlan.Family.WARP, dpi, mobile)
-                assertTrue("gool is never first on $dpi", warp.first().id != "gool")
+    fun `the fragmented TCP carrier follows the bare one under SNI filtering`() {
+        val ids = masqueLane(lanes(DpiClass.SNI_FILTERING)).tactics.map { it.id }
+        assertEquals(listOf("masque.h2", "masque.h2.frag"), ids.take(2))
+    }
+
+    @Test
+    fun `Smart never turns ECH on by itself`() {
+        for (dpi in DpiClass.entries) for (mobile in listOf(true, false)) {
+            for (t in SmartPlusPlan.allTactics(dpi, mobile)) {
+                assertFalse("${t.id} on $dpi", t.applyTo(ConnectionProfile()).ech)
             }
         }
     }
@@ -114,52 +132,25 @@ class SmartPlusPlanTest {
     // ----------------------------------------------------------------- memory
 
     @Test
-    fun `a fresh proven route goes first, on its own, before the race`() {
+    fun `a fresh proven route leads its lane and its lane is listed first`() {
         val memory = SmartPlusMemory.Entry(tacticId = "masque.h2", provenAtMs = now - 60_000)
-        val steps = SmartPlusPlan.plan(DpiClass.OPEN, onMobileData = true, memory = memory, nowMs = now)
-        val first = remembered(steps)!!
-        assertEquals("masque.h2", first.tactic.id)
-        assertEquals(SmartPlusPlan.REMEMBERED_MS, first.tactic.budgetMs)
-        assertTrue("the race still follows it", steps.last() is SmartPlusPlan.Step.Race)
-        // ... and its family leads the race, because that is where the evidence is.
-        val lanes = race(steps).lanes
-        assertEquals(SmartPlusPlan.Family.MASQUE, lanes[0].tactics.first().family)
-        assertEquals("masque.h2", lanes[0].tactics.first().id)
+        val plan = lanes(memory = memory, quic = true)
+        assertEquals(SmartPlusPlan.Family.MASQUE, plan[0].tactics.first().family)
+        assertEquals("masque.h2", plan[0].tactics.first().id)
+        assertTrue("no serial bet before the race any more", plan.all { it.startAfterMs == 0L })
     }
 
     @Test
     fun `evidence expires`() {
-        val stale = SmartPlusMemory.Entry(
-            tacticId = "masque.h2",
-            provenAtMs = now - SmartPlusMemory.PROVEN_TTL_MS - 1,
-        )
-        val steps = SmartPlusPlan.plan(DpiClass.OPEN, true, stale, now)
-        assertEquals(null, remembered(steps))
-        assertEquals(1, steps.size)
-    }
-
-    @Test
-    fun `a route that failed here recently does not get the first slot`() {
-        val memory = SmartPlusMemory.Entry(
-            tacticId = "masque.h2",
-            provenAtMs = now - 60_000,
-            failedAtMs = mapOf("masque.h2" to (now - 60_000)),
-        )
-        val steps = SmartPlusPlan.plan(DpiClass.OPEN, true, memory, now)
-        assertEquals("no 45 s bet on a route that just failed", null, remembered(steps))
+        val stale = SmartPlusMemory.Entry(tacticId = "masque.h2", provenAtMs = now - SmartPlusMemory.PROVEN_TTL_MS - 1)
+        assertEquals("masque.h3", masqueLane(lanes(memory = stale, quic = true)).tactics.first().id)
     }
 
     @Test
     fun `a recent failure moves to the back of its lane but is not dropped`() {
-        val memory = SmartPlusMemory.Entry(
-            tacticId = null,
-            provenAtMs = 0L,
-            failedAtMs = mapOf("wg" to (now - 60_000)),
-        )
-        val lanes = race(SmartPlusPlan.plan(DpiClass.OPEN, false, memory, now)).lanes
-        val warp = lanes.first { it.tactics.first().family == SmartPlusPlan.Family.WARP }
+        val memory = SmartPlusMemory.Entry(tacticId = null, provenAtMs = 0L, failedAtMs = mapOf("wg" to (now - 60_000)))
+        val warp = warpLane(lanes(memory = memory))
         assertEquals("wg", warp.tactics.last().id)
-        assertTrue("still reachable", warp.tactics.any { it.id == "wg" })
     }
 
     @Test
@@ -169,45 +160,86 @@ class SmartPlusPlanTest {
             provenAtMs = 0L,
             failedAtMs = mapOf("wg" to (now - SmartPlusMemory.FAILED_TTL_MS - 1)),
         )
-        val lanes = race(SmartPlusPlan.plan(DpiClass.OPEN, false, memory, now)).lanes
-        val warp = lanes.first { it.tactics.first().family == SmartPlusPlan.Family.WARP }
-        assertEquals("wg", warp.tactics.first().id)
+        assertEquals("wg", warpLane(lanes(memory = memory)).tactics.first().id)
     }
 
     @Test
     fun `a memory naming a tactic this network does not offer is ignored`() {
         val memory = SmartPlusMemory.Entry(tacticId = "no.such.tactic", provenAtMs = now)
-        val steps = SmartPlusPlan.plan(DpiClass.OPEN, false, memory, now)
-        assertEquals(null, remembered(steps))
+        assertEquals(2, lanes(memory = memory).size)
+    }
+
+    // ----------------------------------------------------------------- ladder
+
+    @Test
+    fun `the serial ladder interleaves the families and keeps HTTP2 MASQUE`() {
+        val ladder = SmartPlusPlan.ladder(DpiClass.OPEN, false, null, now, quicReachable = true)
+        assertTrue(ladder.any { it.id == "masque.h2" })
+        assertEquals(SmartPlusPlan.allTactics(DpiClass.OPEN, false, true).size, ladder.size)
+        assertTrue("both families inside the first two rungs", ladder.take(2).map { it.family }.distinct().size == 2)
+    }
+
+    // ---------------------------------------------------------------- ranking
+
+    @Test
+    fun `lower latency wins between equal throughput`() {
+        val h2 = SmartPlusPlan.allTactics(DpiClass.OPEN, false).first { it.id == "masque.h2" }
+        val wg = SmartPlusPlan.allTactics(DpiClass.OPEN, false).first { it.id == "wg" }
+        val ranked = SmartPlusPlan.rank(
+            listOf(
+                wg to TunnelQuality(rttMs = 400, downKbps = 8_000, upKbps = 4_000),
+                h2 to TunnelQuality(rttMs = 90, downKbps = 8_000, upKbps = 4_000),
+            ),
+        )
+        assertEquals(listOf("masque.h2", "wg"), ranked.map { it.id })
+    }
+
+    @Test
+    fun `overhead breaks a tie in favour of the lighter route`() {
+        val h3 = SmartPlusPlan.allTactics(DpiClass.OPEN, false).first { it.id == "masque.h3" }
+        val gool = SmartPlusPlan.allTactics(DpiClass.OPEN, false).first { it.id == "gool" }
+        val same = TunnelQuality(rttMs = 120, downKbps = 10_000, upKbps = 5_000)
+        assertEquals("masque.h3", SmartPlusPlan.rank(listOf(gool to same, h3 to same)).first().id)
+    }
+
+    @Test
+    fun `an unmeasured route ranks after every measured one`() {
+        val all = SmartPlusPlan.allTactics(DpiClass.OPEN, false)
+        val ranked = SmartPlusPlan.rank(
+            listOf(
+                all.first { it.id == "wg" } to null,
+                all.first { it.id == "mim" } to TunnelQuality(900, 500, 200),
+            ),
+        )
+        assertEquals(listOf("mim", "wg"), ranked.map { it.id })
+    }
+
+    @Test
+    fun `an unmeasured transfer is charged, never free`() {
+        val fast = SmartPlusPlan.score(TunnelQuality(100, 20_000, 10_000), 1.0)
+        val unknown = SmartPlusPlan.score(TunnelQuality(100, 0, 0), 1.0)
+        assertTrue(unknown > fast)
     }
 
     // -------------------------------------------------------- applying a tactic
 
     @Test
     fun `a tactic hardens but never weakens what the user chose`() {
-        val user = ConnectionProfile(
-            noize = Noize.AGGRESSIVE,
-            fragment = true,
-            ech = true,
-            scanMode = ScanMode.THOROUGH,
-        )
-        val bare = SmartPlusPlan.tacticsFor(SmartPlusPlan.Family.WARP, DpiClass.OPEN, false)
-            .first { it.id == "wg" }
+        val user = ConnectionProfile(noize = Noize.AGGRESSIVE, fragment = true, ech = true, scanMode = ScanMode.THOROUGH)
+        val bare = SmartPlusPlan.allTactics(DpiClass.OPEN, false).first { it.id == "wg" }
         val applied = bare.applyTo(user, bindPort = 19_819)
-        assertEquals("the stronger obfuscation wins", Noize.AGGRESSIVE, applied.noize)
+        assertEquals(Noize.AGGRESSIVE, applied.noize)
         assertTrue(applied.fragment)
-        assertTrue(applied.ech)
+        assertTrue("the user's own ECH choice is kept", applied.ech)
         assertEquals(Protocol.WIREGUARD, applied.protocol)
-        assertEquals("a lane always scans in TURBO", ScanMode.TURBO, applied.scanMode)
+        assertEquals(ScanMode.TURBO, applied.scanMode)
         assertEquals(19_819, applied.bindOverride)
         assertEquals(19_819, applied.bindPort)
     }
 
     @Test
     fun `an ordinary connect keeps the session port`() {
-        val applied = SmartPlusPlan.tacticsFor(SmartPlusPlan.Family.MASQUE, DpiClass.OPEN, false)
-            .first()
-            .applyTo(ConnectionProfile())
+        val applied = masqueLane(lanes()).tactics.first().applyTo(ConnectionProfile())
         assertEquals(0, applied.bindOverride)
     }
 
@@ -228,22 +260,12 @@ class SmartPlusPlanTest {
 
     @Test
     fun `a pinned endpoint, a chain and the e-mail code are not raced`() {
+        assertFalse(SmartPlusPlan.eligible(ConnectionProfile(endpointMode = EndpointMode.MANUAL_PEER)))
         assertFalse(
-            "nothing to search for",
-            SmartPlusPlan.eligible(ConnectionProfile(endpointMode = EndpointMode.MANUAL_PEER)),
+            SmartPlusPlan.eligible(ConnectionProfile(team = "acme", teamAuth = TeamAuth.EMAIL, accessEmail = "a@b.c")),
         )
-        assertFalse(
-            "one stdin, one code",
-            SmartPlusPlan.eligible(
-                ConnectionProfile(team = "acme", teamAuth = TeamAuth.EMAIL, accessEmail = "a@b.c"),
-            ),
-        )
-        assertFalse(
-            "the chain owns the ports",
-            SmartPlusPlan.eligible(ConnectionProfile(backend = TransportBackend.AETHER_TOR)),
-        )
+        assertFalse(SmartPlusPlan.eligible(ConnectionProfile(backend = TransportBackend.AETHER_TOR)))
         assertTrue(
-            "a service token needs no user, so it can be raced",
             SmartPlusPlan.eligible(
                 ConnectionProfile(
                     team = "acme",
@@ -259,17 +281,12 @@ class SmartPlusPlanTest {
 
     @Test
     fun `a whole race fits inside its ceiling`() {
-        val lanes = race(SmartPlusPlan.plan(DpiClass.HOSTILE, true, null, now)).lanes
-        for (lane in lanes) {
-            val worst = lane.startAfterMs + lane.tactics.sumOf { it.budgetMs }
-            assertTrue(
-                "a lane's worst case ($worst ms) must fit the ceiling " +
-                    "(${SmartPlusPlan.RACE_CEILING_MS} ms), or its last tactic can never run",
-                worst <= SmartPlusPlan.RACE_CEILING_MS,
-            )
+        for (dpi in DpiClass.entries) for (classic in listOf(true, false)) {
+            for (lane in lanes(dpi, true, classic = classic)) {
+                val worst = lane.startAfterMs + lane.tactics.sumOf { it.budgetMs }
+                assertTrue("lane worst case $worst ms on $dpi", worst <= SmartPlusPlan.RACE_CEILING_MS)
+            }
         }
-        // The ceiling is what bounds the mode, and it has to be well under the
-        // 330 s the Smart ladder can take, or the new mode buys nothing.
         assertTrue(SmartPlusPlan.RACE_CEILING_MS < 330_000L)
     }
 }
